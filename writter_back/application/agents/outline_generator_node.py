@@ -53,7 +53,10 @@ async def outline_generator_node(state: NovelAgentState, config) -> Command[Lite
 
         # 将书名、简介、大纲持久化到数据库
         repository = config["configurable"].get("novel_repository")
-        novel_id = config["configurable"].get("thread_id", "")  # thread_id = novel_id
+        novel_id = config["configurable"].get("thread_id", "")
+        title_to_save = state.get("title")
+        summary_to_save = state.get("summary")
+        print(f"【总大纲生成节点】诊断: novel_id={novel_id}, title='{title_to_save}', summary_len={len(summary_to_save or '')}", flush=True)
         if repository and novel_id:
             try:
                 novel = await repository.find_by_id(novel_id)

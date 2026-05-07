@@ -79,14 +79,31 @@ async def reflection_node(state: NovelAgentState, config) -> Command[Literal["pe
     })
     
     print(f"【反思检查节点】准备前往 -> 修正节点 (等待用户决策)", flush=True)
-    
+
+    # 解析用户决策
+    if user_decision == "accept":
+        decision_action = "accept"
+        decision_instructions = None
+    elif user_decision == "regenerate":
+        decision_action = "regenerate"
+        decision_instructions = None
+    elif user_decision == "revise":
+        decision_action = "revise"
+        decision_instructions = None  # AI 根据问题列表自动修正
+    elif isinstance(user_decision, str) and user_decision.strip():
+        decision_action = "revise"
+        decision_instructions = user_decision  # 用户提供的自定义修正指令
+    else:
+        decision_action = "revise"
+        decision_instructions = None
+
     return Command(
         goto="revision_node",
         update={
             "reflection_issues": issues,
             "user_decision": {
-                "action": user_decision if isinstance(user_decision, str) else "revise",
-                "instructions": user_decision if isinstance(user_decision, str) else None
+                "action": decision_action,
+                "instructions": decision_instructions
             }
         }
     )

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { Card, Steps, Radio, Input, Button, Form, message, Alert, Space, Spin, Progress, Tag, InputNumber, Collapse, Divider, Typography } from 'antd'
+import { Card, Steps, Radio, Input, Button, Form, message, Alert, Space, Spin, Progress, Tag, InputNumber, Collapse, Divider, Typography, Select } from 'antd'
 import { EditOutlined } from '@ant-design/icons'
 import { novelApi, workflowApi } from '@/api/novel'
 import type { NovelCreateRequest, NovelResponse } from '@/api/novel'
@@ -23,6 +23,8 @@ const NovelConfig = () => {
   const [chapterNum, setChapterNum] = useState(0)   // 当前章节编号
   const [editableOutline, setEditableOutline] = useState<any>(null)  // 可编辑的大纲数据
   const [editableChapter, setEditableChapter] = useState<any>(null)   // 可编辑的章节细纲
+  const [editableIssues, setEditableIssues] = useState<any[]>([])       // 可编辑的反思问题
+  const [customInstruction, setCustomInstruction] = useState('')        // 用户自定义修正指令
 
   // 大纲中断到达时，初始化可编辑数据（保持章节数与总章节数一致）
   useEffect(() => {
@@ -45,6 +47,11 @@ const NovelConfig = () => {
     // 章节细纲：初始化可编辑数据
     if (interrupt?.action === 'review_or_provide_chapter_outline' && interrupt.ai_generated_outline) {
       setEditableChapter(JSON.parse(JSON.stringify(interrupt.ai_generated_outline)))
+    }
+    // 反思问题：初始化可编辑数据
+    if (interrupt?.action === 'review_reflection_issues' && interrupt.issues) {
+      setEditableIssues(JSON.parse(JSON.stringify(interrupt.issues)))
+      setCustomInstruction('')
     }
   }, [interrupt])
 
@@ -265,6 +272,10 @@ const NovelConfig = () => {
         break
       case 'review_reflection_issues':
         invokeWorkflow('accept')
+        break
+      case 'user_fix':
+        // 发送自定义修正指令
+        invokeWorkflow(customInstruction || '请根据问题列表自动修正')
         break
       case 'confirm_revision':
         invokeWorkflow('accept')
@@ -806,31 +817,115 @@ const NovelConfig = () => {
             {/* 反思问题 */}
             {interrupt.action === 'review_reflection_issues' && (
               <div>
-                <Alert message={`第 ${interrupt.chapter_number || '?'} 章质量检查未通过（评分：${interrupt.quality_score ?? '?'}）`} type="warning" style={{ marginBottom: 16 }} />
-                {interrupt.issues && interrupt.issues.length > 0 && (
+                <Alert
+                  message={`第 ${interrupt.chapter_number || '?'} 章质量检查未通过（评分：${interrupt.quality_score ?? '?'} / 字数：${interrupt.word_count ?? '?'}）`}
+                  type="warning"
+                  style={{ marginBottom: 16 }}
+                />
+
+                {/* 可编辑问题列表 */}
+                {editableIssues.length > 0 && (
                   <div style={{ marginBottom: 16 }}>
-                    {interrupt.issues.map((issue: any, idx: number) => (
-                      <div key={idx} style={{ marginBottom: 8, padding: '8px 12px', background: '#fff7e6', borderRadius: 6, border: '1px solid #ffd591' }}>
-                        <Space>
+                    {editableIssues.map((issue: any, idx: number) => (
+                      <div key={idx} style={{ marginBottom: 12, padding: 12, background: '#fff7e6', borderRadius: 8, border: '1px solid #ffd591' }}>
+                        <div style={{ display: 'flex', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
+                          <Input
+                            value={issue.type || ''}
+                            onChange={(e) => {
+                              const items = [...editableIssues]
+                              items[idx] = { ...items[idx], type: e.target.value }
+                              setEditableIssues(items)
+                            }}
+                            placeholder="问题类型"
+                            size="small"
+                            style={{ width: 100 }}
+                          />
+                          <Select
+                            value={issue.severity || 'medium'}
+                            onChange={(val) => {
+                              const items = [...editableIssues]
+                              items[idx] = { ...items[idx], severity: val }
+                              setEditableIssues(items)
+                            }}
+                            size="small"
+                            style={{ width: 100 }}
+                            options={[
+                              { value: 'low', label: '低' },
+                              { value: 'medium', label: '中' },
+                              { value: 'high', label: '高' },
+                            ]}
+                          />
                           <Tag color={issue.severity === 'high' ? 'red' : issue.severity === 'medium' ? 'orange' : 'blue'}>
-                            {issue.type || '问题'}
+                            {issue.severity === 'high' ? '严重' : issue.severity === 'medium' ? '一般' : '轻微'}
                           </Tag>
-                          <span style={{ fontWeight: 500 }}>{issue.description || String(issue)}</span>
-                        </Space>
-                        {issue.suggestion && (
-                          <p style={{ margin: '4px 0 0', fontSize: 13, color: '#666' }}>
-                            建议：{issue.suggestion}
-                          </p>
-                        )}
+                          <Input
+                            value={issue.location || ''}
+                            onChange={(e) => {
+                              const items = [...editableIssues]
+                              items[idx] = { ...items[idx], location: e.target.value }
+                              setEditableIssues(items)
+                            }}
+                            placeholder="位置"
+                            size="small"
+                            style={{ width: 160 }}
+                          />
+                        </div>
+                        <Form.Item style={{ marginBottom: 8 }}>
+                          <Input.TextArea
+                            value={issue.description || ''}
+                            onChange={(e) => {
+                              const items = [...editableIssues]
+                              items[idx] = { ...items[idx], description: e.target.value }
+                              setEditableIssues(items)
+                            }}
+                            placeholder="问题描述"
+                            rows={2}
+                            size="small"
+                          />
+                        </Form.Item>
+                        <Form.Item style={{ marginBottom: 0 }}>
+                          <Input
+                            value={issue.suggestion || ''}
+                            onChange={(e) => {
+                              const items = [...editableIssues]
+                              items[idx] = { ...items[idx], suggestion: e.target.value }
+                              setEditableIssues(items)
+                            }}
+                            placeholder="修正建议"
+                            size="small"
+                          />
+                        </Form.Item>
                       </div>
                     ))}
                   </div>
                 )}
-                <p>请选择处理方式：</p>
-                <Space>
+
+                {/* 自定义修正指令输入区 */}
+                <div style={{ marginBottom: 12, padding: 12, background: '#f0f5ff', borderRadius: 8, border: '1px solid #adc6ff' }}>
+                  <p style={{ fontWeight: 500, marginBottom: 8 }}>自定义修正指令（选填）：</p>
+                  <Input.TextArea
+                    value={customInstruction}
+                    onChange={(e) => setCustomInstruction(e.target.value)}
+                    placeholder="例如：把对话改得更紧张、删掉冗余的环境描写、增加主角的心理活动..."
+                    rows={3}
+                  />
+                </div>
+
+                <p style={{ marginBottom: 8, fontWeight: 500 }}>选择处理方式：</p>
+                <Space wrap>
                   <Button onClick={() => invokeWorkflow('accept')}>接受（忽略问题）</Button>
-                  <Button type="primary" onClick={() => invokeWorkflow('ai_fix')}>AI自动修正</Button>
-                  <Button onClick={() => invokeWorkflow('user_fix')}>按指令修正</Button>
+                  <Button type="primary" onClick={() => invokeWorkflow('revise')}>
+                    AI自动修正
+                  </Button>
+                  <Button onClick={() => {
+                    if (!customInstruction.trim()) {
+                      message.warning('请先填写自定义修正指令')
+                      return
+                    }
+                    invokeWorkflow(customInstruction.trim())
+                  }}>
+                    按指令修正
+                  </Button>
                   <Button danger onClick={() => invokeWorkflow('regenerate')}>重新生成</Button>
                 </Space>
               </div>

@@ -132,7 +132,21 @@ class PostgresNovelRepository(NovelRepository):
                 stmt = stmt.where(NovelModel.user_id == uuid.UUID(user_id))
             result = await session.execute(stmt)
             novels = result.scalars().all()
-            return [Novel(id=n.id, novel_type=n.novel_type, title=n.title) for n in novels]
+            return [
+                Novel(
+                    id=n.id,
+                    user_id=n.user_id,
+                    novel_type=n.novel_type,
+                    title=n.title,
+                    summary=n.summary,
+                    total_outline=Outline(**n.total_outline) if n.total_outline else None,
+                    progress=Progress(**n.progress) if n.progress else Progress(),
+                    thread_id=n.thread_id,
+                    created_at=n.created_at,
+                    updated_at=n.updated_at,
+                )
+                for n in novels
+            ]
 
     async def update(self, novel: Novel) -> Novel:
         """更新小说"""
