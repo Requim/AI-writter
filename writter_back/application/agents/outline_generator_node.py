@@ -13,12 +13,12 @@ async def outline_generator_node(state: NovelAgentState, config) -> Command[Lite
     novel_type = state.get("novel_type", "")
     title = state.get("title", "")
     summary = state.get("summary", "")
-    has_outline = 'total_outline' in state and bool(state.get('total_outline'))
+    has_outline = 'total_outline' in state and isinstance(state.get('total_outline'), dict)
     print(f"{'='*60}", flush=True)
     print(f"【总大纲生成节点】进入 | 书名={title}, 已有大纲={'是' if has_outline else '否'}", flush=True)
     
-    # 用户已提供总纲领，直接使用
-    if state.get("total_outline"):
+    # 用户已提供总纲领，直接使用（仅当为字典时）
+    if isinstance(state.get("total_outline"), dict):
         print(f"【总大纲生成节点】跳过 -> 进度检查节点 | 使用已有大纲", flush=True)
         print(f"{'='*60}", flush=True)
         return Command(goto="progress_check_node")

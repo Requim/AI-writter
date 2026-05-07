@@ -12,7 +12,14 @@ async def reflection_node(state: NovelAgentState, config) -> Command[Literal["pe
     """
     current_chapter_content = state.get("current_chapter_content", "")
     chapter_outline = state.get("chapter_outlines", [{}])[-1] if state.get("chapter_outlines") else {}
-    total_outline = state.get("total_outline", {})
+    total_outline_raw = state.get("total_outline", {})
+    if isinstance(total_outline_raw, str):
+        import json
+        try:
+            total_outline_raw = json.loads(total_outline_raw)
+        except Exception:
+            total_outline_raw = {}
+    total_outline = total_outline_raw if isinstance(total_outline_raw, dict) else {}
     memory_context = state.get("memory_context", "")
     
     chapter_title = chapter_outline.get('title', '未知')

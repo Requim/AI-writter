@@ -81,9 +81,16 @@ async def persist_node(state: NovelAgentState, config) -> Command[Literal["progr
             pass
 
     # 更新进度
+    total_outline_raw = state.get("total_outline")
+    if isinstance(total_outline_raw, str):
+        import json as _json
+        try:
+            total_outline_raw = _json.loads(total_outline_raw)
+        except Exception:
+            total_outline_raw = {}
     total_chapters = (
-        state.get("total_outline", {}).get("total_chapters", 0)
-        if isinstance(state.get("total_outline"), dict)
+        total_outline_raw.get("total_chapters", 0)
+        if isinstance(total_outline_raw, dict)
         else 0
     )
     new_percentage = (

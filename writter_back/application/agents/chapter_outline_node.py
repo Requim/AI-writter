@@ -12,7 +12,14 @@ async def chapter_outline_node(state: NovelAgentState, config) -> Command[Litera
     """
     novel_type = state.get("novel_type", "")
     title = state.get("title", "")
-    total_outline = state.get("total_outline", {})
+    total_outline_raw = state.get("total_outline", {})
+    if isinstance(total_outline_raw, str):
+        import json
+        try:
+            total_outline_raw = json.loads(total_outline_raw)
+        except Exception:
+            total_outline_raw = {}
+    total_outline = total_outline_raw if isinstance(total_outline_raw, dict) else {}
     current_index = state.get("current_chapter_index", 0)
     memory_context = state.get("memory_context", "")
     has_user_outline = 'chapter_outlines_input' in state and bool(state.get('chapter_outlines_input'))
