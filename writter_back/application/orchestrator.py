@@ -29,6 +29,16 @@ class NovelOrchestrator(AgentOrchestrator):
         self._checkpointer = None
         # 提前创建 LLM 实例，注入给 Agent 节点使用
         self._llm_instance = self._build_llm_instance()
+        # 执行中标记，防止并发请求导致同一章节重复生成
+        self._executing: Dict[str, bool] = {}
+
+    def is_executing(self, thread_id: str) -> bool:
+        """检查指定 thread_id 的工作流是否正在执行中"""
+        return self._executing.get(thread_id, False)
+
+    def mark_executing(self, thread_id: str, value: bool) -> None:
+        """标记指定 thread_id 的工作流执行状态"""
+        self._executing[thread_id] = value
 
     def _build_llm_instance(self):
         """根据配置创建 LLM 适配器实例"""

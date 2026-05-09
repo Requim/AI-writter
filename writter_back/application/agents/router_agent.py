@@ -98,6 +98,22 @@ async def router_agent(state: NovelAgentState, config) -> Command:
         logger.info(f"{'='*60}")
         return Command(goto="progress_check_node", update={"phase": "writing", "graph_version": "v2"})
 
+    # ========== 强制记忆检索守卫 ==========
+    # 当已完成章节 > 0 但 memory_context 为空时，强制先检索记忆再进入细纲生成
+    completed_chapters = state.get("completed_chapters", [])
+    if current_index > 0 and not state.get("memory_context") and completed_chapters:
+        logger.info(f"【路由节点】memory_context 为空且已完成 {len(completed_chapters)} 章，强制 -> memory_retrieval_node")
+        logger.info(f"{'='*60}")
+        return Command(
+            goto="memory_retrieval_node",
+            update={
+                "phase": "writing",
+                "graph_version": "v2",
+                "next_tool": "memory_retrieval_node",
+                "router_reasoning": f"已完成 {len(completed_chapters)} 章但 memory_context 为空，强制检索前文记忆",
+            }
+        )
+
     # 构建当前状态摘要
     # 注意: 使用 current_index 而非 completed_chapters 长度来计算完成数,
     # 因为 completed_chapters 是 Annotated[List, add] 累计的, 删除 DB 章节后
@@ -109,6 +125,7 @@ async def router_agent(state: NovelAgentState, config) -> Command:
     )
     chapter_count = current_index
 
+    has_memory = bool(state.get("memory_context"))
     state_summary = (
         f"小说类型: {novel_type}\n"
         f"当前章节索引: {current_index + 1}\n"
@@ -116,6 +133,7 @@ async def router_agent(state: NovelAgentState, config) -> Command:
         f"已有章节细纲: {'是' if has_chapter_outline else '否'}\n"
         f"已有章节正文: {'是' if has_content else '否'}\n"
         f"有待处理问题: {'是' if has_issues else '否'}\n"
+        f"已有前文记忆: {'是' if has_memory else '否'}\n"
     )
 
     decision = await llm.structured_generate(
@@ -129,6 +147,7 @@ async def router_agent(state: NovelAgentState, config) -> Command:
 {_format_tools_for_prompt(WRITING_TOOLS)}
 
 选择规则：
+0. 【强制】如果已完成章节 > 0 且 memory_context 为空 → 必须选择 memory_retrieval_node
 1. 如果已有章节正文但未做质量检查 → 选择 reflection_node
 2. 如果质量检查发现问题 → 选择 revision_node
 3. 如果章节数据就绪需要保存 → 选择 persist_node

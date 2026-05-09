@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { Card, Steps, Radio, Input, Button, Form, message, Alert, Space, Spin, Progress, Tag, InputNumber, Collapse, Divider, Typography, Select } from 'antd'
 import { EditOutlined } from '@ant-design/icons'
@@ -28,6 +28,8 @@ const NovelConfig = () => {
   const [streamNode, setStreamNode] = useState('')                       // 当前流式节点名
   const [streamDone, setStreamDone] = useState<string[]>([])             // 已完成的流式节点
   const [streaming, setStreaming] = useState(false)                      // 是否在流式处理中
+  const invokingRef = useRef(false)                                      // 并发锁：防止重复 invoke
+  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null) // 轮询定时器
 
   // ====== 章节细纲场景字段兼容（新旧格式统一） ======
   function normalizeSceneFields(s: any): any {
@@ -180,30 +182,61 @@ const NovelConfig = () => {
             }
             message.info('已恢复上次创作进度')
           } else {
-            // 无中断 → 发起新流，用已有数据跳过设定阶段
-            setStreaming(true)
-            setStreamNode('')
-            setStreamDone([])
-            // 从 total_outline 推算当前章节数
-            const existingChapters = novelData.total_outline?.total_chapters || 0
-            setChapterNum(existingChapters > 0 ? 1 : 0)
-            // 构造包含已有数据的 input，让设定节点全部跳过
-            const inputData = {
-              input: {
-                novel_id: novelData.id,
-                novel_type: novelData.novel_type,
-                title: novelData.title || '',
-                summary: novelData.summary || '',
-                total_outline: novelData.total_outline || {},
-                current_chapter_content: '',  // 清空旧内容，防止 persist_node 误判为章节阶段
+            // 无中断 → 检查是否真的无状态，还是正在执行中
+            const stateValues = stateData.state_values || {}
+            const hasExistingState = Object.keys(stateValues).length > 0
+
+            if (hasExistingState) {
+              // ⚠️ 工作流已在执行中（可能 LLM 调用中），不要重复发起
+              console.log('[resumeNovel] 工作流正在执行中，开始轮询等待 interrupt')
+              setInterrupt({
+                action: 'placeholder_waiting',
+                message: 'AI 正在创作中，请稍候...',
+              } as InterruptInfo)
+              setCurrentStep(4)
+              setStreaming(true)
+              setStreamNode('')
+              setStreamDone([])
+              startPollingState(threadId, novelData.id)
+            } else {
+              // 真正无状态 → 用已有数据跳过设定阶段
+              setStreaming(true)
+              setStreamNode('')
+              setStreamDone([])
+              // 从 total_outline 推算当前章节数
+              const existingChapters = novelData.total_outline?.total_chapters || 0
+              setChapterNum(existingChapters > 0 ? 1 : 0)
+              // 构造包含已有数据的 input，让设定节点全部跳过
+              const inputData = {
+                input: {
+                  novel_id: novelData.id,
+                  novel_type: novelData.novel_type,
+                  title: novelData.title || '',
+                  summary: novelData.summary || '',
+                  total_outline: novelData.total_outline || {},
+                  current_chapter_content: '',  // 清空旧内容，防止 persist_node 误判为章节阶段
+                }
               }
+              invokeWorkflow(inputData, threadId, novelData.id)
             }
-            invokeWorkflow(inputData, threadId, novelData.id)
           }
         } catch (stateErr: any) {
           if (cancelled) return
-          console.warn('工作流状态查询超时或失败，从步骤 0 开始', stateErr?.message)
-          setCurrentStep(0)
+          console.warn('工作流状态查询超时或失败，开始轮询等待', stateErr?.message)
+          // 如果 novel 已存在（有 title），工作流大概率在执行中，轮询等 interrupt
+          if (novelData.title) {
+            setInterrupt({
+              action: 'placeholder_waiting',
+              message: 'AI 正在创作中，请稍候...',
+            } as InterruptInfo)
+            setCurrentStep(4)
+            setStreaming(true)
+            setStreamNode('')
+            setStreamDone([])
+            startPollingState(threadId, novelData.id)
+          } else {
+            setCurrentStep(0)
+          }
         }
       } catch (err: any) {
         if (cancelled) return
@@ -220,7 +253,10 @@ const NovelConfig = () => {
     }
 
     resumeNovel()
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+      stopPollingState()
+    }
   }, [urlNovelId])
 
   // ====== rewrite 参数兼容（保留但不使用） ======
@@ -255,11 +291,56 @@ const NovelConfig = () => {
     }
   }
 
+  // 停止轮询
+  const stopPollingState = () => {
+    if (pollingRef.current) {
+      clearInterval(pollingRef.current)
+      pollingRef.current = null
+    }
+  }
+
+  // 轮询等待工作流 interrupt
+  const startPollingState = (threadId: string, novelId: string) => {
+    let retries = 0
+    const maxRetries = 20  // ~60 秒
+
+    stopPollingState()
+    pollingRef.current = setInterval(async () => {
+      if (retries >= maxRetries) {
+        stopPollingState()
+        message.warning('获取工作流状态超时，请刷新页面')
+        setStreaming(false)
+        return
+      }
+      retries++
+      try {
+        const state = await workflowApi.getWorkflowState(threadId)
+        if (state.has_interrupt && state.interrupts?.length > 0) {
+          stopPollingState()
+          const iv = state.interrupts[0].value
+          setInterrupt(iv)
+          setCurrentStep(getStepFromAction(iv.action))
+          setStreaming(false)
+          if (iv.chapter_number) setChapterNum(iv.chapter_number)
+        }
+      } catch (_) {
+        // 轮询失败自动重试
+      }
+    }, 3000)
+  }
+
   // 调用工作流（流式版本）
   const invokeWorkflow = async (resumeValue?: any, tid?: string | null, nid?: string | null) => {
+    // 并发锁：已有进行中的调用则跳过
+    if (invokingRef.current) {
+      console.warn('[invokeWorkflow] 已有进行中的调用，跳过')
+      return
+    }
     const effectiveThreadId = tid || threadId
     const effectiveNovelId = nid || novelId
     if (!effectiveThreadId) return
+
+    invokingRef.current = true
 
     // resumeValue === undefined → 首次启动工作流（新 input）
     // resumeValue 为 { input: {...} } 对象 → 直接使用（恢复模式加载已有状态，跳过设定阶段）
@@ -280,6 +361,11 @@ const NovelConfig = () => {
 
     try {
       const response = await workflowApi.streamWorkflow(effectiveThreadId, data)
+      // 处理后端 409（工作流正在执行中）
+      if (response.status === 409) {
+        message.warning('AI 正在创作中，请稍候...')
+        return
+      }
       if (!response.ok) {
         const errText = await response.text()
         throw new Error(errText || `HTTP ${response.status}`)
@@ -363,7 +449,16 @@ const NovelConfig = () => {
     } catch (error: any) {
       setStreaming(false)
       console.error('[invokeWorkflow] error:', error)
+      // 处理后端 409（捕获来自状态查询或其他路径）
+      if (error?.status === 409 || error?.response?.status === 409 ||
+          (error.message && error.message.includes('409')) ||
+          (error.message && error.message.includes('正在执行'))) {
+        message.warning('该工作流正在执行中，请稍候...')
+        return
+      }
       message.error(`处理失败: ${error.message || '未知错误'}`)
+    } finally {
+      invokingRef.current = false
     }
   }
 

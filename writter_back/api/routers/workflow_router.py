@@ -73,6 +73,12 @@ async def invoke_workflow(
     if request.command is not None:
         logger.info(f"【工作流API·{mode}】请求体={request.model_dump()}")
     
+    # 检查是否正在执行中（防重复）
+    if orchestrator.is_executing(thread_id):
+        logger.info(f"【工作流API·{mode}】thread_id={thread_id} 正在执行中, 拒绝并发请求")
+        raise HTTPException(status_code=409, detail="该工作流正在执行中，请等待完成后再试")
+    orchestrator.mark_executing(thread_id, True)
+    
     import asyncio
     
     try:
@@ -123,6 +129,8 @@ async def invoke_workflow(
         logger.info(f"【工作流API】错误 | thread_id={thread_id}, 错误={str(e)}")
         logger.info(f"{'='*60}")
         raise HTTPException(status_code=500, detail=f"工作流执行失败: {str(e)}")
+    finally:
+        orchestrator.mark_executing(thread_id, False)
 
 
 @router.get("/{thread_id}/state")
@@ -176,6 +184,12 @@ async def stream_workflow_post(
     orchestrator: NovelOrchestrator = Depends(get_orchestrator),
 ):
     """SSE 流式获取工作流执行过程（POST 版本，支持恢复）"""
+    # 检查是否正在执行中（防重复）
+    if orchestrator.is_executing(thread_id):
+        logger.info(f"【工作流API·SSE】thread_id={thread_id} 正在执行中, 拒绝并发请求")
+        raise HTTPException(status_code=409, detail="该工作流正在执行中，请等待完成后再试")
+    orchestrator.mark_executing(thread_id, True)
+
     from fastapi.responses import StreamingResponse
     from fastapi.encoders import jsonable_encoder
 
@@ -204,6 +218,8 @@ async def stream_workflow_post(
             traceback.print_exc()
             error_data = json.dumps({"error": str(e)}, ensure_ascii=False)
             yield f"data: {error_data}\n\n"
+        finally:
+            orchestrator.mark_executing(thread_id, False)
 
     return StreamingResponse(
         generate(),
@@ -218,6 +234,12 @@ async def stream_workflow(
     orchestrator: NovelOrchestrator = Depends(get_orchestrator),
 ):
     """SSE 流式获取工作流执行过程"""
+    # 检查是否正在执行中（防重复）
+    if orchestrator.is_executing(thread_id):
+        logger.info(f"【工作流API·SSE-GET】thread_id={thread_id} 正在执行中, 拒绝并发请求")
+        raise HTTPException(status_code=409, detail="该工作流正在执行中，请等待完成后再试")
+    orchestrator.mark_executing(thread_id, True)
+
     from fastapi.responses import StreamingResponse
     from fastapi.encoders import jsonable_encoder
 
@@ -235,6 +257,8 @@ async def stream_workflow(
             traceback.print_exc()
             error_data = json.dumps({"error": str(e)}, ensure_ascii=False)
             yield f"data: {error_data}\n\n"
+        finally:
+            orchestrator.mark_executing(thread_id, False)
 
     return StreamingResponse(
         generate(),
