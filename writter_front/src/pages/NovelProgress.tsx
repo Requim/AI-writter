@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Card, Progress, List, Button, message, Space, Tag, Modal, Input, Typography, Divider } from 'antd'
-import { ArrowLeftOutlined, EditOutlined, PlayCircleOutlined, BookOutlined } from '@ant-design/icons'
+import { Card, Progress, List, Button, message, Space, Tag, Modal, Input, Typography, Divider, Popconfirm, Checkbox } from 'antd'
+import { ArrowLeftOutlined, EditOutlined, PlayCircleOutlined, BookOutlined, DeleteOutlined } from '@ant-design/icons'
 import { novelApi } from '@/api/novel'
 import type { NovelResponse, ProgressResponse, ChapterResponse } from '@/api/novel'
 import '@/App.css'
@@ -95,11 +95,44 @@ const NovelProgress = () => {
     }
   }
 
+  // 批量删除
+  const [batchMode, setBatchMode] = useState(false)
+  const [selectedChapterIds, setSelectedChapterIds] = useState<Set<string>>(new Set())
+  const [deleting, setDeleting] = useState(false)
+
+  const toggleSelectChapter = (id: string) => {
+    setSelectedChapterIds(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id); else next.add(id)
+      return next
+    })
+  }
+
+  const handleBatchDelete = async () => {
+    if (selectedChapterIds.size === 0) return
+    setDeleting(true)
+    try {
+      await novelApi.batchDeleteChapters(novelId!, Array.from(selectedChapterIds))
+      message.success(`已删除 ${selectedChapterIds.size} 章`)
+      setBatchMode(false)
+      setSelectedChapterIds(new Set())
+      loadData()
+    } catch (err: any) {
+      message.error('删除失败：' + (err?.message || '未知错误'))
+    } finally {
+      setDeleting(false)
+    }
+  }
+
+  const allSelected = chapters.length > 0 && selectedChapterIds.size === chapters.length
+
   const handleContinue = () => {
     navigate(`/novel/${novelId}`)
   }
 
   const isCompleted = progress.status === 'completed' || novel?.status === 'completed'
+  // 总章节数直接从大纲取
+  const totalChapters = novel?.total_outline?.total_chapters || progress.total_chapters || chapters.length || 1
 
   return (
     <div style={{ maxWidth: 900, margin: '40px auto', padding: '0 20px' }}>
@@ -108,11 +141,13 @@ const NovelProgress = () => {
         <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/')}>
           返回书架
         </Button>
-        {!isCompleted && (
-          <Button type="primary" icon={<PlayCircleOutlined />} onClick={handleContinue}>
-            继续创作
-          </Button>
-        )}
+        <Space>
+          {!batchMode && !isCompleted && (
+            <Button type="primary" icon={<PlayCircleOutlined />} onClick={handleContinue}>
+              继续创作
+            </Button>
+          )}
+        </Space>
       </div>
 
       {/* 小说信息卡片 */}
@@ -151,12 +186,12 @@ const NovelProgress = () => {
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
             <Progress
-              percent={Math.round(progress.percentage || 0)}
+              percent={Math.round(totalChapters > 0 ? (chapters.length / totalChapters * 100) : 0)}
               style={{ flex: 1 }}
               strokeColor={isCompleted ? '#52c41a' : '#1677ff'}
             />
             <Text type="secondary" style={{ whiteSpace: 'nowrap', fontSize: 14 }}>
-              {progress.current_chapter} / {progress.total_chapters} 章
+              {chapters.length} / {totalChapters} 章
             </Text>
           </div>
         </Card>
@@ -168,6 +203,37 @@ const NovelProgress = () => {
           <Space>
             <span>章节目录</span>
             <Tag>{chapters.length} 章</Tag>
+          </Space>
+        }
+        extra={
+          <Space>
+            {!batchMode ? (
+              <Button size="small" icon={<DeleteOutlined />} onClick={() => setBatchMode(true)}>
+                批量删除
+              </Button>
+            ) : (
+              <>
+                <Checkbox checked={allSelected} onChange={() => {
+                  if (allSelected) setSelectedChapterIds(new Set())
+                  else setSelectedChapterIds(new Set(chapters.map(c => c.id)))
+                }}>
+                  全选
+                </Checkbox>
+                <Popconfirm
+                  title={`确定删除选中的 ${selectedChapterIds.size} 章？`}
+                  onConfirm={handleBatchDelete}
+                  okText="确定"
+                  cancelText="取消"
+                >
+                  <Button danger size="small" loading={deleting} disabled={selectedChapterIds.size === 0}>
+                    删除 ({selectedChapterIds.size})
+                  </Button>
+                </Popconfirm>
+                <Button size="small" onClick={() => { setBatchMode(false); setSelectedChapterIds(new Set()) }}>
+                  取消
+                </Button>
+              </>
+            )}
           </Space>
         }
         loading={loading}
@@ -187,22 +253,31 @@ const NovelProgress = () => {
                   padding: '12px 16px',
                   borderRadius: 8,
                   marginBottom: 4,
-                  cursor: 'pointer',
+                  cursor: batchMode ? 'default' : 'pointer',
                   transition: 'background 0.2s',
+                  background: selectedChapterIds.has(chapter.id) ? '#fff2f0' : undefined,
                 }}
-                onMouseEnter={(e) => (e.currentTarget.style.background = '#f5f5f5')}
-                onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
-                onClick={() => viewChapter(chapter)}
-                actions={[
+                onMouseEnter={(e) => { if (!batchMode) e.currentTarget.style.background = '#f5f5f5' }}
+                onMouseLeave={(e) => { if (!batchMode) e.currentTarget.style.background = 'transparent' }}
+                onClick={() => { if (batchMode) toggleSelectChapter(chapter.id); else viewChapter(chapter) }}
+                actions={batchMode ? [] : [
                   <Button
                     type="link"
                     icon={<EditOutlined />}
                     onClick={(e) => { e.stopPropagation(); viewChapter(chapter) }}
                   >
                     查看
-                  </Button>
+                  </Button>,
                 ]}
               >
+                {batchMode && (
+                  <div style={{ marginRight: 12 }} onClick={(e) => e.stopPropagation()}>
+                    <Checkbox
+                      checked={selectedChapterIds.has(chapter.id)}
+                      onChange={() => toggleSelectChapter(chapter.id)}
+                    />
+                  </div>
+                )}
                 <List.Item.Meta
                   avatar={
                     <div style={{

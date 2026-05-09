@@ -1,4 +1,6 @@
-"""持久化节点 - 保存章节，更新进度"""
+"""持久化节点 - 章节阶段写 chapters 表，设定阶段直接放行"""
+import logging
+logger = logging.getLogger("uvicorn")
 from langgraph.types import Command
 from typing import Literal
 from uuid import uuid4, UUID
@@ -7,26 +9,63 @@ from application.schemas.agent_state import NovelAgentState
 
 
 async def persist_node(state: NovelAgentState, config) -> Command[Literal["progress_check_node"]]:
-    """
-    持久化节点 - 保存章节到数据库，更新进度，存储长期记忆
-    """
     repository = config["configurable"].get("novel_repository")
     memory_service = config["configurable"].get("memory_service")
-    novel_id = config["configurable"].get("thread_id", "")  # thread_id = novel_id
+    novel_id = config["configurable"].get("thread_id", "")
     current_index = state.get("current_chapter_index", 0)
-    repo_status = '✅ 已连接' if repository else '❌ 不可用'
-    mem_status = '✅ 已连接' if memory_service else '❌ 不可用'
-    print(f"{'='*60}", flush=True)
-    print(f"【持久化节点】进入 | 小说ID={novel_id}, 章节索引={current_index}, 数据库={repo_status}, 记忆服务={mem_status}", flush=True)
+    current_chapter_content = state.get("current_chapter_content", "")
 
+    # 没有章节内容 = 设定阶段（刚走完 outline_node），同步 title/summary/outline 到 novels 表
+    if not current_chapter_content:
+        logger.info(f"{'='*60}")
+        logger.info(f"【持久化节点】进入 | novel_id={novel_id}, 阶段=设定")
+        if repository and novel_id:
+            try:
+                novel = await repository.find_by_id(novel_id)
+                if novel:
+                    title_val = state.get("title")
+                    summary_val = state.get("summary")
+                    outline_raw = state.get("total_outline")
+                    updated = False
+                    if title_val:
+                        novel.title = title_val
+                        updated = True
+                    if summary_val:
+                        novel.summary = summary_val
+                        updated = True
+                    if isinstance(outline_raw, dict):
+                        from service.value_objects.outline import Outline
+                        outline_fields = {'story_background', 'main_characters', 'main_plot', 'chapters', 'writing_style', 'total_chapters'}
+                        filtered = {k: v for k, v in outline_raw.items() if k in outline_fields}
+                        try:
+                            novel.total_outline = Outline(**filtered)
+                        except Exception:
+                            pass
+                        updated = True
+                    # 同步 progress.total_chapters（用于进度条显示）
+                    total_ch = outline_raw.get("total_chapters", 0) if isinstance(outline_raw, dict) else 0
+                    if total_ch and novel.progress:
+                        old_progress = novel.progress.to_dict() if hasattr(novel.progress, 'to_dict') else {}
+                        old_progress["total_chapters"] = total_ch
+                        from service.value_objects.progress import Progress
+                        novel.progress = Progress(**old_progress)
+                        updated = True
+                    if updated:
+                        await repository.update(novel)
+                        logger.info(f"【持久化节点】novels 表已更新 | title={novel.title}, total_chapters={total_ch}")
+            except Exception as e:
+                logger.info(f"【持久化节点】更新 novels 失败(降级): {e}")
+        logger.info(f"【持久化节点】完成 -> 进度检查节点")
+        logger.info(f"{'='*60}")
+        return Command(goto="progress_check_node")
+
+    # ==================== 章节阶段：保存章节 + 进度 ====================
     current_chapter_content = state.get("current_chapter_content", "")
     chapter_outline = (
         state.get("chapter_outlines", [{}])[-1]
         if state.get("chapter_outlines") else {}
     )
-    current_index = state.get("current_chapter_index", 0)
 
-    # 构造章节数据
     chapter_id = str(uuid4())
     completed_chapter = {
         "id": chapter_id,
@@ -38,13 +77,10 @@ async def persist_node(state: NovelAgentState, config) -> Command[Literal["progr
         "status": "completed",
     }
 
-    # 持久化到数据库
     if repository and novel_id:
         try:
             from service.entities.chapter import Chapter
-            from service.ports.novel_repository import NovelRepository
             from uuid import UUID
-
             chapter_entity = Chapter(
                 id=UUID(chapter_id),
                 novel_id=UUID(novel_id),
@@ -58,29 +94,24 @@ async def persist_node(state: NovelAgentState, config) -> Command[Literal["progr
                 updated_at=datetime.now(),
             )
             await repository.save_chapter(novel_id, chapter_entity)
-            print(f"【持久化节点】章节已保存到数据库 | chapter_index={current_index}, title={completed_chapter['title']}, word_count={completed_chapter['word_count']}", flush=True)
+            logger.info(f"【持久化节点】章节已保存 | ch={current_index}, {completed_chapter['title']}, {completed_chapter['word_count']}字")
 
-            # 更新小说进度
-            # find_by_id_with_chapters 已加载所有章节并计算了进度，无需再 add_chapter
             novel = await repository.find_by_id_with_chapters(novel_id)
             if novel:
                 await repository.update(novel)
-                print(f"【持久化节点】小说进度已更新 | novel_id={novel_id}", flush=True)
+                logger.info(f"【持久化节点】进度已更新")
         except Exception as e:
-            print(f"【持久化节点】数据库保存失败(降级处理): {e}", flush=True)
-            # 降级：只更新状态，不中断流程
+            logger.info(f"【持久化节点】章节保存失败(降级): {e}")
             pass
 
-    # 存储到长期记忆
     if memory_service and novel_id:
         try:
             await memory_service.store_chapter_memory(novel_id, completed_chapter)
-            print(f"【持久化节点】章节已存入长期记忆", flush=True)
+            logger.info(f"【持久化节点】长期记忆已存储")
         except Exception as e:
-            print(f"【持久化节点】长期记忆存储失败(降级处理): {e}", flush=True)
+            logger.info(f"【持久化节点】记忆存储失败(降级): {e}")
             pass
 
-    # 更新进度
     total_outline_raw = state.get("total_outline")
     if isinstance(total_outline_raw, str):
         import json as _json
@@ -88,19 +119,12 @@ async def persist_node(state: NovelAgentState, config) -> Command[Literal["progr
             total_outline_raw = _json.loads(total_outline_raw)
         except Exception:
             total_outline_raw = {}
-    total_chapters = (
-        total_outline_raw.get("total_chapters", 0)
-        if isinstance(total_outline_raw, dict)
-        else 0
-    )
-    new_percentage = (
-        ((current_index + 1) / total_chapters * 100)
-        if total_chapters > 0 else 0
-    )
+    total_chapters = total_outline_raw.get("total_chapters", 0) if isinstance(total_outline_raw, dict) else 0
+    new_percentage = ((current_index + 1) / total_chapters * 100) if total_chapters > 0 else 0
     is_completed = (current_index + 1) >= total_chapters
 
-    print(f"【持久化节点】完成 -> 进度检查节点 | 进度={new_percentage:.1f}%, 小说完结={'是' if is_completed else '否'}", flush=True)
-    print(f"{'='*60}", flush=True)
+    logger.info(f"【持久化节点】完成 -> 进度检查节点 | {new_percentage:.1f}%, 完结={'是' if is_completed else '否'}")
+    logger.info(f"{'='*60}")
     return Command(
         goto="progress_check_node",
         update={
@@ -108,5 +132,10 @@ async def persist_node(state: NovelAgentState, config) -> Command[Literal["progr
             "progress_percentage": new_percentage,
             "is_completed": is_completed,
             "current_chapter_index": current_index + 1,
+            # 清理临时状态，防止下一章路由误判
+            "current_chapter_content": "",
+            "reflection_issues": [],
+            "user_decision": {},
+            "memory_context": "",
         }
     )

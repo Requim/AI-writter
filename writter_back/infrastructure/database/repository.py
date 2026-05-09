@@ -174,6 +174,14 @@ class PostgresNovelRepository(NovelRepository):
             await session.execute(stmt)
             await session.commit()
 
+    async def delete_chapter(self, chapter_id: str) -> None:
+        """删除单个章节"""
+        from .models import ChapterModel
+        async with self.async_session() as session:
+            stmt = delete(ChapterModel).where(ChapterModel.id == uuid.UUID(chapter_id))
+            await session.execute(stmt)
+            await session.commit()
+
     # --- Chapter operations ---
 
     async def save_chapter(self, novel_id: str, chapter: Chapter) -> Chapter:

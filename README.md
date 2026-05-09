@@ -1,6 +1,6 @@
 # AI 小说自动创作系统 (NovelWriter)
 
-> 基于 LangGraph + PostgreSQL + FastAPI + Vue 3 构建的具备**长期记忆**、**大纲规划**和**反思修正**能力的 AI Agent 小说创作系统。
+> 基于 LangGraph + PostgreSQL + FastAPI + React 19 构建的具备**长期记忆**、**大纲规划**和**反思修正**能力的 AI Agent 小说创作系统。
 
 ---
 
@@ -23,7 +23,7 @@
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                     前端层 (Frontend)                       │
-│  writter_front/  (Vue 3 + TypeScript + Element Plus)       │
+│  writter_front/  (React 19 + TypeScript + Ant Design)       │
 │  - 小说配置界面    - 进度可视化    - 中断处理UI          │
 └──────────────────────────┬──────────────────────────────────┘
                            │ REST API / SSE Stream
@@ -175,18 +175,22 @@ NovelWritter/
 │   └── api/              # API层
 │       ├── main.py        # FastAPI 入口 + 生命周期
 │       └── routers/       # FastAPI 路由（novel, workflow）
-└── writter_front/            # 前端（Vue 3 + Vite）
-    ├── package.json        # 依赖配置
-    ├── vite.config.ts      # Vite 配置（代理 /api）
-    ├── tsconfig.json       # TypeScript 配置
+└── writter_front/            # 前端（React 19 + Vite）
+    ├── package.json        # 依赖配置（React 19, Ant Design 6, Zustand 5）
+    ├── vite.config.ts      # Vite 配置（@ 别名、/api 代理、React 插件）
+    ├── tsconfig.json       # TypeScript 项目引用
+    ├── tsconfig.app.json   # 应用 TS 配置
     ├── README.md           # 前端详细文档
     └── src/
-        ├── api/           # Axios 客户端（novel.ts, client.ts）
-        ├── views/         # 页面组件
-        │   ├── NovelConfig.vue    # 小说配置（5步向导 + interrupt）
-        │   └── NovelProgress.vue  # 进度查看（进度条 + 章节列表）
-        ├── router/        # Vue Router
-        └── main.ts        # 入口文件
+        ├── api/           # Axios 客户端（client.ts, novel.ts）
+        ├── pages/         # 页面组件
+        │   ├── BookShelf.tsx       # 书架（卡片网格 + 批量删除）
+        │   ├── NovelConfig.tsx     # 创作配置（6步向导 + interrupt）
+        │   ├── NovelProgress.tsx   # 进度查看（进度条 + 章节编辑）
+        │   └── Login.tsx           # 用户登录
+        ├── stores/        # Zustand 状态管理（novelStore.ts）
+        ├── App.tsx        # 根组件（路由 + ConfigProvider）
+        └── main.tsx       # 入口文件
 ```
 
 ---
@@ -358,14 +362,19 @@ POST /api/v1/workflows/{thread_id}/invoke
 
 ### 前端进度
 
-- [x] 基础脚手架 (Vue 3 + TypeScript + Vite)
-- [x] API客户端封装 (Axios + TypeScript 类型)
-- [x] 小说配置页面 (NovelConfig.vue - 5步向导 + interrupt)
-- [x] 进度查看页面 (NovelProgress.vue - 进度条 + 章节列表)
-- [x] 工作流中断处理UI (4种 interrupt action 响应)
-- [ ] 章节编辑器 (富文本编辑 + 实时预览)
-- [ ] 章节查看功能 (NovelProgress.vue viewChapter)
-- [ ] 用户认证模块 (JWT + 登录/注册)
+- [x] 基础脚手架 (React 19 + TypeScript + Vite)
+- [x] API客户端封装 (Axios + 拦截器 + TypeScript 类型)
+- [x] Zustand 状态管理 (novelStore)
+- [x] 书架页面 (BookShelf.tsx - 卡片网格 + 批量删除)
+- [x] 创作配置页面 (NovelConfig.tsx - 6步向导 + SSE流式通信)
+- [x] 进度查看页面 (NovelProgress.tsx - 章节目录 + 章节编辑弹窗)
+- [x] 工作流中断处理UI (6种 interrupt action 响应)
+- [x] 章节查看/编辑功能 (Modal + TextArea)
+- [x] 登录页面 (Login.tsx)
+- [ ] 公共组件库 (components/)
+- [ ] 全局类型定义 (types/)
+- [ ] 用户认证模块完整对接后端
+- [ ] 单元测试
 
 ---
 
@@ -453,7 +462,7 @@ curl http://localhost:8000/api/v1/novels/{novel_id}/chapters
 
 | 层级 | 技术 |
 |------|------|
-| 前端 | React 18, TypeScript, Vite, Ant Design, Zustand, Axios |
+| 前端 | React 19, TypeScript, Vite, Ant Design 6, Zustand 5, Axios |
 | API | FastAPI, Uvicorn, Pydantic |
 | Agent | LangGraph 0.2+, LangChain Core |
 | LLM | OpenAI GPT-4o, Anthropic Claude, DeepSeek |

@@ -16,6 +16,7 @@ class NovelAgentState(TypedDict):
     
     # ========== 系统生成区 ==========
     generated_title: Optional[str]            # AI生成的书名（当用户未提供时）
+    title_story_hint: Optional[str]           # AI生成书名时附带的"一句话卖点"，联动传给简介生成
     generated_summary: Optional[str]          # AI生成的简介
     generated_outline: Optional[Dict]         # AI生成的总纲领
     current_chapter_index: int                # 当前处理的章节索引
@@ -38,3 +39,13 @@ class NovelAgentState(TypedDict):
     
     # ========== LLM配置（注入用） ==========
     llm_config: Optional[Dict]                # LLM配置，用于节点中获取LLM实例
+
+    # ========== 内部路由 ==========
+    __next_node__: Optional[str]               # persist_node 设定阶段的目标节点
+    __route__: Optional[str]                   # workflow_builder 条件路由用
+    
+    # ========== Agent 驱动路由（v2） ==========
+    graph_version: Optional[str]               # "v1"(固定DAG) / "v2"(Agent驱动)
+    phase: Optional[str]                       # "setup" / "writing" / "complete"
+    next_tool: Optional[str]                   # router_agent 选定的下一个工具名
+    router_reasoning: Optional[str]            # LLM 路由决策原因（调试用）

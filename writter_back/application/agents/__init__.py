@@ -10,6 +10,7 @@ from application.agents.revision_node import revision_node
 from application.agents.persist_node import persist_node
 from application.agents.progress_check_node import progress_check_node
 from application.agents.memory_retrieval_node import memory_retrieval_node
+from application.agents.router_agent import router_agent
 
 __all__ = [
     "type_confirmation_node",
@@ -23,4 +24,5 @@ __all__ = [
     "persist_node",
     "progress_check_node",
     "memory_retrieval_node",
+    "router_agent",
 ]

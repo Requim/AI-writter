@@ -1,4 +1,6 @@
 """类型确认节点 - 强制用户输入，使用interrupt"""
+import logging
+logger = logging.getLogger("uvicorn")
 from langgraph.types import interrupt, Command
 from typing import Literal
 from application.schemas.agent_state import NovelAgentState
@@ -9,12 +11,12 @@ def type_confirmation_node(state: NovelAgentState) -> Command[Literal["title_nod
     类型确认节点 - 强制用户输入小说类型
     使用 interrupt() 暂停，等待用户通过 API 提供 novel_type
     """
-    print(f"{'='*60}", flush=True)
-    print(f"【类型确认节点】进入 | 小说类型={state.get('novel_type', '未设置')}", flush=True)
+    logger.info(f"{'='*60}")
+    logger.info(f"【类型确认节点】进入 | 小说类型={state.get('novel_type', '未设置')}")
     # 如果已设置（通过 resume 传入），直接通过
     if state.get("novel_type"):
-        print(f"【类型确认节点】跳过 -> 书名节点 | 类型已设置: {state['novel_type']}", flush=True)
-        print(f"{'='*60}", flush=True)
+        logger.info(f"【类型确认节点】跳过 -> 书名节点 | 类型已设置: {state['novel_type']}")
+        logger.info(f"{'='*60}")
         return Command(goto="title_node")
     
     # 可选类型列表
@@ -41,11 +43,11 @@ def type_confirmation_node(state: NovelAgentState) -> Command[Literal["title_nod
     
     # 验证用户输入
     if user_input not in available_types:
-        print(f"【类型确认节点】输入无效({user_input})，重新等待用户输入", flush=True)
+        logger.info(f"【类型确认节点】输入无效({user_input})，重新等待用户输入")
         return Command(goto="type_confirmation_node")
     
-    print(f"【类型确认节点】用户选择了类型: {available_types.get(user_input, user_input)} -> 书名节点", flush=True)
-    print(f"{'='*60}", flush=True)
+    logger.info(f"【类型确认节点】用户选择了类型: {available_types.get(user_input, user_input)} -> 书名节点")
+    logger.info(f"{'='*60}")
     return Command(
         goto="title_node",
         update={"novel_type": user_input}

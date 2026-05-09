@@ -1,4 +1,6 @@
 """LLM适配器基类"""
+import logging
+logger = logging.getLogger("uvicorn")
 import json
 import re
 from abc import abstractmethod
@@ -16,8 +18,18 @@ def _repair_json(raw: str) -> str:
         raw = raw[start:end + 1]
     raw = re.sub(r',\s*}', '}', raw)
     raw = re.sub(r',\s*]', ']', raw)
+    # 补全不匹配的引号
     if raw.count('"') % 2 != 0:
         raw = raw.rstrip() + '"'
+    # 补全未闭合的花括号（截断场景）
+    opens = raw.count('{')
+    closes = raw.count('}')
+    if opens > closes:
+        raw += '}' * (opens - closes)
+    opens_b = raw.count('[')
+    closes_b = raw.count(']')
+    if opens_b > closes_b:
+        raw += ']' * (opens_b - closes_b)
     return raw
 
 
@@ -31,7 +43,7 @@ def safe_json_parse(content: str) -> Dict[str, Any]:
         try:
             return json.loads(_repair_json(content))
         except json.JSONDecodeError:
-            print(f"【JSON解析】修复后仍失败，返回空字典。内容前200字符: {content[:200]}", flush=True)
+            logger.info(f"【JSON解析】修复后仍失败，返回空字典。内容前200字符: {content[:200]}")
             return {}
 
 

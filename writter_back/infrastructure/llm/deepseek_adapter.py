@@ -1,4 +1,6 @@
 """DeepSeek适配器"""
+import logging
+logger = logging.getLogger("uvicorn")
 import json
 import openai
 from typing import Dict, List, Optional, Any
@@ -58,17 +60,17 @@ class DeepSeekAdapter(BaseLLMAdapter):
                 return result
 
             last_error = ValueError(f"JSON解析失败: {content[:200]}")
-            print(f"【DeepSeek】JSON解析失败(第{attempt+1}次)", flush=True)
+            logger.info(f"【DeepSeek】JSON解析失败(第{attempt+1}次)")
 
             if attempt == max_retries:
                 break
 
             # 追加错误反馈，让模型修正格式
-            print(f"【DeepSeek】重试第{attempt+2}次...", flush=True)
+            logger.info(f"【DeepSeek】重试第{attempt+2}次...")
             messages.append({"role": "assistant", "content": content[:500]})
             messages.append({"role": "user", "content": "你的上一条回复 JSON 格式有误，请严格按照 JSON 格式重新输出，确保所有逗号、引号、花括号正确闭合。"})
 
-        print(f"【DeepSeek】所有重试失败，返回空字典。最后错误: {last_error}", flush=True)
+        logger.info(f"【DeepSeek】所有重试失败，返回空字典。最后错误: {last_error}")
         return {}
 
     async def chat(self, messages: List[Dict[str, str]], temperature: float = 0.7) -> str:

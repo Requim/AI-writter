@@ -41,5 +41,5 @@ class Chapter:
         self.reflection_issues = []
     
     def is_valid_word_count(self) -> bool:
-        """检查字数是否在3000-6000范围内"""
-        return 3000 <= self.word_count <= 6000
+        """检查字数是否在3000-7000范围内"""
+        return 3000 <= self.word_count <= 7000

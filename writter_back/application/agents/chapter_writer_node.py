@@ -1,19 +1,310 @@
-"""章节内容填充节点 - 根据细纲生成3000-6000字内容"""
+"""章节内容填充节点 - 场景队列生成 + 动态字数校准
+
+策略：
+1. 场景数 >= 3 → 场景队列生成：逐个场景生成，上下文透传 + 动态校准
+2. 场景数 < 3 → 降级到传统单次生成
+"""
+import logging
+logger = logging.getLogger("uvicorn")
 from langgraph.types import Command
 from typing import Literal
 from application.schemas.agent_state import NovelAgentState
 from application.prompts.chapter_writer_prompts import (
     build_chapter_writer_prompt,
+    build_first_scene_prompt,
+    build_next_scene_prompt,
+    build_scene_continue_prompt,
     build_chapter_continue_prompt,
     build_chapter_system_prompt,
     CHAPTER_WRITER_TEMPERATURE,
 )
 
+# 字数约束常量
+MIN_WORDS = 3000
+MAX_WORDS = 7000
+TRUNCATE_TRIGGER = 7500  # 超过此值触发截断（给语义截断留缓冲）
+TARGET_CHAPTER_WORDS = 5000  # 整章理想字数
 
-async def chapter_writer_node(state: NovelAgentState, config) -> Command[Literal["reflection_node"]]:
+# 场景队列生成参数
+SCENE_QUEUE_MIN_SCENES = 3       # 至少3个场景才启用队列生成
+FIRST_SCENE_WEIGHT = 1.1         # 第一场景字数权重（略多）
+MAX_SCENE_WORDS_RATIO = 1.5      # 单场景最大倍数（相对目标）
+
+
+def _semantic_truncate(text: str, target: int = MAX_WORDS) -> str:
+    """按中文语义边界截断文本，在最近的句子结束处截断"""
+    if len(text) <= target:
+        return text
+
+    # 从 target 位置往回找最近的中文句末标点
+    search_start = max(target - 1500, 0)
+    sentence_endings = {'。', '！', '？', '…', '\n'}
+    for i in range(target, search_start, -1):
+        if i < len(text) and text[i] in sentence_endings:
+            return text[:i + 1] + "\n\n[内容已截断，原稿过长，后续内容省略]"
+
+    # 找不到句末标点，找段落换行
+    for i in range(target, search_start, -1):
+        if i < len(text) and text[i] == '\n':
+            return text[:i] + "\n\n[内容已截断，原稿过长，后续内容省略]"
+
+    # 兜底：在 target 处直接截断（带省略提示）
+    return text[:target] + "\n\n[内容已截断，原稿过长，后续内容省略]"
+
+
+def _distribute_scene_targets(num_scenes: int) -> list[int]:
+    """将整章目标字数分配到各场景
+
+    第一场景权重 1.1，其余均匀分布，确保总和 = TARGET_CHAPTER_WORDS
     """
-    章节内容填充节点 - 根据细纲生成3000-6000字内容
-    禁止注水，确保内容质量
+    if num_scenes <= 0:
+        return []
+    if num_scenes == 1:
+        return [TARGET_CHAPTER_WORDS]
+    base = TARGET_CHAPTER_WORDS // num_scenes
+    targets = [int(base * FIRST_SCENE_WEIGHT)] + [base] * (num_scenes - 1)
+    # 调整使总和精确等于 TARGET_CHAPTER_WORDS
+    diff = TARGET_CHAPTER_WORDS - sum(targets)
+    targets[-1] += diff
+    # 确保每场景不低于 800 字
+    targets = [max(800, t) for t in targets]
+    return targets
+
+
+def _build_prev_scene_digest(scene_outline: dict, generated_content: str) -> str:
+    """构建上一场景的摘要（用于上下文透传）
+
+    优先级：
+    1. 细纲中 events.result（结构化摘要，最可靠）
+    2. 细纲中 events.entry + events.struggle（综合摘要）
+    3. 生成内容的最后 150 字（兜底）
+    """
+    events = scene_outline.get('events', {})
+    if isinstance(events, dict):
+        result = events.get('result', '')
+        entry = events.get('entry', '')
+        struggle = events.get('struggle', '')
+        if result:
+            digest = f"场景落点：{result}"
+            if struggle:
+                digest += f"\n冲突核心：{struggle[:100]}"
+            return digest
+        if entry:
+            return f"场景概述：{entry[:100]} → {struggle[:100] if struggle else ''}"
+    # 兜底：从生成内容取结尾
+    return generated_content[-150:].strip() if generated_content else ""
+
+
+def _calibrate_next_scene(
+    prev_word_count: int,
+    prev_target: int,
+    next_target: int,
+) -> tuple[int, str]:
+    """动态字数校准：根据上一场景实际字数调整下一场景目标
+
+    Returns:
+        (adjusted_target, correction_note)
+    """
+    ratio = prev_word_count / prev_target if prev_target > 0 else 1.0
+
+    if ratio < 0.7:
+        # 上一场景太短 → 下一场景需要补偿
+        deficit = prev_target - prev_word_count
+        boost = int(deficit * 0.5)
+        adjusted = next_target + boost
+        note = (
+            f"⚠️ 上一场景节奏过快（仅{prev_word_count}字，目标{prev_target}字），"
+            f"请在接下来的场景中加强环境细节和对话博弈，补足字数缺口。"
+            f"本场景目标已上调至{adjusted}字。"
+        )
+        return adjusted, note
+
+    elif ratio > 1.3:
+        # 上一场景太长 → 适度精简
+        excess = prev_word_count - prev_target
+        reduce = int(excess * 0.3)
+        adjusted = max(800, next_target - reduce)
+        note = (
+            f"上一场景篇幅较长（{prev_word_count}字），"
+            f"请在接下来的场景中保持节奏，不必刻意拉长，"
+            f"聚焦于核心情节推进和信息增量。"
+        )
+        return adjusted, note
+
+    else:
+        # 正常范围，不作调整
+        return next_target, ""
+
+
+async def _scene_queue_generate(
+    scenes: list[dict],
+    chapter_outline: dict,
+    novel_type: str,
+    title: str,
+    memory_context: str,
+    llm,
+) -> str:
+    """场景队列生成：逐个场景生成，每步上下文透传 + 动态校准"""
+    chapter_num = chapter_outline.get('chapter_number', '?')
+    ch_title = chapter_outline.get('title', '')
+    internal_monologue = chapter_outline.get('internal_monologue', '')
+    logic_hooks = chapter_outline.get('logic_hooks', {})
+    num_scenes = len(scenes)
+
+    # 1. 字数分配
+    targets = _distribute_scene_targets(num_scenes)
+    logger.info(f"【场景队列】{num_scenes}个场景，字数目标分配: {targets}")
+
+    scene_contents: list[str] = []
+    adjusted_targets: list[int] = []
+
+    for i, scene in enumerate(scenes):
+        is_first = (i == 0)
+        is_last = (i == num_scenes - 1)
+        target = targets[i]
+
+        # 统一系统提示词
+        system_prompt = build_chapter_system_prompt(novel_type)
+
+        if is_first:
+            # ── Prompt A: 第一个场景（全量上下文） ──
+            prompt = build_first_scene_prompt(
+                scene=scene,
+                chapter_outline=chapter_outline,
+                novel_type=novel_type,
+                title=title,
+                chapter_num=chapter_num,
+                ch_title=ch_title,
+                memory_context=memory_context,
+                target_words=target,
+                total_scenes=num_scenes,
+                logic_hooks=logic_hooks,
+                internal_monologue=internal_monologue,
+            )
+        else:
+            # ── Prompt B: 后续场景（上下文透传 + 校准） ──
+            prev_scene = scenes[i - 1]
+            prev_content = scene_contents[-1]
+            prev_count = len(prev_content)
+            prev_target = adjusted_targets[-1] if adjusted_targets else targets[i - 1]
+
+            # 动态字数校准
+            adjusted_target, correction_note = _calibrate_next_scene(
+                prev_count, prev_target, target,
+            )
+
+            # 构建上一场景摘要
+            prev_digest = _build_prev_scene_digest(prev_scene, prev_content)
+
+            prompt = build_next_scene_prompt(
+                scene=scene,
+                chapter_outline=chapter_outline,
+                novel_type=novel_type,
+                title=title,
+                chapter_num=chapter_num,
+                ch_title=ch_title,
+                scene_index=i + 1,
+                total_scenes=num_scenes,
+                prev_scene_digest=prev_digest,
+                prev_word_count=prev_count,
+                correction_note=correction_note,
+                target_words=adjusted_target,
+                logic_hooks=logic_hooks,
+                internal_monologue=internal_monologue,
+                memory_context=memory_context,
+            )
+            target = adjusted_target
+
+        scene_tag = f"场景{i+1}/{num_scenes}"
+        logger.info(
+            f"【场景队列】生成{scene_tag} (目标:{target}字, "
+            f"{'首场景' if is_first else '后续'})",
+        )
+
+        # ── 生成场景内容 ──
+        content = await llm.generate(
+            prompt=prompt,
+            system_prompt=system_prompt,
+            temperature=CHAPTER_WRITER_TEMPERATURE,
+        )
+        actual_count = len(content)
+        logger.info(f"【场景队列】{scene_tag} 生成完成: {actual_count}字")
+
+        # ── 单场景字数不足 → 续写 ──
+        min_scene_words = max(600, target // 2)
+        if actual_count < min_scene_words:
+            logger.info(
+                f"【场景队列】{scene_tag} 字数不足 ({actual_count}<{min_scene_words})，"
+                f"正在扩展...",
+            )
+            correction = (
+                f"注意：当前场景目前仅{actual_count}字，远低于目标{target}字。"
+                f"请在保持质量的前提下充实描写和情节。"
+            )
+            extra_prompt = build_scene_continue_prompt(
+                word_count=actual_count,
+                target_words=target,
+                existing_content=content,
+                correction_note=correction,
+            )
+            extra = await llm.generate(
+                extra_prompt,
+                temperature=CHAPTER_WRITER_TEMPERATURE,
+            )
+            content += "\n\n" + extra
+            logger.info(
+                f"【场景队列】{scene_tag} 扩展后: {len(content)}字",
+            )
+
+        scene_contents.append(content)
+        adjusted_targets.append(target)
+
+    # 2. 拼接所有场景
+    logger.info(f"【场景队列】所有场景生成完成, 准备拼接...")
+    full_content = "\n\n".join(scene_contents)
+    logger.info(f"【场景队列】拼接后总字数: {len(full_content)}字")
+
+    return full_content
+
+
+async def _final_word_check(
+    content: str,
+    llm,
+    system_prompt: str,
+) -> str:
+    """最终字数检查：不足则扩展，过多则截断"""
+    word_count = len(content)
+
+    if word_count < MIN_WORDS:
+        logger.info(f"【字数检查】字数不足 ({word_count}字)，正在扩展内容...")
+        continue_prompt = build_chapter_continue_prompt(word_count, content)
+        additional_content = await llm.generate(
+            continue_prompt,
+            temperature=CHAPTER_WRITER_TEMPERATURE,
+        )
+        content += "\n\n" + additional_content
+        logger.info(f"【字数检查】扩展后字数: {len(content)}字")
+
+    elif word_count > TRUNCATE_TRIGGER:
+        logger.info(
+            f"【字数检查】字数过多 ({word_count}字)，按语义截断至{MAX_WORDS}字附近",
+        )
+        content = _semantic_truncate(content, MAX_WORDS)
+        logger.info(f"【字数检查】语义截断后字数: {len(content)}字")
+
+    else:
+        logger.info(f"【字数检查】字数合格: {word_count}字")
+
+    return content
+
+
+async def chapter_writer_node(
+    state: NovelAgentState,
+    config,
+) -> Command[Literal["router_agent"]]:
+    """
+    章节内容填充节点 - 场景队列生成 + 动态字数校准
+    当细纲 scenes >= 3 时启用场景队列，否则降级到单次生成。
     """
     chapter_outline = state.get("chapter_outlines", [{}])[-1]
     novel_type = state.get("novel_type", "")
@@ -22,47 +313,58 @@ async def chapter_writer_node(state: NovelAgentState, config) -> Command[Literal
     chapter_num = chapter_outline.get('chapter_number', '?')
     has_llm = bool(config["configurable"].get("llm_config", {}).get('llm_instance'))
     llm_status = '✅ 已加载' if has_llm else '❌ 不可用'
-    print(f"{'='*60}", flush=True)
-    print(f"【章节写作节点】进入 | 书名={title}, 第 {chapter_num} 章, LLM={llm_status}", flush=True)
-    
+    logger.info(f"{'='*60}")
+    logger.info(
+        f"【章节写作节点】进入 | 书名={title}, 第{chapter_num}章, LLM={llm_status}",
+    )
+
     # 从 config.configurable 获取 LLM 实例
     llm_config = config["configurable"].get("llm_config", {})
     llm = llm_config.get("llm_instance")
-    
+
     if not llm:
-        print(f"【章节写作节点】LLM不可用，跳过 -> 反思节点", flush=True)
-        print(f"{'='*60}", flush=True)
-        return Command(goto="reflection_node")
+        logger.info(f"【章节写作节点】LLM不可用，跳过 -> 路由节点")
+        logger.info(f"{'='*60}")
+        return Command(goto="router_agent")
 
-    prompt = build_chapter_writer_prompt(chapter_outline, novel_type, title, memory_context)
+    # 判断使用场景队列还是降级
+    scenes = chapter_outline.get("scenes", [])
+    use_scene_queue = len(scenes) >= SCENE_QUEUE_MIN_SCENES
+    system_prompt = build_chapter_system_prompt(novel_type)
 
-    content = await llm.generate(
-        prompt=prompt,
-        system_prompt=build_chapter_system_prompt(novel_type),
-        temperature=CHAPTER_WRITER_TEMPERATURE
-    )
-    
-    # 检查字数
-    word_count = len(content)
-    if word_count < 3000:
-        print(f"【章节写作节点】字数不足 ({word_count}字)，正在扩展内容...", flush=True)
-        continue_prompt = build_chapter_continue_prompt(word_count, content)
-        additional_content = await llm.generate(
-            continue_prompt,
-            temperature=CHAPTER_WRITER_TEMPERATURE
+    if use_scene_queue:
+        logger.info(
+            f"【章节写作节点】场景队列模式 | {len(scenes)}个场景",
         )
-        content += "\n\n" + additional_content
-        print(f"【章节写作节点】扩展后字数: {len(content)}字", flush=True)
-    elif word_count > 6500:
-        # 字数过多，截断（保留前6000字左右）
-        print(f"【章节写作节点】字数过多 ({word_count}字)，截断至6000字", flush=True)
-        content = content[:6000] + "\n\n[内容已截断，原稿过长]"
+        content = await _scene_queue_generate(
+            scenes=scenes,
+            chapter_outline=chapter_outline,
+            novel_type=novel_type,
+            title=title,
+            memory_context=memory_context,
+            llm=llm,
+        )
     else:
-        print(f"【章节写作节点】字数合格: {word_count}字", flush=True)
-    
-    print(f"【章节写作节点】完成 -> 反思节点 | 最终字数: {len(content)}字", flush=True)
-    print(f"{'='*60}", flush=True)
+        logger.info(
+            f"【章节写作节点】保守模式（场景数={len(scenes)} < {SCENE_QUEUE_MIN_SCENES}）",
+        )
+        prompt = build_chapter_writer_prompt(
+            chapter_outline, novel_type, title, memory_context,
+        )
+        content = await llm.generate(
+            prompt=prompt,
+            system_prompt=system_prompt,
+            temperature=CHAPTER_WRITER_TEMPERATURE,
+        )
+
+    # 最终字数检查
+    content = await _final_word_check(content, llm, system_prompt)
+
+    logger.info(
+        f"【章节写作节点】完成 -> 路由节点 | 最终字数: {len(content)}字",
+    )
+    logger.info(f"{'='*60}")
     return Command(
-        goto="reflection_node",
-        update={"current_chapter_content": content}
+        goto="router_agent",
+        update={"current_chapter_content": content},
     )

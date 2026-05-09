@@ -1,4 +1,6 @@
 """章节细纲生成节点 - 用户输入优先，否则AI生成"""
+import logging
+logger = logging.getLogger("uvicorn")
 from langgraph.types import interrupt, Command
 from typing import Literal
 from application.schemas.agent_state import NovelAgentState
@@ -24,12 +26,12 @@ async def chapter_outline_node(state: NovelAgentState, config) -> Command[Litera
     memory_context = state.get("memory_context", "")
     has_user_outline = 'chapter_outlines_input' in state and bool(state.get('chapter_outlines_input'))
     mem_status = '✅ 有' if memory_context else '❌ 无'
-    print(f"{'='*60}", flush=True)
-    print(f"【章节细纲节点】进入 | 书名={title}, 第 {current_index+1} 章, 用户已提供细纲={'是' if has_user_outline else '否'}, 前文记忆={mem_status}", flush=True)
+    logger.info(f"{'='*60}")
+    logger.info(f"【章节细纲节点】进入 | 书名={title}, 第 {current_index+1} 章, 用户已提供细纲={'是' if has_user_outline else '否'}, 前文记忆={mem_status}")
     
     if state.get("chapter_outlines_input"):
-        print(f"【章节细纲节点】使用用户提供的细纲 -> 章节写作节点", flush=True)
-        print(f"{'='*60}", flush=True)
+        logger.info(f"【章节细纲节点】使用用户提供的细纲 -> 章节写作节点")
+        logger.info(f"{'='*60}")
         return Command(goto="chapter_writer_node")
     
     # 从 config.configurable 获取 LLM 实例
@@ -37,8 +39,8 @@ async def chapter_outline_node(state: NovelAgentState, config) -> Command[Litera
     llm = llm_config.get("llm_instance")
     
     if not llm:
-        print(f"【章节细纲节点】LLM不可用，跳过 -> 章节写作节点", flush=True)
-        print(f"{'='*60}", flush=True)
+        logger.info(f"【章节细纲节点】LLM不可用，跳过 -> 章节写作节点")
+        logger.info(f"{'='*60}")
         return Command(goto="chapter_writer_node")
     
     # 从总纲领获取当前章节规划
@@ -60,10 +62,19 @@ async def chapter_outline_node(state: NovelAgentState, config) -> Command[Litera
         schema=CHAPTER_OUTLINE_SCHEMA
     )
     
+    # JSON 解析失败时使用默认细纲
+    if not ai_outline:
+        logger.info(f"【章节细纲节点】JSON解析失败，使用默认细纲")
+        ai_outline = {
+            "title": f"第{current_index + 1}章",
+            "estimated_word_count": 4500,
+            "scenes": [{"location": "", "characters": [], "events": [], "purpose": ""}],
+        }
+    
     # 验证字数规划
     word_count = ai_outline.get("estimated_word_count", 4500)
-    if word_count < 3000 or word_count > 6000:
-        ai_outline["estimated_word_count"] = max(3000, min(6000, word_count))
+    if word_count < 3000 or word_count > 7000:
+        ai_outline["estimated_word_count"] = max(3000, min(7000, word_count))
     
     # 暂停，让用户审阅/修改
     user_decision = interrupt({
@@ -75,19 +86,19 @@ async def chapter_outline_node(state: NovelAgentState, config) -> Command[Litera
     })
     
     if user_decision == "accept":
-        print(f"【章节细纲节点】用户接受AI细纲 -> 章节写作节点", flush=True)
-        print(f"{'='*60}", flush=True)
+        logger.info(f"【章节细纲节点】用户接受AI细纲 -> 路由节点")
+        logger.info(f"{'='*60}")
         return Command(
-            goto="chapter_writer_node",
+            goto="router_agent",
             update={"chapter_outlines": [ai_outline]}
         )
     elif user_decision == "regenerate":
-        print(f"【章节细纲节点】用户要求重新生成，循环回本节点", flush=True)
+        logger.info(f"【章节细纲节点】用户要求重新生成，循环回本节点")
         return Command(goto="chapter_outline_node")
     else:
-        print(f"【章节细纲节点】用户提供了自定义细纲 -> 章节写作节点", flush=True)
-        print(f"{'='*60}", flush=True)
+        logger.info(f"【章节细纲节点】用户提供了自定义细纲 -> 路由节点")
+        logger.info(f"{'='*60}")
         return Command(
-            goto="chapter_writer_node",
+            goto="router_agent",
             update={"chapter_outlines": [user_decision]}
         )

@@ -1,4 +1,6 @@
 """长期记忆检索节点"""
+import logging
+logger = logging.getLogger("uvicorn")
 from langgraph.types import Command
 from typing import Literal
 from application.schemas.agent_state import NovelAgentState
@@ -12,8 +14,8 @@ async def memory_retrieval_node(state: NovelAgentState, config) -> Command[Liter
     novel_id = config["configurable"].get("thread_id", "")  # thread_id = novel_id
     current_index = state.get("current_chapter_index", 0)
     memory_status = '✅ 已连接' if memory_service else '❌ 不可用'
-    print(f"{'='*60}", flush=True)
-    print(f"【记忆检索节点】进入 | 小说ID={novel_id}, 当前章节={current_index}, 记忆服务={memory_status}", flush=True)
+    logger.info(f"{'='*60}")
+    logger.info(f"【记忆检索节点】进入 | 小说ID={novel_id}, 当前章节={current_index}, 记忆服务={memory_status}")
 
     if memory_service and novel_id:
         # 从长期记忆服务检索前文上下文
@@ -31,9 +33,9 @@ async def memory_retrieval_node(state: NovelAgentState, config) -> Command[Liter
             )
         memory_context = "\n\n".join(memory_parts)
 
-    print(f"【记忆检索节点】完成 -> 章节细纲节点 | memory_context长度={len(memory_context)}字", flush=True)
-    print(f"{'='*60}", flush=True)
+    logger.info(f"【记忆检索节点】完成 -> 章节细纲节点 | memory_context长度={len(memory_context)}字")
+    logger.info(f"{'='*60}")
     return Command(
-        goto="chapter_outline_node",
+        goto="router_agent",
         update={"memory_context": memory_context}
     )

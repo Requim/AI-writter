@@ -1,4 +1,6 @@
 """工作流路由 - 支持 interrupt/resume"""
+import logging
+logger = logging.getLogger("uvicorn")
 from fastapi import APIRouter, HTTPException, Depends
 from typing import Optional, Any, Dict, AsyncGenerator
 from pydantic import BaseModel
@@ -8,6 +10,8 @@ from application.orchestrator import NovelOrchestrator
 from infrastructure.database.repository import PostgresNovelRepository
 from infrastructure.memory.postgres_memory import PostgresMemoryAdapter
 from config import settings
+
+from fastapi.responses import StreamingResponse
 
 router = APIRouter()
 
@@ -64,60 +68,60 @@ async def invoke_workflow(
     - 恢复调用：传入 command: {"resume": ...}
     """
     mode = '恢复' if request.command is not None else '启动'
-    print(f"{'='*60}", flush=True)
-    print(f"【工作流API·{mode}】进入 | thread_id={thread_id}", flush=True)
+    logger.info(f"{'='*60}")
+    logger.info(f"【工作流API·{mode}】进入 | thread_id={thread_id}")
     if request.command is not None:
-        print(f"【工作流API·{mode}】请求体={request.model_dump()}", flush=True)
+        logger.info(f"【工作流API·{mode}】请求体={request.model_dump()}")
     
     import asyncio
     
     try:
         if request.command is not None:
             resume_value = request.command.get("resume")
-            print(f"【工作流API·恢复】thread_id={thread_id}, 恢复值类型={type(resume_value).__name__}, 恢复值预览={str(resume_value)[:80]}", flush=True)
+            logger.info(f"【工作流API·恢复】thread_id={thread_id}, 恢复值类型={type(resume_value).__name__}, 恢复值预览={str(resume_value)[:80]}")
             try:
                 result = await asyncio.wait_for(
                     orchestrator.resume(thread_id, resume_value),
                     timeout=600.0
                 )
             except asyncio.TimeoutError:
-                print(f"【工作流API·恢复】超时! thread_id={thread_id}", flush=True)
+                logger.info(f"【工作流API·恢复】超时! thread_id={thread_id}")
                 raise HTTPException(status_code=504, detail="工作流执行超时，请稍后重试")
         else:
             input_data = request.input or {}
             input_data.setdefault("novel_id", thread_id)
-            print(f"【工作流API·启动】thread_id={thread_id}, 输入字段={list(input_data.keys())}", flush=True)
+            logger.info(f"【工作流API·启动】thread_id={thread_id}, 输入字段={list(input_data.keys())}")
             try:
                 result = await asyncio.wait_for(
                     orchestrator.invoke(thread_id, input_data),
                     timeout=600.0
                 )
             except asyncio.TimeoutError:
-                print(f"【工作流API·启动】超时! thread_id={thread_id}", flush=True)
+                logger.info(f"【工作流API·启动】超时! thread_id={thread_id}")
                 raise HTTPException(status_code=504, detail="工作流执行超时，请稍后重试")
         
         has_interrupt = "__interrupt__" in str(type(result)) or (isinstance(result, dict) and "__interrupt__" in result)
-        print(f"【工作流API·{mode}】完成 | thread_id={thread_id}, 结果类型={type(result).__name__}, 产生中断={'是' if has_interrupt else '否'}", flush=True)
+        logger.info(f"【工作流API·{mode}】完成 | thread_id={thread_id}, 结果类型={type(result).__name__}, 产生中断={'是' if has_interrupt else '否'}")
         # 诊断：打印中断数据的前200字符
         if has_interrupt and isinstance(result, dict):
             interrupt_raw = result.get("__interrupt__")
             if interrupt_raw:
                 first_int = interrupt_raw[0] if hasattr(interrupt_raw, '__getitem__') else None
                 int_value = getattr(first_int, 'value', str(first_int)[:200]) if first_int else 'N/A'
-                print(f"【工作流API·诊断】中断数量={len(interrupt_raw) if hasattr(interrupt_raw, '__len__') else '?'}, 第一个中断value={str(int_value)[:200]}", flush=True)
-        print(f"{'='*60}", flush=True)
+                logger.info(f"【工作流API·诊断】中断数量={len(interrupt_raw) if hasattr(interrupt_raw, '__len__') else '?'}, 第一个中断value={str(int_value)[:200]}")
+        logger.info(f"{'='*60}")
         return result
     except HTTPException:
         raise
     except asyncio.TimeoutError:
-        print(f"【工作流API】超时(外层捕获) | thread_id={thread_id}", flush=True)
-        print(f"{'='*60}", flush=True)
+        logger.info(f"【工作流API】超时(外层捕获) | thread_id={thread_id}")
+        logger.info(f"{'='*60}")
         raise HTTPException(status_code=504, detail="工作流执行超时，请检查后端日志")
     except Exception as e:
         import traceback
         traceback.print_exc()
-        print(f"【工作流API】错误 | thread_id={thread_id}, 错误={str(e)}", flush=True)
-        print(f"{'='*60}", flush=True)
+        logger.info(f"【工作流API】错误 | thread_id={thread_id}, 错误={str(e)}")
+        logger.info(f"{'='*60}")
         raise HTTPException(status_code=500, detail=f"工作流执行失败: {str(e)}")
 
 
@@ -165,6 +169,49 @@ async def get_workflow_state(
     }
 
 
+@router.post("/{thread_id}/stream")
+async def stream_workflow_post(
+    thread_id: str,
+    request: WorkflowInvokeRequest,
+    orchestrator: NovelOrchestrator = Depends(get_orchestrator),
+):
+    """SSE 流式获取工作流执行过程（POST 版本，支持恢复）"""
+    from fastapi.responses import StreamingResponse
+    from fastapi.encoders import jsonable_encoder
+
+    async def generate() -> AsyncGenerator[str, None]:
+        try:
+            if request.command is not None:
+                # Resume path: use ainvoke (via orchestrator.resume) which properly
+                # handles Command(resume=...) — astream does NOT in langgraph 1.1.x.
+                resume_value = request.command.get("resume")
+                result = await orchestrator.resume(thread_id, resume_value)
+                data = json.dumps(jsonable_encoder(result), ensure_ascii=False)
+                yield f"data: {data}\n\n"
+            else:
+                # New invocation path: use astream for real-time streaming
+                input_data = request.input or {"novel_id": thread_id}
+                input_data.setdefault("novel_id", thread_id)
+                async for chunk in orchestrator.stream(thread_id, input_data):
+                    if isinstance(chunk, dict):
+                        data = json.dumps(jsonable_encoder(chunk), ensure_ascii=False)
+                    else:
+                        data = str(chunk)
+                    yield f"data: {data}\n\n"
+            yield "data: [DONE]\n\n"
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            error_data = json.dumps({"error": str(e)}, ensure_ascii=False)
+            yield f"data: {error_data}\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 @router.get("/{thread_id}/stream")
 async def stream_workflow(
     thread_id: str,
@@ -172,18 +219,20 @@ async def stream_workflow(
 ):
     """SSE 流式获取工作流执行过程"""
     from fastapi.responses import StreamingResponse
+    from fastapi.encoders import jsonable_encoder
 
     async def generate() -> AsyncGenerator[str, None]:
         try:
             async for chunk in orchestrator.stream(thread_id, {"novel_id": thread_id}):
-                # 将每个 chunk 序列化为 SSE 格式
                 if isinstance(chunk, dict):
-                    data = json.dumps(chunk, ensure_ascii=False)
+                    data = json.dumps(jsonable_encoder(chunk), ensure_ascii=False)
                 else:
                     data = str(chunk)
                 yield f"data: {data}\n\n"
             yield "data: [DONE]\n\n"
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             error_data = json.dumps({"error": str(e)}, ensure_ascii=False)
             yield f"data: {error_data}\n\n"
 

@@ -16,7 +16,7 @@ class ChapterOutline:
     
     def is_valid_word_estimate(self) -> bool:
         """检查预估字数是否合理"""
-        return 3000 <= self.estimated_word_count <= 6000
+        return 3000 <= self.estimated_word_count <= 7000
     
     def to_dict(self) -> Dict[str, Any]:
         return {
