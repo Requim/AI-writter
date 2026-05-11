@@ -208,10 +208,12 @@ server.proxy: {
 
 - [x] 基础脚手架（React 19 + TypeScript + Vite）
 - [x] API 客户端封装（Axios + 拦截器）
-- [x] Zustand 状态管理
-- [x] 书架页面（卡片网格 + 批量删除）
-- [x] 创作配置页面（6 步中断向导 + SSE 流式通信）
+- [x] Zustand 状态管理（+ persist 持久化 autoMode）
+- [x] 书架页面（卡片网格 + 批量删除 + 简介 Tooltip）
+- [x] 创作配置页面（6 步中断向导 + SSE 流式通信 + 自动模式）
 - [x] 进度查看页面（章节目录 + 章节编辑弹窗）
+- [x] 自动模式：流式节点执行面板 + 中断链式自动继续
+- [x] 自动模式：工作流空闲状态直接 resume
 - [x] 登录页面
 - [ ] 公共组件库（components/）
 - [ ] 全局类型定义（types/）

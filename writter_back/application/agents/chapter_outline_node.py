@@ -59,7 +59,8 @@ async def chapter_outline_node(state: NovelAgentState, config) -> Command[Litera
 
     ai_outline = await llm.structured_generate(
         prompt=prompt,
-        schema=CHAPTER_OUTLINE_SCHEMA
+        schema=CHAPTER_OUTLINE_SCHEMA,
+        temperature=0.7,
     )
     
     # JSON 解析失败时使用默认细纲

@@ -12,12 +12,13 @@ class AnthropicAdapter(BaseLLMAdapter):
         self.client = anthropic.AsyncAnthropic(api_key=api_key)
 
     async def generate(self, prompt: str, system_prompt: Optional[str] = None,
-                      temperature: float = 0.7) -> str:
+                      temperature: float = 0.7, top_p: float = 1.0) -> str:
         """生成文本"""
         kwargs = {
             "model": self.model,
             "max_tokens": 4096,
             "temperature": temperature,
+            "top_p": top_p,
             "messages": [{"role": "user", "content": prompt}],
         }
         if system_prompt:
@@ -27,7 +28,9 @@ class AnthropicAdapter(BaseLLMAdapter):
         return response.content[0].text
 
     async def structured_generate(self, prompt: str, schema: Dict[str, Any],
-                                 system_prompt: Optional[str] = None) -> Dict[str, Any]:
+                                 system_prompt: Optional[str] = None,
+                                 temperature: float = 0.3,
+                                 top_p: float = 1.0) -> Dict[str, Any]:
         """结构化生成"""
         combined_system = "You must respond with valid JSON matching the requested schema."
         if system_prompt:
@@ -36,7 +39,8 @@ class AnthropicAdapter(BaseLLMAdapter):
         kwargs = {
             "model": self.model,
             "max_tokens": 4096,
-            "temperature": 0.7,
+            "temperature": temperature,
+            "top_p": top_p,
             "messages": [{"role": "user", "content": prompt}],
         }
         if combined_system:
@@ -46,7 +50,7 @@ class AnthropicAdapter(BaseLLMAdapter):
         content = response.content[0].text
         return safe_json_parse(content)
 
-    async def chat(self, messages: List[Dict[str, str]], temperature: float = 0.7) -> str:
+    async def chat(self, messages: List[Dict[str, str]], temperature: float = 0.7, top_p: float = 1.0) -> str:
         """对话生成"""
         system_prompt = None
         chat_messages = []
@@ -61,6 +65,7 @@ class AnthropicAdapter(BaseLLMAdapter):
             "model": self.model,
             "max_tokens": 4096,
             "temperature": temperature,
+            "top_p": top_p,
             "messages": chat_messages,
         }
         if system_prompt:

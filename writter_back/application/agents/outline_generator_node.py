@@ -52,7 +52,7 @@ async def outline_generator_node(state: NovelAgentState, config) -> Command[Lite
     # ==================== Phase 1: 单次生成完整大纲 ====================
     logger.info(f"【总大纲生成节点】Phase 1: 单次生成完整大纲...")
     prompt = build_outline_prompt(novel_type, title, summary)
-    ai_outline = await llm.structured_generate(prompt=prompt, schema=OUTLINE_SCHEMA)
+    ai_outline = await llm.structured_generate(prompt=prompt, schema=OUTLINE_SCHEMA, temperature=0.85, top_p=0.92)
 
     if not ai_outline:
         logger.info(f"【总大纲生成节点】Phase 1 返回空，使用空大纲兜底")
@@ -83,6 +83,7 @@ async def outline_generator_node(state: NovelAgentState, config) -> Command[Lite
             macro_outline = await llm.structured_generate(
                 prompt=build_outline_prompt(novel_type, title, summary),
                 schema=MACRO_ONLY_SCHEMA,
+                temperature=0.85, top_p=0.92,
             )
             if not macro_outline:
                 macro_outline = _empty_macro()
@@ -93,6 +94,7 @@ async def outline_generator_node(state: NovelAgentState, config) -> Command[Lite
         chapters_result = await llm.structured_generate(
             prompt=chapters_prompt,
             schema=CHAPTERS_ONLY_SCHEMA,
+            temperature=0.85, top_p=0.92,
         )
 
         fallback_chapters = chapters_result.get("chapters", []) if chapters_result else []

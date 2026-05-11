@@ -4,13 +4,17 @@ logger = logging.getLogger("uvicorn")
 from langgraph.types import interrupt, Command
 from typing import Literal
 from application.schemas.agent_state import NovelAgentState
+import json
 from application.prompts.revision_prompts import (
     build_user_instruction_revision_prompt,
-    build_auto_fix_revision_prompt,
+    build_patch_revision_prompt,
+    build_refactor_revision_prompt,
     build_expansion_prompt,
     format_issues_for_prompt,
+    classify_revision_mode,
     build_revision_system_prompt,
-    REVISION_TEMPERATURE,
+    PATCH_TEMPERATURE,
+    REFACTOR_TEMPERATURE,
 )
 
 
@@ -56,19 +60,47 @@ async def revision_node(state: NovelAgentState, config) -> Command[Literal["chap
                 current_content=current_content,
                 chapter_outline=chapter_outline,
             )
+            temperature = 0.5
+            mode = "user_instruction"
         else:
-            revision_prompt = build_auto_fix_revision_prompt(
-                issues_text=format_issues_for_prompt(issues),
-                current_content=current_content,
-                chapter_outline=chapter_outline,
-            )
+            # 构建修正历史文本（供 prompt 参考）
+            revision_history = state.get("revision_history", [])
+            history_text = ""
+            if revision_history:
+                history_parts = []
+                for h_entry in revision_history:
+                    att = h_entry.get("attempt", 0)
+                    iss = h_entry.get("issues_before", [])
+                    iss_summary = "; ".join([f"{i.get('type','?')}({i.get('priority_action','?')})" for i in iss[:5]])
+                    history_parts.append(f"第{att}次修正处理: {iss_summary}")
+                history_text = "\n".join(history_parts)
+
+            # 根据问题类型判断修正模式
+            mode = classify_revision_mode(issues)
+            if mode == "patch":
+                revision_prompt = build_patch_revision_prompt(
+                    issues_text=format_issues_for_prompt(issues),
+                    current_content=current_content,
+                    chapter_outline=chapter_outline,
+                    revision_history=history_text,
+                )
+                temperature = PATCH_TEMPERATURE
+            else:
+                revision_prompt = build_refactor_revision_prompt(
+                    issues_text=format_issues_for_prompt(issues),
+                    current_content=current_content,
+                    chapter_outline=chapter_outline,
+                    revision_history=history_text,
+                )
+                temperature = REFACTOR_TEMPERATURE
 
         if llm:
-            logger.info(f"【修正节点】正在{'按用户指令' if instructions else 'AI自动'}修正内容...")
+            mode_label = {'patch': 'Patch局部修正', 'refactor': 'Refactor全文重构', 'user_instruction': '用户指令修正'}.get(mode, mode)
+            logger.info(f"【修正节点】正在{'按用户指令' if instructions else 'AI自动'}修正内容... 模式={mode_label}, temperature={temperature}")
             revised_content = await llm.generate(
                 revision_prompt,
                 system_prompt=build_revision_system_prompt(),
-                temperature=REVISION_TEMPERATURE
+                temperature=temperature
             )
             original_len = len(current_content)
             revised_len = len(revised_content)
@@ -86,7 +118,7 @@ async def revision_node(state: NovelAgentState, config) -> Command[Literal["chap
                 revised_content = await llm.generate(
                     expansion_prompt,
                     system_prompt=build_revision_system_prompt(),
-                    temperature=REVISION_TEMPERATURE + 0.1
+                    temperature=REFACTOR_TEMPERATURE + 0.1
                 )
                 logger.info(f"【修正节点】扩充后字数: {len(revised_content)}字")
         else:
@@ -97,6 +129,12 @@ async def revision_node(state: NovelAgentState, config) -> Command[Literal["chap
         auto_mode = config["configurable"].get("auto_mode", False)
         if auto_mode:
             attempts = state.get("revision_attempts", 0)
+            # 记录本轮修正历史
+            revision_history = state.get("revision_history", [])
+            revision_history = revision_history + [{
+                "attempt": attempts + 1,
+                "issues_before": issues,
+            }]
             logger.info(f"【修正节点】自动模式 | 修正完成 -> 反思节点复查 (第{attempts + 1}次修正)")
             logger.info(f"{'='*60}")
             return Command(
@@ -104,6 +142,7 @@ async def revision_node(state: NovelAgentState, config) -> Command[Literal["chap
                 update={
                     "current_chapter_content": revised_content,
                     "revision_attempts": attempts + 1,
+                    "revision_history": revision_history,
                 }
             )
 

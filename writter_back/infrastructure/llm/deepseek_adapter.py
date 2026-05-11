@@ -20,7 +20,7 @@ class DeepSeekAdapter(BaseLLMAdapter):
         )
 
     async def generate(self, prompt: str, system_prompt: Optional[str] = None,
-                       temperature: float = 0.7) -> str:
+                       temperature: float = 0.7, top_p: float = 1.0) -> str:
         """生成文本"""
         messages = []
         if system_prompt:
@@ -30,13 +30,16 @@ class DeepSeekAdapter(BaseLLMAdapter):
         response = await self.client.chat.completions.create(
             model=self.model,
             messages=messages,
-            temperature=temperature
+            temperature=temperature,
+            top_p=top_p,
         )
         return response.choices[0].message.content
 
     async def structured_generate(self, prompt: str, schema: Dict[str, Any],
                                   system_prompt: Optional[str] = None,
-                                  max_retries: int = 2) -> Dict[str, Any]:
+                                  max_retries: int = 2,
+                                  temperature: float = 0.3,
+                                  top_p: float = 1.0) -> Dict[str, Any]:
         """结构化生成（含 JSON 修复和重试）"""
         messages = []
         if system_prompt:
@@ -49,7 +52,8 @@ class DeepSeekAdapter(BaseLLMAdapter):
                 model=self.model,
                 messages=messages,
                 response_format={"type": "json_object"},
-                temperature=0.7,
+                temperature=temperature,
+                top_p=top_p,
             )
             content = response.choices[0].message.content
             if not content:
@@ -59,25 +63,40 @@ class DeepSeekAdapter(BaseLLMAdapter):
             if result:
                 return result
 
+            error_detail = ""
+            try:
+                json.loads(content)
+            except json.JSONDecodeError as e:
+                error_detail = str(e)
+
             last_error = ValueError(f"JSON解析失败: {content[:200]}")
-            logger.info(f"【DeepSeek】JSON解析失败(第{attempt+1}次)")
+            logger.info(f"【DeepSeek】JSON解析失败(第{attempt+1}次) | {error_detail}")
 
             if attempt == max_retries:
                 break
 
-            # 追加错误反馈，让模型修正格式
+            # 追加具体错误反馈，让模型修正格式
             logger.info(f"【DeepSeek】重试第{attempt+2}次...")
             messages.append({"role": "assistant", "content": content[:500]})
-            messages.append({"role": "user", "content": "你的上一条回复 JSON 格式有误，请严格按照 JSON 格式重新输出，确保所有逗号、引号、花括号正确闭合。"})
+            fix_instruction = (
+                f"上一条回复 JSON 解析失败：{error_detail}\n"
+                f"请特别注意：\n"
+                f"1. 字符串中的双引号（如对话内容、引用语）必须用反斜杠转义为 \\\"\n"
+                f"2. 中文字符中的破折号——、省略号……等特殊符号不需要转义，直接使用\n"
+                f"3. 确保所有花括号 {{}} 和方括号 [] 正确闭合和匹配\n"
+                f"请严格按照 JSON 格式重新输出完整的 JSON 对象。"
+            )
+            messages.append({"role": "user", "content": fix_instruction})
 
         logger.info(f"【DeepSeek】所有重试失败，返回空字典。最后错误: {last_error}")
         return {}
 
-    async def chat(self, messages: List[Dict[str, str]], temperature: float = 0.7) -> str:
+    async def chat(self, messages: List[Dict[str, str]], temperature: float = 0.7, top_p: float = 1.0) -> str:
         """对话生成"""
         response = await self.client.chat.completions.create(
             model=self.model,
             messages=messages,
-            temperature=temperature
+            temperature=temperature,
+            top_p=top_p,
         )
         return response.choices[0].message.content

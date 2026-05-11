@@ -44,4 +44,5 @@ def build_title_prompt(novel_type: str) -> str:
 """
 
 
-TITLE_TEMPERATURE = 0.9
+TITLE_TEMPERATURE = 1.0
+TITLE_TOP_P = 0.95

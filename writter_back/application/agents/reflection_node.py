@@ -5,7 +5,15 @@ from langgraph.types import interrupt, Command
 from typing import Literal
 import json
 from application.schemas.agent_state import NovelAgentState
-from application.prompts.reflection_prompts import build_reflection_prompt, REFLECTION_SCHEMA
+from application.prompts.reflection_prompts import (
+    build_reflection_prompt,
+    build_chunk_reflection_prompt,
+    build_aggregation_prompt,
+    split_into_chunks,
+    REFLECTION_SCHEMA,
+    CHUNK_REFLECTION_SCHEMA,
+    AGGREGATION_SCHEMA,
+)
 
 
 async def reflection_node(state: NovelAgentState, config) -> Command[Literal["persist_node", "revision_node"]]:
@@ -38,19 +46,88 @@ async def reflection_node(state: NovelAgentState, config) -> Command[Literal["pe
         logger.info(f"{'='*60}")
         return Command(goto="persist_node")
 
-    # AI 进行反思检查
-    reflection_prompt = build_reflection_prompt(
-        chapter_content=current_chapter_content,
-        chapter_outline=chapter_outline,
-        main_characters=total_outline.get('main_characters', []),
-        memory_context=memory_context,
-        content_length=len(current_chapter_content),
-    )
+    # AI 进行反思检查（分块 + 聚合）
+    content_len = len(current_chapter_content)
+    main_chars = total_outline.get('main_characters', [])
 
-    reflection_result = await llm.structured_generate(
-        prompt=reflection_prompt,
-        schema=REFLECTION_SCHEMA
-    )
+    if content_len > 2500:
+        # ----- 分块检查 -----
+        chunks = split_into_chunks(current_chapter_content)
+        logger.info(f"【反思检查节点】分块检查 | {len(chunks)}块, 每块{2000}字, 重叠{200}字")
+
+        chunk_results = []
+        for chunk in chunks:
+            chunk_prompt = build_chunk_reflection_prompt(
+                chunk_text=chunk["text"],
+                chunk_index=chunk["chunk_index"],
+                total_chunks=len(chunks),
+                chunk_start=chunk["start"],
+                chunk_end=chunk["end"],
+                chapter_outline=chapter_outline,
+                main_characters=main_chars,
+                memory_context=memory_context,
+            )
+            chunk_result = await llm.structured_generate(
+                prompt=chunk_prompt,
+                schema=CHUNK_REFLECTION_SCHEMA,
+                temperature=0.1,
+            )
+            chunk_issues = chunk_result.get("issues", []) if chunk_result else []
+            # 标记每个 issue 出自哪一块
+            for iss in chunk_issues:
+                iss["_chunk"] = chunk["chunk_index"]
+                iss["_chunk_range"] = f"{chunk['start']}-{chunk['end']}"
+            chunk_results.append({
+                "start": chunk["start"],
+                "end": chunk["end"],
+                "chunk_index": chunk["chunk_index"],
+                "issues": chunk_issues,
+            })
+            logger.info(f"【反思检查节点】块{chunk['chunk_index']+1}/{len(chunks)} 检查完成 | 发现{len(chunk_issues)}个问题")
+
+        # ----- 聚合检查 -----
+        agg_prompt = build_aggregation_prompt(
+            chunk_results=chunk_results,
+            chapter_outline=chapter_outline,
+            main_characters=main_chars,
+            memory_context=memory_context,
+            content_length=content_len,
+        )
+        reflection_result = await llm.structured_generate(
+            prompt=agg_prompt,
+            schema=AGGREGATION_SCHEMA,
+            temperature=0.1,
+        )
+
+        # 合并：聚合结果中的 issues + 所有分块中的 issues
+        all_issues = reflection_result.get("issues", []) if reflection_result else []
+        seen_locations = set()
+        for iss in all_issues:
+            loc = iss.get("location", "")
+            if loc:
+                seen_locations.add(loc)
+        for cr in chunk_results:
+            for iss in cr.get("issues", []):
+                loc = iss.get("location", "")
+                if loc not in seen_locations:
+                    all_issues.append(iss)
+                    seen_locations.add(loc)
+        reflection_result["issues"] = all_issues
+        logger.info(f"【反思检查节点】聚合完成 | 总计{len(all_issues)}个问题")
+    else:
+        # 短章节：单次检查即可
+        reflection_prompt = build_reflection_prompt(
+            chapter_content=current_chapter_content,
+            chapter_outline=chapter_outline,
+            main_characters=main_chars,
+            memory_context=memory_context,
+            content_length=content_len,
+        )
+        reflection_result = await llm.structured_generate(
+            prompt=reflection_prompt,
+            schema=REFLECTION_SCHEMA,
+            temperature=0.1,
+        )
 
     # 解析结构化输出
     quality_score = reflection_result.get("overall_quality_score", 0)
@@ -73,6 +150,13 @@ async def reflection_node(state: NovelAgentState, config) -> Command[Literal["pe
 
     # 检查未通过，向用户报告问题
     issues = reflection_result.get("issues", [])
+    # 确保每个 issue 有 priority_action 和 issue_resolved 字段
+    for issue in issues:
+        if "priority_action" not in issue:
+            sev = issue.get("severity", "low")
+            issue["priority_action"] = {"high": "must_fix", "medium": "optional", "low": "can_ignore"}.get(sev, "optional")
+        if "issue_resolved" not in issue:
+            issue["issue_resolved"] = False
     fail_reasons = []
     if not quality_ok:
         fail_reasons.append(f"质量评分不足({quality_score}<0.8)")
@@ -85,15 +169,25 @@ async def reflection_node(state: NovelAgentState, config) -> Command[Literal["pe
     logger.info(f"【反思检查节点】检查未通过! {'; '.join(fail_reasons)}, "
                 f"问题数={len(issues)} -> 修正节点")
 
-    # 自动模式：发现问题时自动走 AI 修正（循环修正，最多 3 次）
+    # 自动模式：发现问题时自动走 AI 修正（动态收敛循环）
     auto_mode = config["configurable"].get("auto_mode", False)
     if auto_mode:
         attempts = state.get("revision_attempts", 0)
-        MAX_REVISION_ATTEMPTS = 3
+        MAX_REVISION_ATTEMPTS = 5  # 上限放大到 5 次
+
+        # 提前收敛条件：高优问题全部解决且质量分 > 0.85
+        has_high_unresolved = any(
+            issue.get("priority_action") == "must_fix" and not issue.get("issue_resolved", False)
+            for issue in issues
+        )
+        if not has_high_unresolved and quality_score > 0.85:
+            logger.info(f"【反思检查节点】自动模式 | 高优问题已全部解决且质量分>{quality_score}>0.85，提前通过 -> 持久化节点")
+            return Command(goto="persist_node")
+
         if attempts >= MAX_REVISION_ATTEMPTS:
             logger.info(f"【反思检查节点】自动模式 | 已修正{attempts}次仍未通过，降级放行 -> 持久化节点")
             return Command(goto="persist_node")
-        logger.info(f"【反思检查节点】自动模式 | 走AI自动修正 (第{attempts + 1}/{MAX_REVISION_ATTEMPTS}次)")
+        logger.info(f"【反思检查节点】自动模式 | 走AI自动修正 (第{attempts + 1}次, 上限{MAX_REVISION_ATTEMPTS}次)")
         return Command(
             goto="revision_node",
             update={

@@ -383,4 +383,4 @@ def build_chapter_system_prompt(novel_type: str) -> str:
     )
 
 
-CHAPTER_WRITER_TEMPERATURE = 0.85
+CHAPTER_WRITER_TEMPERATURE = 0.78

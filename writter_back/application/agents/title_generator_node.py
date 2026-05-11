@@ -4,7 +4,7 @@ logger = logging.getLogger("uvicorn")
 from langgraph.types import interrupt, Command
 from typing import Literal
 from application.schemas.agent_state import NovelAgentState
-from application.prompts.title_prompts import build_title_prompt, TITLE_TEMPERATURE
+from application.prompts.title_prompts import build_title_prompt, TITLE_TEMPERATURE, TITLE_TOP_P
 
 
 def _parse_title_suggestions(text: str) -> list:
@@ -57,7 +57,7 @@ async def title_generator_node(state: NovelAgentState, config) -> Command[Litera
 
     # AI 生成书名候选
     prompt = build_title_prompt(novel_type)
-    ai_titles_text = await llm.generate(prompt, temperature=TITLE_TEMPERATURE)
+    ai_titles_text = await llm.generate(prompt, temperature=TITLE_TEMPERATURE, top_p=TITLE_TOP_P)
     ai_titles = _parse_title_suggestions(ai_titles_text)
     logger.info(f"【书名生成节点】AI生成了 {len(ai_titles)} 个书名候选: {ai_titles}")
 

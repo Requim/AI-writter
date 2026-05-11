@@ -4,7 +4,7 @@ logger = logging.getLogger("uvicorn")
 from langgraph.types import interrupt, Command
 from typing import Literal
 from application.schemas.agent_state import NovelAgentState
-from application.prompts.summary_prompts import build_summary_prompt, SUMMARY_TEMPERATURE
+from application.prompts.summary_prompts import build_summary_prompt, SUMMARY_TEMPERATURE, SUMMARY_TOP_P
 
 
 async def summary_generator_node(state: NovelAgentState, config) -> Command[Literal["outline_node"]]:
@@ -33,7 +33,7 @@ async def summary_generator_node(state: NovelAgentState, config) -> Command[Lite
     # AI 生成简介（联动书名卖点，形成类型→书名→简介→总纲的闭环）
     story_hint = state.get("title_story_hint", "")
     prompt = build_summary_prompt(novel_type, title, story_hint)
-    ai_summary = await llm.generate(prompt, temperature=SUMMARY_TEMPERATURE)
+    ai_summary = await llm.generate(prompt, temperature=SUMMARY_TEMPERATURE, top_p=SUMMARY_TOP_P)
     
     # 自动模式：直接接受
     auto_mode = config["configurable"].get("auto_mode", False)

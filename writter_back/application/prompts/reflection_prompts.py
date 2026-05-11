@@ -3,6 +3,152 @@
 import json
 
 
+CHUNK_SIZE = 2000
+CHUNK_OVERLAP = 200
+
+
+def split_into_chunks(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> list[dict]:
+    """将文本按固定大小分块，带重叠区域
+
+    Returns:
+        [{"start": 0, "end": 2000, "text": "..."}, ...]
+    """
+    if len(text) <= chunk_size:
+        return [{"start": 0, "end": len(text), "text": text, "chunk_index": 0}]
+    chunks = []
+    pos = 0
+    idx = 0
+    while pos < len(text):
+        end = min(pos + chunk_size, len(text))
+        chunk_text = text[pos:end]
+        chunks.append({"start": pos, "end": end, "text": chunk_text, "chunk_index": idx})
+        idx += 1
+        pos += chunk_size - overlap
+        if pos >= len(text):
+            break
+    return chunks
+
+
+def build_chunk_reflection_prompt(
+    chunk_text: str,
+    chunk_index: int,
+    total_chunks: int,
+    chunk_start: int,
+    chunk_end: int,
+    chapter_outline: dict,
+    main_characters: list,
+    memory_context: str,
+) -> str:
+    """分块检查提示词 — 只检查该块内的局部问题"""
+    return f"""
+你正在检查小说章节的第 {chunk_index + 1}/{total_chunks} 块（字符位置 {chunk_start}-{chunk_end}）。
+请只针对你看到的这段内容进行局部审核。
+
+【审核范围（仅限本块）】
+1. 人物一致性（OOC）：本块中的角色行为是否符合其性格设定？
+2. 信息密度：本块是否存在注水/废话段落？
+3. 叙事节奏：本块的节奏是否合理（过慢或过快）？
+4. 局部逻辑：本块内部是否有前后矛盾之处？
+
+【严重等级定义】
+- low（轻微）：笔误、标点错误、文风微调
+- medium（一般）：场景不够饱满、节奏略慢
+- high（严重）：人设崩塌（OOC）、逻辑硬伤、注水严重
+
+【修改优先级】
+- must_fix：必须修改（对应 high severity 问题）
+- optional：可酌情处理（对应 medium severity）
+- can_ignore：可忽略（对应 low severity）
+
+【输入数据】
+待检查段落：
+{chunk_text}
+
+章节细纲：
+{json.dumps(chapter_outline, ensure_ascii=False)}
+
+总纲领人物志：
+{json.dumps(main_characters, ensure_ascii=False)}
+
+前文上下文：
+{memory_context[:600] if memory_context else '无'}
+
+输出JSON格式：
+{{{{
+    "issues": [
+        {{{{
+            "type": "consistency|character|padding|pacing|plot_hole",
+            "severity": "low|medium|high",
+            "priority_action": "must_fix|optional|can_ignore",
+            "issue_resolved": false,
+            "location": "本块中的具体段落描述",
+            "description": "问题的具体描述",
+            "evidence": "体现问题的原句（30字内）",
+            "suggestion": "修改建议"
+        }}}}
+    ]
+}}}}
+"""
+
+
+def build_aggregation_prompt(
+    chunk_results: list[dict],
+    chapter_outline: dict,
+    main_characters: list,
+    memory_context: str,
+    content_length: int,
+) -> str:
+    """聚合 prompt — 综合所有分块的局部检查结果 + 做全局检查（逻辑链、伏笔、总体评分）"""
+    chunks_summary = ""
+    for i, cr in enumerate(chunk_results):
+        issues = cr.get("issues", [])
+        if issues:
+            chunks_summary += f"第{i+1}块（{cr.get('start',0)}-{cr.get('end',0)}字符）发现 {len(issues)} 个问题：\n"
+            for iss in issues:
+                chunks_summary += f"  - [{iss.get('type','?')}]({iss.get('severity','?')}) {iss.get('description','')}\n"
+        else:
+            chunks_summary += f"第{i+1}块：无问题\n"
+
+    return f"""
+你现在是一名资深文学编辑，负责对整章内容进行最终审核。
+下面是分段检查的结果汇总，请结合这些局部信息和你对全文的理解，做全局判断。
+
+【分段检查结果】
+{chunks_summary}
+
+【全局审核（本次重点）】
+1. 逻辑闭环：结合所有段落，本章是否有跨段落的力量体系矛盾或逻辑断裂？
+2. 衔接压力：本章开头是否承接前文？结尾是否埋下钩子？
+3. 细纲覆盖率：所有细纲中的场景是否都已覆盖？
+4. 伏笔检查：细纲要求的伏笔是否在本章中被隐晦提及？
+5. 综合质量评分 0-1：综合考虑全文质量（不只看局部）。
+
+【输入数据】
+章节细纲：
+{json.dumps(chapter_outline, ensure_ascii=False)}
+
+总纲领人物志：
+{json.dumps(main_characters, ensure_ascii=False)}
+
+前文上下文：
+{memory_context[:800] if memory_context else '无'}
+
+输出JSON格式：
+{{{{
+    "passed": true或false,
+    "overall_quality_score": "0.0-1.0（0.8以下不通过）",
+    "word_count_analysis": {{{{
+        "total_count": {content_length},
+        "effective_density": "有效内容占比(0-100)",
+        "is_valid_word_count": true或false
+    }}}},
+    "issues": "array（合并所有分块的 issues，加上全局发现的问题）",
+    "logic_chain_status": "本章与前文的衔接情况",
+    "foreshadowing_check": "伏笔是否已提及"
+}}}}
+"""
+
+
 def build_reflection_prompt(
     chapter_content: str,
     chapter_outline: dict,
@@ -53,6 +199,18 @@ def build_reflection_prompt(
 - medium（一般）：细纲中某个小点漏掉了、某个场景不够饱满
 - high（严重）：人设崩塌（OOC）、逻辑硬伤、力量体系崩坏、字数严重不足（<2500）、有效密度低于 70%
 
+【修改优先级定义】
+对每个 issue，请根据严重等级和问题类型综合判定 priority_action：
+- must_fix：必须优先修改，不允许折衷。对应 severity=high 的逻辑/OOC/力量体系/有效密度问题
+- optional：次要优化，可酌情处理。对应 severity=medium 的问题
+- can_ignore：轻微问题，可忽略。对应 severity=low 的问题
+
+【问题解决状态】
+如果是本轮修正后的再次检查，请对比修正后的内容，判断之前的问题是否已解决：
+- issue_resolved=true：该问题已在本轮修正中解决
+- issue_resolved=false：该问题仍未解决
+- suggested_fix_text：针对 must_fix 问题，请提供具体的修改示例或模板，供修正节点直接使用
+
 【输入数据】
 章节内容（前2500字摘要）：
 {chapter_content[:2500]}...
@@ -79,6 +237,9 @@ def build_reflection_prompt(
         {{
             "type": "logic|consistency|plot_hole|character|padding|pacing|power_system|tension_gap",
             "severity": "low|medium|high",
+            "priority_action": "must_fix|optional|can_ignore",
+            "issue_resolved": false,
+            "suggested_fix_text": "针对 must_fix 问题提供具体修改示例（如：将'xxx'改为'yyy'）",
             "location": "具体情节或对话段落",
             "description": "请指出具体哪里不符合逻辑或哪里在注水",
             "evidence": "原文中体现该问题的具体短句（50字内）",
@@ -91,7 +252,20 @@ def build_reflection_prompt(
 """
 
 
-REFLECTION_SCHEMA = {
+CHUNK_REFLECTION_SCHEMA = {
+    "issues": {
+        "type": "string",
+        "severity": "string",
+        "priority_action": "string",
+        "issue_resolved": "boolean",
+        "location": "string",
+        "description": "string",
+        "evidence": "string",
+        "suggestion": "string",
+    },
+}
+
+AGGREGATION_SCHEMA = {
     "passed": "boolean",
     "overall_quality_score": "number",
     "word_count_analysis": {
@@ -100,6 +274,29 @@ REFLECTION_SCHEMA = {
         "is_valid_word_count": "boolean",
     },
     "issues": "array",
+    "logic_chain_status": "string",
+    "foreshadowing_check": "string",
+}
+
+REFLECTION_SCHEMA = {
+    "passed": "boolean",
+    "overall_quality_score": "number",
+    "word_count_analysis": {
+        "total_count": "integer",
+        "effective_density": "number",
+        "is_valid_word_count": "boolean",
+    },
+    "issues": {
+        "type": "string",
+        "severity": "string",
+        "priority_action": "string",
+        "issue_resolved": "boolean",
+        "suggested_fix_text": "string",
+        "location": "string",
+        "description": "string",
+        "evidence": "string",
+        "suggestion": "string",
+    },
     "logic_chain_status": "string",
     "foreshadowing_check": "string",
 }

@@ -33,3 +33,4 @@ def build_summary_prompt(novel_type: str, title: str, story_hint: str = "") -> s
 
 
 SUMMARY_TEMPERATURE = 0.8
+SUMMARY_TOP_P = 0.92

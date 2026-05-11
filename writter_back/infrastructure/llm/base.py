@@ -56,12 +56,14 @@ class BaseLLMAdapter(LLMService):
         self.temperature = 0.7
 
     async def generate(self, prompt: str, system_prompt: Optional[str] = None,
-                       temperature: float = 0.7) -> str:
+                       temperature: float = 0.7, top_p: float = 1.0) -> str:
         raise NotImplementedError
 
     async def structured_generate(self, prompt: str, schema: Dict[str, Any],
-                                  system_prompt: Optional[str] = None) -> Dict[str, Any]:
+                                  system_prompt: Optional[str] = None,
+                                  temperature: float = 0.3,
+                                  top_p: float = 1.0) -> Dict[str, Any]:
         raise NotImplementedError
 
-    async def chat(self, messages: List[Dict[str, str]], temperature: float = 0.7) -> str:
+    async def chat(self, messages: List[Dict[str, str]], temperature: float = 0.7, top_p: float = 1.0) -> str:
         raise NotImplementedError
