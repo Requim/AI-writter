@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Card, Progress, List, Button, message, Space, Tag, Modal, Input, Typography, Divider, Popconfirm, Checkbox } from 'antd'
+import { Card, Progress, List, Button, message, Space, Tag, Modal, Input, Typography, Divider, Popconfirm, Checkbox, Tooltip } from 'antd'
 import { ArrowLeftOutlined, EditOutlined, PlayCircleOutlined, BookOutlined, DeleteOutlined } from '@ant-design/icons'
 import { novelApi } from '@/api/novel'
 import type { NovelResponse, ProgressResponse, ChapterResponse } from '@/api/novel'
@@ -175,9 +175,11 @@ const NovelProgress = () => {
                 </Tag>
               </Space>
               {novel.summary && (
-                <Paragraph ellipsis={{ rows: 2 }} style={{ color: '#666', marginTop: 8 }}>
-                  {novel.summary}
-                </Paragraph>
+                <Tooltip title={novel.summary} mouseEnterDelay={0.3}>
+                  <Paragraph ellipsis={{ rows: 2 }} style={{ color: '#666', marginTop: 8 }}>
+                    {novel.summary}
+                  </Paragraph>
+                </Tooltip>
               )}
             </div>
           </div>

@@ -83,7 +83,27 @@ async def reflection_node(state: NovelAgentState, config) -> Command[Literal["pe
     if not passed:
         fail_reasons.append("LLM判定未通过")
     logger.info(f"【反思检查节点】检查未通过! {'; '.join(fail_reasons)}, "
-                f"问题数={len(issues)} -> 修正节点 (等待用户决策)")
+                f"问题数={len(issues)} -> 修正节点")
+
+    # 自动模式：发现问题时自动走 AI 修正（循环修正，最多 3 次）
+    auto_mode = config["configurable"].get("auto_mode", False)
+    if auto_mode:
+        attempts = state.get("revision_attempts", 0)
+        MAX_REVISION_ATTEMPTS = 3
+        if attempts >= MAX_REVISION_ATTEMPTS:
+            logger.info(f"【反思检查节点】自动模式 | 已修正{attempts}次仍未通过，降级放行 -> 持久化节点")
+            return Command(goto="persist_node")
+        logger.info(f"【反思检查节点】自动模式 | 走AI自动修正 (第{attempts + 1}/{MAX_REVISION_ATTEMPTS}次)")
+        return Command(
+            goto="revision_node",
+            update={
+                "reflection_issues": issues,
+                "user_decision": {
+                    "action": "revise",
+                    "instructions": None  # AI 根据问题列表自动修正
+                }
+            }
+        )
 
     user_decision = interrupt({
         "action": "review_reflection_issues",

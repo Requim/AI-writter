@@ -117,6 +117,16 @@ async def outline_generator_node(state: NovelAgentState, config) -> Command[Lite
                 f"章节={len(ai_outline.get('chapters', []))}/{ai_outline.get('total_chapters', 0)}章")
     logger.info(f"{'='*60}")
 
+    # 自动模式：直接接受
+    auto_mode = config["configurable"].get("auto_mode", False)
+    if auto_mode:
+        logger.info(f"【总大纲生成节点】自动模式 | 接受AI生成")
+        logger.info(f"{'='*60}")
+        return Command(
+            goto="persist_node",
+            update={"total_outline": ai_outline, "__next_node__": "progress_check_node"}
+        )
+
     # ==================== 中断：用户审阅 ====================
     user_decision = interrupt({
         "action": "review_or_modify_outline",

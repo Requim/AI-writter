@@ -31,6 +31,8 @@ class NovelOrchestrator(AgentOrchestrator):
         self._llm_instance = self._build_llm_instance()
         # 执行中标记，防止并发请求导致同一章节重复生成
         self._executing: Dict[str, bool] = {}
+        # 自动模式开关表：thread_id -> bool
+        self._auto_mode: Dict[str, bool] = {}
 
     def is_executing(self, thread_id: str) -> bool:
         """检查指定 thread_id 的工作流是否正在执行中"""
@@ -91,10 +93,16 @@ class NovelOrchestrator(AgentOrchestrator):
             logger.info(f"【编排器】工作流创建完成 ✅")
             logger.info(f"{'='*60}")
 
+    def set_auto_mode(self, thread_id: str, enabled: bool) -> None:
+        """设置自动模式开关"""
+        self._auto_mode[thread_id] = enabled
+        logger.info(f"【编排器】thread_id={thread_id} 自动模式={'ON' if enabled else 'OFF'}")
+
     def _make_config(self, thread_id: str) -> Dict[str, Any]:
         return {
             "configurable": {
                 "thread_id": thread_id,
+                "auto_mode": self._auto_mode.get(thread_id, False),
                 "memory_service": self.memory_service,
                 "novel_repository": self.repository,
                 "llm_config": {

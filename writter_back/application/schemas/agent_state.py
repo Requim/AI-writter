@@ -31,6 +31,7 @@ class NovelAgentState(TypedDict):
     reflection_issues: Optional[List[Dict]]   # 发现的问题列表
     user_decision: Optional[Dict]             # 用户决策
     revision_instructions: Optional[str]       # 用户提供的修正指令（优先），否则AI自动修正
+    revision_attempts: int                    # 自动模式修正重试次数，用于循环修正防死循环
     
     # ========== 进度控制 ==========
     progress_percentage: float

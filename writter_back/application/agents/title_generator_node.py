@@ -67,6 +67,21 @@ async def title_generator_node(state: NovelAgentState, config) -> Command[Litera
         logger.info(f"【书名生成节点】未解析到有效书名，使用默认")
         ai_suggestions_list = [{"title": "未命名小说", "hint": ""}]
 
+    # 自动模式：取第一个候选
+    auto_mode = config["configurable"].get("auto_mode", False)
+    if auto_mode:
+        chosen_title = ai_suggestions_list[0]["title"]
+        chosen_hint = ai_suggestions_list[0].get("hint", "")
+        logger.info(f"【书名生成节点】自动模式 | 选择: {chosen_title}")
+        logger.info(f"{'='*60}")
+        return Command(
+            goto="summary_node",
+            update={
+                "title": chosen_title,
+                "title_story_hint": chosen_hint,
+            }
+        )
+
     # 暂停，让用户选择或自定义
     user_choice = interrupt({
         "action": "confirm_or_provide_title",

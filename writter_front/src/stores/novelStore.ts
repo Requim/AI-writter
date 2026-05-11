@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { persist } from 'zustand/middleware'
 import { novelApi } from '@/api/novel'
 import type { NovelResponse, ProgressResponse, ChapterResponse } from '@/api/novel'
 
@@ -8,21 +9,30 @@ interface NovelStore {
   progress: ProgressResponse | null
   chapters: ChapterResponse[]
   loading: boolean
+  autoMode: boolean
   setCurrentNovel: (novelId: string) => void
+  setAutoMode: (enabled: boolean) => void
   fetchNovel: (novelId: string) => Promise<void>
   fetchProgress: (novelId: string) => Promise<void>
   fetchChapters: (novelId: string) => Promise<void>
 }
 
-export const useNovelStore = create<NovelStore>((set) => ({
+export const useNovelStore = create<NovelStore>()(
+  persist(
+    (set) => ({
   currentNovelId: null,
   novel: null,
   progress: null,
   chapters: [],
   loading: false,
+  autoMode: false,
 
   setCurrentNovel: (novelId: string) => {
     set({ currentNovelId: novelId })
+  },
+
+  setAutoMode: (enabled: boolean) => {
+    set({ autoMode: enabled })
   },
 
   fetchNovel: async (novelId: string) => {
@@ -53,4 +63,10 @@ export const useNovelStore = create<NovelStore>((set) => ({
       console.error('Failed to fetch chapters:', error)
     }
   },
-}))
+}),
+    {
+      name: 'novel-store',
+      partialize: (state) => ({ autoMode: state.autoMode }),
+    },
+  )
+)

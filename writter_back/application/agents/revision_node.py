@@ -93,6 +93,20 @@ async def revision_node(state: NovelAgentState, config) -> Command[Literal["chap
             logger.info(f"【修正节点】LLM不可用，保留原内容")
             revised_content = current_content
 
+        # 自动模式：修正后走回 reflection_node 再次检查（循环修正）
+        auto_mode = config["configurable"].get("auto_mode", False)
+        if auto_mode:
+            attempts = state.get("revision_attempts", 0)
+            logger.info(f"【修正节点】自动模式 | 修正完成 -> 反思节点复查 (第{attempts + 1}次修正)")
+            logger.info(f"{'='*60}")
+            return Command(
+                goto="reflection_node",
+                update={
+                    "current_chapter_content": revised_content,
+                    "revision_attempts": attempts + 1,
+                }
+            )
+
         # 修正后再次暂停，让用户确认修正结果
         user_confirmation = interrupt({
             "action": "confirm_revision",

@@ -158,12 +158,16 @@ def build_first_scene_prompt(
     total_scenes: int,
     logic_hooks: dict,
     internal_monologue: str,
+    prev_chapter_tail: str = "",
 ) -> str:
     """生成章节第一个场景的提示词——全量上下文"""
     scene_block = _build_scene_block(1, scene)
+    # memory_context 格式: <S层故事状态> + <M层近期章节> + <L层历史章节摘录>
+    # S层在最前，[:2000] 确保 S层 和部分 M层 被保留
     ctx = memory_context[:2000] if memory_context else "无"
     callback_str = logic_hooks.get('callback', '无')
     setup_str = logic_hooks.get('setup', '无')
+    prev_tail_block = f"\n【上一章结尾（衔接参考）】\n{prev_chapter_tail}" if prev_chapter_tail else ""
 
     return f"""请根据以下细纲，撰写第{chapter_num}章的第一个场景（共{total_scenes}个场景）。
 
@@ -185,7 +189,8 @@ def build_first_scene_prompt(
 - 待埋设的新矛盾（Setup——须在本章后10%聚焦）：{setup_str}
 
 【前文衔接】
-{ctx}
+（前文记忆分层：<S层故事状态> | <M层近期章节> | <L层历史章节摘录>）
+{ctx}{prev_tail_block}
 
 【场景定位】
 - 这是本章的「开篇场景」，承担着承接前文、建立本章基调的任务。
@@ -220,6 +225,8 @@ def build_next_scene_prompt(
 ) -> str:
     """生成后续场景的提示词（带前文摘要和动态校准）"""
     scene_block = _build_scene_block(scene_index, scene)
+    # memory_context 格式: <S层故事状态> + <M层近期章节> + <L层历史章节摘录>
+    # S层在最前，[:2000] 确保 S层 和部分 M层 被保留
     ctx = memory_context[:2000] if memory_context else "无"
     callback_str = logic_hooks.get('callback', '无')
     setup_str = logic_hooks.get('setup', '无')
@@ -250,10 +257,9 @@ def build_next_scene_prompt(
   情节应逐步推向高潮，为后10%的 Setup 埋设做准备。
 
 【前文衔接】
+（前文记忆分层：<S层故事状态> | <M层近期章节> | <L层历史章节摘录>）
 {ctx}
 {correction}
-
-{_WRITING_INSTRUCTIONS}
 
 【输出要求】
 - 直接输出正文，不要写"场景{scene_index}"等标签。
@@ -297,6 +303,7 @@ def build_chapter_writer_prompt(
     novel_type: str,
     title: str,
     memory_context: str,
+    prev_chapter_tail: str = "",
 ) -> str:
     """生成章节内容的提示词——保守模式：单次生成整章
 
@@ -316,7 +323,10 @@ def build_chapter_writer_prompt(
         scene_blocks.append(_build_scene_block(i + 1, s))
     scenes_text = "\n\n".join(scene_blocks)
 
+    # memory_context 格式: <S层故事状态> + <M层近期章节> + <L层历史章节摘录>
+    # S层在最前，[:2000] 确保 S层 和部分 M层 被保留
     ctx = memory_context[:2000] if memory_context else "无"
+    prev_tail_block = f"\n【上一章结尾（衔接参考）】\n{prev_chapter_tail}" if prev_chapter_tail else ""
 
     return f"""请根据以下深度细纲，撰写第{ch_num}章正文内容。
 
@@ -338,7 +348,8 @@ def build_chapter_writer_prompt(
 - 为后文埋下的新矛盾（Setup——须在后10%聚焦）：{logic_hooks.get('setup', '无')}
 
 【前文衔接】
-{ctx}
+（前文记忆分层：<S层故事状态> | <M层近期章节> | <L层历史章节摘录>）
+{ctx}{prev_tail_block}
 
 {_WRITING_INSTRUCTIONS}
 

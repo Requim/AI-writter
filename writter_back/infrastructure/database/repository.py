@@ -182,6 +182,18 @@ class PostgresNovelRepository(NovelRepository):
             await session.execute(stmt)
             await session.commit()
 
+    async def delete_chapters_by_index(self, novel_id: str, chapter_index: int) -> None:
+        """删除指定小说和章节索引的所有旧版本章节（upsert 用）"""
+        from .models import ChapterModel
+        async with self.async_session() as session:
+            stmt = (
+                delete(ChapterModel)
+                .where(ChapterModel.novel_id == uuid.UUID(novel_id))
+                .where(ChapterModel.chapter_index == chapter_index)
+            )
+            await session.execute(stmt)
+            await session.commit()
+
     # --- Chapter operations ---
 
     async def save_chapter(self, novel_id: str, chapter: Chapter) -> Chapter:

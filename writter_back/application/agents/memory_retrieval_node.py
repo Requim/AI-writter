@@ -9,31 +9,63 @@ from application.schemas.agent_state import NovelAgentState
 async def memory_retrieval_node(state: NovelAgentState, config) -> Command[Literal["chapter_outline_node"]]:
     """
     长期记忆检索节点 - 检索前文上下文，确保章节连贯性
+    降级链路：MemoryService → completed_chapters(state) → DB chapters
     """
     memory_service = config["configurable"].get("memory_service")
+    repository = config["configurable"].get("novel_repository")
     novel_id = config["configurable"].get("thread_id", "")  # thread_id = novel_id
     current_index = state.get("current_chapter_index", 0)
     memory_status = '✅ 已连接' if memory_service else '❌ 不可用'
     logger.info(f"{'='*60}")
     logger.info(f"【记忆检索节点】进入 | 小说ID={novel_id}, 当前章节={current_index}, 记忆服务={memory_status}")
 
-    if memory_service and novel_id:
-        # 从长期记忆服务检索前文上下文
-        memory_context = await memory_service.get_novel_context(novel_id)
-    else:
-        # 降级：从已完成章节构造上下文（含开头+结尾）
-        completed = state.get("completed_chapters", [])
-        memory_parts = []
-        for ch in completed[-3:]:
-            full = ch.get('content', '')
-            head = full[:400]
-            tail = f"\n（结尾）{full[-300:]}" if len(full) > 700 else ""
-            memory_parts.append(
-                f"第{ch.get('chapter_index', 0) + 1}章：{ch.get('title', '')}\n{head}{tail}"
-            )
-        memory_context = "\n\n".join(memory_parts)
+    memory_context = ""
+    retrieval_source = ""
 
-    logger.info(f"【记忆检索节点】完成 -> 章节细纲节点 | memory_context长度={len(memory_context)}字")
+    # ====== 第一优先：MemoryService（novel_memories 表） ======
+    if memory_service and novel_id:
+        memory_context = await memory_service.get_hierarchical_context(novel_id, current_index)
+        if memory_context:
+            retrieval_source = "MemoryService"
+
+    # ====== 第二优先：completed_chapters（state 中的累积列表） ======
+    if not memory_context:
+        completed = state.get("completed_chapters", [])
+        if completed:
+            memory_parts = []
+            for ch in completed[-3:]:
+                full = ch.get('content', '')
+                head = full[:400]
+                tail = f"\n（结尾）{full[-300:]}" if len(full) > 700 else ""
+                memory_parts.append(
+                    f"第{ch.get('chapter_index', 0) + 1}章：{ch.get('title', '')}\n{head}{tail}"
+                )
+            memory_context = "\n\n".join(memory_parts)
+            retrieval_source = "completed_chapters"
+            logger.info(f"【记忆检索节点】从 completed_chapters 降级获取记忆")
+
+    # ====== 第三优先：直接从 DB chapters 表查询 ======
+    if not memory_context and repository and novel_id:
+        try:
+            from uuid import UUID
+            novel = await repository.find_by_id_with_chapters(novel_id)
+            if novel and hasattr(novel, 'chapters') and novel.chapters:
+                chapters_sorted = sorted(novel.chapters, key=lambda c: c.chapter_index)
+                memory_parts = []
+                for ch in chapters_sorted[-3:]:
+                    full = ch.content or ''
+                    head = full[:400]
+                    tail = f"\n（结尾）{full[-300:]}" if len(full) > 700 else ""
+                    memory_parts.append(
+                        f"第{ch.chapter_index + 1}章：{ch.title or ''}\n{head}{tail}"
+                    )
+                memory_context = "\n\n".join(memory_parts)
+                retrieval_source = "DB(chapters)"
+                logger.info(f"【记忆检索节点】从 DB chapters 表降级获取记忆，共 {len(chapters_sorted)} 章")
+        except Exception as e:
+            logger.info(f"【记忆检索节点】DB 降级失败: {e}")
+
+    logger.info(f"【记忆检索节点】完成 -> 路由节点 | 来源={retrieval_source or '无'}, memory_context长度={len(memory_context)}字")
     logger.info(f"{'='*60}")
     return Command(
         goto="router_agent",

@@ -99,10 +99,10 @@ async def router_agent(state: NovelAgentState, config) -> Command:
         return Command(goto="progress_check_node", update={"phase": "writing", "graph_version": "v2"})
 
     # ========== 强制记忆检索守卫 ==========
-    # 当已完成章节 > 0 但 memory_context 为空时，强制先检索记忆再进入细纲生成
-    completed_chapters = state.get("completed_chapters", [])
-    if current_index > 0 and not state.get("memory_context") and completed_chapters:
-        logger.info(f"【路由节点】memory_context 为空且已完成 {len(completed_chapters)} 章，强制 -> memory_retrieval_node")
+    # 当已有前文（current_index > 0）但 memory_context 为空时，强制先检索记忆再进入细纲生成
+    # 注意: 不依赖 completed_chapters（因其为 reducer channel，checkpoint 恢复后可能为空）
+    if current_index > 0 and not state.get("memory_context"):
+        logger.info(f"【路由节点】memory_context 为空，第 {current_index+1} 章需前文记忆，强制 -> memory_retrieval_node")
         logger.info(f"{'='*60}")
         return Command(
             goto="memory_retrieval_node",
@@ -110,7 +110,7 @@ async def router_agent(state: NovelAgentState, config) -> Command:
                 "phase": "writing",
                 "graph_version": "v2",
                 "next_tool": "memory_retrieval_node",
-                "router_reasoning": f"已完成 {len(completed_chapters)} 章但 memory_context 为空，强制检索前文记忆",
+                "router_reasoning": f"第 {current_index+1} 章但 memory_context 为空，强制检索前文记忆",
             }
         )
 

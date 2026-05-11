@@ -63,7 +63,7 @@ def build_reflection_prompt(
 总纲领人物志：
 {json.dumps(main_characters, ensure_ascii=False)}
 
-前文上下文（摘要）：
+前文上下文（<S层故事状态> | <M层近期章节> | <L层历史章节摘录>）：
 {memory_context[:800] if memory_context else '无'}
 
 输出JSON格式：

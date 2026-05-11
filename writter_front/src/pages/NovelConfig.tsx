@@ -1,14 +1,17 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { Card, Steps, Radio, Input, Button, Form, message, Alert, Space, Spin, Progress, Tag, InputNumber, Collapse, Divider, Typography, Select } from 'antd'
+import { Card, Steps, Radio, Input, Button, Form, message, Alert, Space, Spin, Progress, Tag, InputNumber, Collapse, Divider, Typography, Select, Tooltip } from 'antd'
 import { EditOutlined } from '@ant-design/icons'
 import { novelApi, workflowApi } from '@/api/novel'
 import type { NovelCreateRequest, NovelResponse } from '@/api/novel'
 import type { InterruptInfo } from '@/api/novel'
+import { useNovelStore } from '@/stores/novelStore'
 
 const NovelConfig = () => {
   const navigate = useNavigate()
   const { novelId: urlNovelId } = useParams<{ novelId: string }>()
+  const autoMode = useNovelStore(s => s.autoMode)
+  const storeProgress = useNovelStore(s => s.progress)
   const isResumeMode = urlNovelId && urlNovelId !== 'new'
   const [currentStep, setCurrentStep] = useState(0)
   const [resumeLoading, setResumeLoading] = useState(isResumeMode)
@@ -21,6 +24,7 @@ const NovelConfig = () => {
   const [interrupt, setInterrupt] = useState<InterruptInfo | null>(null)
   const [loading, setLoading] = useState(false)
   const [chapterNum, setChapterNum] = useState(0)   // 当前章节编号
+const [totalChapters, setTotalChapters] = useState(0)  // 总章节数
   const [editableOutline, setEditableOutline] = useState<any>(null)  // 可编辑的大纲数据
   const [editableChapter, setEditableChapter] = useState<any>(null)   // 可编辑的章节细纲
   const [editableIssues, setEditableIssues] = useState<any[]>([])       // 可编辑的反思问题
@@ -149,6 +153,9 @@ const NovelConfig = () => {
 
         const threadId = novelData.thread_id || novelData.id
         setThreadId(threadId)
+        if (novelData.total_outline?.total_chapters) {
+          setTotalChapters(novelData.total_outline.total_chapters)
+        }
 
         // 获取工作流状态，加超时兜底
         try {
@@ -160,6 +167,18 @@ const NovelConfig = () => {
           if (stateData.has_interrupt && stateData.interrupts?.length > 0) {
             const interruptValue = stateData.interrupts[0].value
             const interruptAction = interruptValue?.action || ''
+
+            // 自动模式：自动 resume 所有中断（用 getState 确保拿到持久化后的最新值）
+            if (useNovelStore.getState().autoMode) {
+              setStreaming(true)
+              setStreamNode('')
+              setStreamDone([])
+              setTimeout(() => {
+                const resumeVal = getAutoResumeValue(interruptValue)
+                invokeWorkflow(resumeVal, threadId, novelData.id)
+              }, 100)
+              return
+            }
 
             // ready_for_next_chapter → 自动 resume，直接继续创作
             if (interruptAction === 'ready_for_next_chapter') {
@@ -180,24 +199,27 @@ const NovelConfig = () => {
             if (interruptValue.chapter_number) {
               setChapterNum(interruptValue.chapter_number)
             }
+            if (interruptValue.total_chapters) {
+              setTotalChapters(interruptValue.total_chapters)
+            }
             message.info('已恢复上次创作进度')
           } else {
-            // 无中断 → 检查是否真的无状态，还是正在执行中
+            // 无中断 → 检查是否真的无状态，还是已有数据
             const stateValues = stateData.state_values || {}
             const hasExistingState = Object.keys(stateValues).length > 0
 
             if (hasExistingState) {
-              // ⚠️ 工作流已在执行中（可能 LLM 调用中），不要重复发起
-              console.log('[resumeNovel] 工作流正在执行中，开始轮询等待 interrupt')
-              setInterrupt({
-                action: 'placeholder_waiting',
-                message: 'AI 正在创作中，请稍候...',
-              } as InterruptInfo)
+              // 已有状态但无中断 → 工作流空闲，直接 resume 继续创作
+              // 此时工作流停在某个节点等待下一次 resume 触发（如 router_agent 已决定下一步）
+              console.log('[resumeNovel] 工作流空闲但已有状态，直接继续创作')
+              const nextChapter = stateValues.current_chapter || stateValues.completed_chapters?.length || 0
+              setChapterNum(nextChapter + 1)
               setCurrentStep(4)
               setStreaming(true)
               setStreamNode('')
               setStreamDone([])
-              startPollingState(threadId, novelData.id)
+              // 发起 resume，自动模式下 invokeWorkflow 内部收到 interrupt 会链式自动继续
+              setTimeout(() => invokeWorkflow('next', threadId, novelData.id), 100)
             } else {
               // 真正无状态 → 用已有数据跳过设定阶段
               setStreaming(true)
@@ -291,6 +313,32 @@ const NovelConfig = () => {
     }
   }
 
+  /** 自动模式下根据中断类型生成合适的 resume 值 */
+  const getAutoResumeValue = (iv: any): any => {
+    switch (iv?.action) {
+      case 'require_novel_type':
+        return iv.available_types ? Object.keys(iv.available_types)[0] : 'suspense'
+      case 'confirm_or_provide_title': {
+        const first = iv.ai_suggestions?.[0]
+        return typeof first === 'string' ? first : first?.title || '未命名小说'
+      }
+      case 'confirm_or_provide_summary':
+        return 'accept'
+      case 'review_or_modify_outline':
+        return 'accept'
+      case 'review_or_provide_chapter_outline':
+        return 'accept'
+      case 'ready_for_next_chapter':
+        return 'next'
+      case 'review_reflection_issues':
+        return 'revise'
+      case 'confirm_revision':
+        return 'accept'
+      default:
+        return 'accept'
+    }
+  }
+
   // 停止轮询
   const stopPollingState = () => {
     if (pollingRef.current) {
@@ -299,17 +347,25 @@ const NovelConfig = () => {
     }
   }
 
-  // 轮询等待工作流 interrupt
+  // 轮询等待工作流 interrupt（用于 state 查询超时后，不确定工作流是否正在执行的兜底）
   const startPollingState = (threadId: string, novelId: string) => {
     let retries = 0
-    const maxRetries = 20  // ~60 秒
+    const maxRetries = 10  // ~30 秒
 
     stopPollingState()
     pollingRef.current = setInterval(async () => {
       if (retries >= maxRetries) {
         stopPollingState()
-        message.warning('获取工作流状态超时，请刷新页面')
-        setStreaming(false)
+        // 轮询超时后不再报错，而是直接尝试 resume 继续创作
+        console.log('[startPollingState] 轮询超时，直接尝试 resume')
+        const nextChapter = (() => {
+          try { return JSON.parse(localStorage.getItem('novel-store') || '{}')?.state?.currentChapter || 0 } catch { return 0 }
+        })()
+        setChapterNum(Math.max(nextChapter, 1))
+        setStreaming(true)
+        setStreamNode('')
+        setStreamDone([])
+        setTimeout(() => invokeWorkflow('next', threadId, novelId), 100)
         return
       }
       retries++
@@ -318,10 +374,18 @@ const NovelConfig = () => {
         if (state.has_interrupt && state.interrupts?.length > 0) {
           stopPollingState()
           const iv = state.interrupts[0].value
-          setInterrupt(iv)
-          setCurrentStep(getStepFromAction(iv.action))
-          setStreaming(false)
-          if (iv.chapter_number) setChapterNum(iv.chapter_number)
+          const ia = iv?.action || ''
+
+          if (useNovelStore.getState().autoMode) {
+            // 自动模式：拿到 interrupt 后直接 resume，保持 streaming 不断
+            const resumeVal = getAutoResumeValue(iv)
+            setTimeout(() => invokeWorkflow(resumeVal, threadId, novelId), 100)
+          } else {
+            setInterrupt(iv)
+            setCurrentStep(getStepFromAction(ia))
+            setStreaming(false)
+            if (iv.chapter_number) setChapterNum(iv.chapter_number)
+          }
         }
       } catch (_) {
         // 轮询失败自动重试
@@ -342,16 +406,20 @@ const NovelConfig = () => {
 
     invokingRef.current = true
 
+    // 自动模式开关
+    const { autoMode } = useNovelStore.getState()
+
     // resumeValue === undefined → 首次启动工作流（新 input）
     // resumeValue 为 { input: {...} } 对象 → 直接使用（恢复模式加载已有状态，跳过设定阶段）
     // 其他情况（string 或 object）→ 从 interrupt 恢复，作为 command.resume 发送
     let data: any
     if (resumeValue === undefined) {
-      data = { input: { novel_id: effectiveNovelId, novel_type: novelType } }
+      data = { input: { novel_id: effectiveNovelId, novel_type: novelType, _auto_mode: autoMode } }
     } else if (resumeValue && typeof resumeValue === 'object' && 'input' in resumeValue) {
       data = resumeValue
+      if (autoMode) data.input._auto_mode = true
     } else {
-      data = { command: { resume: resumeValue } }
+      data = { command: { resume: resumeValue, _auto_mode: autoMode } }
     }
 
     setStreaming(true)
@@ -403,15 +471,25 @@ const NovelConfig = () => {
               setChapterNum(newChapterNum)
               setInterrupt(interruptValue)
               setCurrentStep(newStep)
-              setStreaming(false)
 
-              // 章节完成 -> 自动跳转到书籍详情页
-              if (interruptAction === 'ready_for_next_chapter') {
-                message.success(`第 ${newChapterNum} 章已完成！`)
-                // 延迟跳转，让 UI 先更新
-                setTimeout(() => {
-                  navigate(`/progress/${effectiveNovelId}`)
-                }, 500)
+              // 自动模式：收到 interrupt 后自动 resume，无需用户确认
+              if (useNovelStore.getState().autoMode) {
+                const resumeVal = getAutoResumeValue(interruptValue)
+                // 章节完成 -> 自动进入下一章
+                if (interruptAction === 'ready_for_next_chapter') {
+                  message.success(`第 ${newChapterNum} 章已完成！`)
+                }
+                // 不移除 streaming 状态，保持流式 UI 不断
+                setTimeout(() => invokeWorkflow(resumeVal, effectiveThreadId, effectiveNovelId), 100)
+              } else {
+                setStreaming(false)
+                // 章节完成 -> 跳转到书籍详情页（仅非自动模式）
+                if (interruptAction === 'ready_for_next_chapter') {
+                  message.success(`第 ${newChapterNum} 章已完成！`)
+                  setTimeout(() => {
+                    navigate(`/progress/${effectiveNovelId}`)
+                  }, 500)
+                }
               }
               return
             }
@@ -618,7 +696,7 @@ const NovelConfig = () => {
 
   return (
     <div style={{ maxWidth: 960, margin: '40px auto', padding: '0 20px' }}>
-      {resumeLoading ? (
+      {resumeLoading && !autoMode ? (
         <div style={{ textAlign: 'center', padding: 100 }}>
           <Spin size="large" tip="正在加载小说数据..." />
         </div>
@@ -630,14 +708,108 @@ const NovelConfig = () => {
       }
         extra={<Button onClick={() => navigate('/')}>返回书架</Button>}
       >
+        {/* ====== 自动模式：实时节点流面板 ====== */}
+        {autoMode && streaming && (
+          <div style={{ textAlign: 'center', padding: '20px 0' }}>
+            {/* 当前执行节点 */}
+            <div style={{ fontSize: 28, fontWeight: 700, color: '#667eea', marginBottom: 8 }}>
+              {streamNode ? (
+                <><Spin style={{ marginRight: 12 }} />{nodeLabels[streamNode] || streamNode}</>
+              ) : (
+                <><Spin style={{ marginRight: 12 }} />准备中...</>
+              )}
+            </div>
+            <div style={{ color: '#999', fontSize: 14, marginBottom: 24 }}>
+              {chapterNum > 0 ? `第 ${chapterNum} 章` : '设定阶段'}
+            </div>
+
+            {/* 已完成节点列表 */}
+            {streamDone.length > 0 && (
+              <div style={{ marginBottom: 32 }}>
+                <Space wrap size={[8, 6]}>
+                  {streamDone.map((node, i) => (
+                    <Tag key={i} color="success" style={{ padding: '4px 12px', fontSize: 14, borderRadius: 6 }}>
+                      ✓ {nodeLabels[node] || node}
+                    </Tag>
+                  ))}
+                </Space>
+              </div>
+            )}
+
+            {/* 进度条 */}
+            <Progress
+              percent={totalChapters > 0 ? Math.round(chapterNum / totalChapters * 100) : 0}
+              status="active"
+              strokeColor={{ from: '#667eea', to: '#764ba2' }}
+              style={{ maxWidth: 400, margin: '0 auto' }}
+            />
+            <div style={{ color: '#999', fontSize: 13, marginTop: 4 }}>
+              已完成 {chapterNum} / {totalChapters || '?'} 章
+            </div>
+
+            {/* 节点执行日志 */}
+            {streamDone.length > 0 && (
+              <div style={{
+                marginTop: 32, textAlign: 'left',
+                background: '#fafafa', borderRadius: 8, padding: '16px 20px',
+                maxWidth: 480, marginLeft: 'auto', marginRight: 'auto',
+              }}>
+                <div style={{ fontSize: 13, color: '#999', marginBottom: 8, fontWeight: 600 }}>执行日志</div>
+                {streamDone.map((node, i) => (
+                  <div key={i} style={{
+                    display: 'flex', alignItems: 'center', gap: 8,
+                    padding: '4px 0', fontSize: 13, color: '#666',
+                    borderBottom: i < streamDone.length - 1 ? '1px solid #f0f0f0' : 'none',
+                  }}>
+                    <span style={{ color: '#52c41a', fontWeight: 'bold', fontSize: 16 }}>✓</span>
+                    <span>{nodeLabels[node] || node}</span>
+                    {i === streamDone.length - 1 && streamNode && (
+                      <Tag color="processing" style={{ marginLeft: 'auto', fontSize: 11 }}>进行中</Tag>
+                    )}
+                  </div>
+                ))}
+                {streamNode && !streamDone.includes(streamNode) && (
+                  <div style={{
+                    display: 'flex', alignItems: 'center', gap: 8,
+                    padding: '4px 0', fontSize: 13, color: '#667eea', fontWeight: 500,
+                  }}>
+                    <Spin size="small" />
+                    <span>{nodeLabels[streamNode] || streamNode}</span>
+                    <Tag color="processing" style={{ marginLeft: 'auto', fontSize: 11 }}>进行中</Tag>
+                  </div>
+                )}
+              </div>
+            )}
+
+          </div>
+        )}
+
+        {/* ====== 自动模式非流式状态：兜底 UI（不覆盖初始步骤 0） ====== */}
+        {autoMode && !streaming && currentStep > 0 && (
+          <div style={{ textAlign: 'center', padding: '60px 0' }}>
+            <div style={{ fontSize: 16, color: '#999', marginBottom: 24 }}>
+              AI 创作已暂停或已完成
+            </div>
+            <Space>
+              <Button onClick={() => navigate('/')}>
+                返回书架
+              </Button>
+              <Button type="primary" onClick={() => navigate(0)}>
+                刷新重试
+              </Button>
+            </Space>
+          </div>
+        )}
+
+        {/* ====== 步骤向导 ====== */}
         <Steps
           current={isChapterPhase ? chapterLocalStep : currentStep}
           style={{ marginBottom: 40 }}
           items={isChapterPhase ? chapterSteps : setupSteps}
         />
 
-        {/* 流式进度节点标签（遮罩内已有 Spin，此处只显示已完成的节点名） */}
-        {streaming && streamDone.length > 0 && (
+        {/* 流式进度节点标签 */}
+        {!autoMode && streaming && streamDone.length > 0 && (
           <div style={{ marginBottom: 24 }}>
             <Space wrap size={[8, 4]}>
               {streamDone.map(node => (
@@ -647,7 +819,7 @@ const NovelConfig = () => {
           </div>
         )}
 
-        {/* Step 0: 选择小说类型（无中断时显示） */}
+        {/* Step 0: 选择小说类型 */}
         {!interrupt && currentStep === 0 && (
           <div>
             <h3>{isResumeMode ? '确认小说类型' : '选择小说类型（必选）'}</h3>

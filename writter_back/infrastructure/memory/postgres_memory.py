@@ -1,11 +1,14 @@
 """PostgreSQL + pgvector 长期记忆实现"""
 import json
+import logging
 import uuid
 from typing import List, Dict, Any, Optional
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy import select, text
 
 from service.ports.memory_service import MemoryService
+
+logger = logging.getLogger(__name__)
 
 
 class PostgresMemoryAdapter(MemoryService):
@@ -84,6 +87,20 @@ class PostgresMemoryAdapter(MemoryService):
 
         return await self.store(novel_id, content, metadata)
 
+    async def delete_chapter_memory(self, novel_id: str, chapter_index: int) -> None:
+        """删除指定章节索引的旧记忆"""
+        async with self.async_session() as session:
+            stmt = text("""
+                DELETE FROM novel_memories
+                WHERE novel_id = :novel_id
+                  AND metadata @> CAST(:meta_filter AS jsonb)
+            """)
+            await session.execute(stmt, {
+                "novel_id": uuid.UUID(novel_id),
+                "meta_filter": json.dumps({"type": "chapter", "chapter_index": chapter_index})
+            })
+            await session.commit()
+
     async def search_similar(self, novel_id: str, embedding: List[float], top_k: int = 5) -> List[Dict[str, Any]]:
         """基于向量相似度检索记忆（需要pgvector扩展）
 
@@ -96,3 +113,125 @@ class PostgresMemoryAdapter(MemoryService):
         """
         # 简化版：回退到基于时间的检索
         return await self.retrieve(novel_id, "", top_k=top_k)
+
+    async def store_chapter_summary(self, novel_id: str, chapter_index: int, summary_content: str) -> str:
+        """Store L-layer chapter summary"""
+        logger.info("Storing chapter summary for novel %s, chapter %d", novel_id, chapter_index)
+        metadata = {
+            "type": "chapter_summary",
+            "chapter_index": chapter_index
+        }
+        return await self.store(novel_id, summary_content, metadata)
+
+    async def update_story_state(self, novel_id: str, state_content: str) -> None:
+        """Upsert S-layer story state (delete old type='story_state', insert new)"""
+        logger.info("Updating story state for novel %s", novel_id)
+        async with self.async_session() as session:
+            # Delete existing story_state
+            stmt = text("""
+                DELETE FROM novel_memories
+                WHERE novel_id = :novel_id
+                  AND metadata @> CAST(:meta_filter AS jsonb)
+            """)
+            await session.execute(stmt, {
+                "novel_id": uuid.UUID(novel_id),
+                "meta_filter": json.dumps({"type": "story_state"})
+            })
+
+            # Insert new story state
+            new_id = str(uuid.uuid4())
+            stmt = text("""
+                INSERT INTO novel_memories (id, novel_id, content, metadata, created_at)
+                VALUES (:id, :novel_id, :content, :metadata, NOW())
+            """)
+            await session.execute(stmt, {
+                "id": uuid.UUID(new_id),
+                "novel_id": uuid.UUID(novel_id),
+                "content": state_content,
+                "metadata": json.dumps({"type": "story_state"})
+            })
+            await session.commit()
+
+    async def get_hierarchical_context(self, novel_id: str, current_index: int, m_count: int = 3) -> str:
+        """Get S+M+L hierarchical context as formatted string"""
+        logger.info("Building hierarchical context for novel %s, current_index=%d, m_count=%d",
+                    novel_id, current_index, m_count)
+        novel_uuid = uuid.UUID(novel_id)
+
+        async with self.async_session() as session:
+            # S-layer: story state
+            s_stmt = text("""
+                SELECT content FROM novel_memories
+                WHERE novel_id = :novel_id
+                  AND metadata @> CAST(:meta_filter AS jsonb)
+                ORDER BY created_at DESC
+                LIMIT 1
+            """)
+            s_result = await session.execute(s_stmt, {
+                "novel_id": novel_uuid,
+                "meta_filter": json.dumps({"type": "story_state"})
+            })
+            s_row = s_result.fetchone()
+            story_state = s_row[0] if s_row else None
+
+            # M-layer: recent chapters (exclude current chapter)
+            m_stmt = text("""
+                SELECT content, metadata FROM novel_memories
+                WHERE novel_id = :novel_id
+                  AND metadata @> CAST(:type_filter AS jsonb)
+                  AND (metadata->>'chapter_index')::int >= :min_index
+                  AND (metadata->>'chapter_index')::int < :current_index
+                ORDER BY (metadata->>'chapter_index')::int ASC
+            """)
+            m_result = await session.execute(m_stmt, {
+                "novel_id": novel_uuid,
+                "type_filter": json.dumps({"type": "chapter"}),
+                "min_index": current_index - m_count,
+                "current_index": current_index
+            })
+            m_rows = m_result.fetchall()
+
+            # L-layer: historical chapter summaries
+            l_stmt = text("""
+                SELECT content, metadata FROM novel_memories
+                WHERE novel_id = :novel_id
+                  AND metadata @> CAST(:type_filter AS jsonb)
+                  AND (metadata->>'chapter_index')::int < :max_index
+                ORDER BY (metadata->>'chapter_index')::int ASC
+            """)
+            l_result = await session.execute(l_stmt, {
+                "novel_id": novel_uuid,
+                "type_filter": json.dumps({"type": "chapter_summary"}),
+                "max_index": current_index - m_count
+            })
+            l_rows = l_result.fetchall()
+
+        # Return empty string if no data at all
+        if not story_state and not m_rows and not l_rows:
+            return ""
+
+        parts = []
+
+        # S-layer
+        if story_state:
+            parts.append(f"<S层故事状态>\n{story_state}")
+
+        # M-layer（store_chapter_memory 已含"第N章：Title"前缀，此处直接用原始内容）
+        if m_rows:
+            m_parts = []
+            for row in m_rows:
+                content = row[0]
+                m_parts.append(content)
+            parts.append("<M层近期章节>\n" + "\n\n".join(m_parts))
+
+        # L-layer
+        if l_rows:
+            l_parts = []
+            for row in l_rows:
+                content = row[0]
+                meta = row[1] if isinstance(row[1], dict) else (json.loads(row[1]) if row[1] else {})
+                idx = meta.get("chapter_index", 0)
+                l_parts.append(f"第{idx + 1}章摘要：{content}")
+            parts.append("<L层历史章节摘录>\n" + "\n".join(l_parts))
+
+        return "\n\n".join(parts)

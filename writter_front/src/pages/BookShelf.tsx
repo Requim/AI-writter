@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Card, Row, Col, Button, Tag, Progress, Empty, Spin, Typography, Space, Popconfirm, message, Checkbox } from 'antd'
-import { PlusOutlined, BookOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons'
+import { Card, Row, Col, Button, Tag, Progress, Empty, Spin, Typography, Space, Popconfirm, message, Checkbox, Switch, Tooltip } from 'antd'
+import { PlusOutlined, BookOutlined, EditOutlined, DeleteOutlined, RobotOutlined } from '@ant-design/icons'
 import { novelApi } from '@/api/novel'
 import type { NovelResponse } from '@/api/novel'
 import { useNovelStore } from '@/stores/novelStore'
@@ -24,7 +24,7 @@ const novelTypeLabels: Record<string, string> = {
 
 const BookShelf = () => {
   const navigate = useNavigate()
-  const { setCurrentNovel } = useNovelStore()
+  const { setCurrentNovel, autoMode, setAutoMode } = useNovelStore()
   const [novels, setNovels] = useState<NovelResponse[]>([])
   const [loading, setLoading] = useState(true)
 
@@ -159,7 +159,17 @@ const BookShelf = () => {
             AI 智能小说创作助手
           </Text>
         </div>
-        <Space>
+        <Space size="middle">
+          <Space>
+            <RobotOutlined style={{ color: 'rgba(255,255,255,0.7)', fontSize: 16 }} />
+            <Switch
+              checked={autoMode}
+              onChange={setAutoMode}
+              checkedChildren="自动"
+              unCheckedChildren="手动"
+              style={{ background: autoMode ? '#52c41a' : undefined }}
+            />
+          </Space>
           <Button
             type="primary"
             size="large"
@@ -332,12 +342,14 @@ const BookShelf = () => {
                 </div>
 
                 {novel.summary && (
-                  <Paragraph
-                    ellipsis={{ rows: 2 }}
-                    style={{ color: '#666', fontSize: 13, marginBottom: 12 }}
-                  >
-                    {novel.summary}
-                  </Paragraph>
+                  <Tooltip title={novel.summary} mouseEnterDelay={0.3}>
+                    <Paragraph
+                      ellipsis={{ rows: 2 }}
+                      style={{ color: '#666', fontSize: 13, marginBottom: 12 }}
+                    >
+                      {novel.summary}
+                    </Paragraph>
+                  </Tooltip>
                 )}
 
                 <Progress

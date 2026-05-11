@@ -1,4 +1,9 @@
 """FastAPI主应用 - 带依赖注入装配"""
+import asyncio
+# Windows 兼容: psycopg async 模式需要 SelectorEventLoop
+if hasattr(asyncio, "WindowsSelectorEventLoopPolicy"):
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager

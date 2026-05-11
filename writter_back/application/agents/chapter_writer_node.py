@@ -143,6 +143,7 @@ async def _scene_queue_generate(
     title: str,
     memory_context: str,
     llm,
+    prev_chapter_tail: str = "",
 ) -> str:
     """场景队列生成：逐个场景生成，每步上下文透传 + 动态校准"""
     chapter_num = chapter_outline.get('chapter_number', '?')
@@ -180,6 +181,7 @@ async def _scene_queue_generate(
                 total_scenes=num_scenes,
                 logic_hooks=logic_hooks,
                 internal_monologue=internal_monologue,
+                prev_chapter_tail=prev_chapter_tail,
             )
         else:
             # ── Prompt B: 后续场景（上下文透传 + 校准） ──
@@ -272,7 +274,7 @@ async def _final_word_check(
     llm,
     system_prompt: str,
 ) -> str:
-    """最终字数检查：不足则扩展，过多则截断"""
+    """最终字数检查：不足则扩展（不再截断）"""
     word_count = len(content)
 
     if word_count < MIN_WORDS:
@@ -284,18 +286,35 @@ async def _final_word_check(
         )
         content += "\n\n" + additional_content
         logger.info(f"【字数检查】扩展后字数: {len(content)}字")
-
-    elif word_count > TRUNCATE_TRIGGER:
-        logger.info(
-            f"【字数检查】字数过多 ({word_count}字)，按语义截断至{MAX_WORDS}字附近",
-        )
-        content = _semantic_truncate(content, MAX_WORDS)
-        logger.info(f"【字数检查】语义截断后字数: {len(content)}字")
-
     else:
         logger.info(f"【字数检查】字数合格: {word_count}字")
 
     return content
+
+
+async def _get_prev_chapter_tail(config, novel_id: str, current_chapter_index: int) -> str:
+    """从 DB 获取上一章正文末尾 1000 字，用于衔接"""
+    repository = config["configurable"].get("novel_repository")
+    if not repository or current_chapter_index <= 0:
+        return ""
+    try:
+        novel = await repository.find_by_id_with_chapters(novel_id)
+        if not novel or not hasattr(novel, 'chapters'):
+            return ""
+        chapters_sorted = sorted(novel.chapters, key=lambda c: c.chapter_index)
+        prev_ch = None
+        for ch in chapters_sorted:
+            if ch.chapter_index == current_chapter_index - 1:
+                prev_ch = ch
+                break
+        if not prev_ch or not prev_ch.content:
+            return ""
+        tail = prev_ch.content[-1000:]
+        logger.info(f"【章节写作节点】已获取上一章(#{current_chapter_index})末尾 {len(tail)}字 用于衔接")
+        return tail
+    except Exception as e:
+        logger.info(f"【章节写作节点】获取上一章尾部失败(降级): {e}")
+        return ""
 
 
 async def chapter_writer_node(
@@ -332,10 +351,16 @@ async def chapter_writer_node(
     use_scene_queue = len(scenes) >= SCENE_QUEUE_MIN_SCENES
     system_prompt = build_chapter_system_prompt(novel_type)
 
+    # 获取上一章尾部用于衔接（只在非第一章时有效）
+    novel_id = config["configurable"].get("thread_id", "")
+    current_idx = state.get("current_chapter_index", 0)
+    prev_tail = await _get_prev_chapter_tail(config, novel_id, current_idx)
+
     if use_scene_queue:
         logger.info(
             f"【章节写作节点】场景队列模式 | {len(scenes)}个场景",
         )
+        # 场景队列模式下，prev_tail 传给第一个场景 prompt
         content = await _scene_queue_generate(
             scenes=scenes,
             chapter_outline=chapter_outline,
@@ -343,13 +368,14 @@ async def chapter_writer_node(
             title=title,
             memory_context=memory_context,
             llm=llm,
+            prev_chapter_tail=prev_tail,
         )
     else:
         logger.info(
             f"【章节写作节点】保守模式（场景数={len(scenes)} < {SCENE_QUEUE_MIN_SCENES}）",
         )
         prompt = build_chapter_writer_prompt(
-            chapter_outline, novel_type, title, memory_context,
+            chapter_outline, novel_type, title, memory_context, prev_chapter_tail=prev_tail,
         )
         content = await llm.generate(
             prompt=prompt,
@@ -357,7 +383,7 @@ async def chapter_writer_node(
             temperature=CHAPTER_WRITER_TEMPERATURE,
         )
 
-    # 最终字数检查
+    # 最终字数检查（不足则扩展，不再截断）
     content = await _final_word_check(content, llm, system_prompt)
 
     logger.info(
@@ -366,5 +392,8 @@ async def chapter_writer_node(
     logger.info(f"{'='*60}")
     return Command(
         goto="router_agent",
-        update={"current_chapter_content": content},
+        update={
+            "current_chapter_content": content,
+            "revision_attempts": 0,  # 新章节重置修正计数器
+        },
     )

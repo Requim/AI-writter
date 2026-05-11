@@ -6,6 +6,12 @@ from typing import Literal
 from uuid import uuid4, UUID
 from datetime import datetime
 from application.schemas.agent_state import NovelAgentState
+from application.prompts.memory_prompts import (
+    build_chapter_summary_prompt,
+    build_story_state_prompt,
+    CHAPTER_SUMMARY_TEMPERATURE,
+    STORY_STATE_TEMPERATURE,
+)
 
 
 async def persist_node(state: NovelAgentState, config) -> Command[Literal["progress_check_node"]]:
@@ -79,6 +85,10 @@ async def persist_node(state: NovelAgentState, config) -> Command[Literal["progr
 
     if repository and novel_id:
         try:
+            # UPSERT：先删该章节索引的旧版本，再保存新版本，保证每章只有一行
+            await repository.delete_chapters_by_index(novel_id, current_index)
+            logger.info(f"【持久化节点】已清理 ch={current_index} 旧版本")
+
             from service.entities.chapter import Chapter
             from uuid import UUID
             chapter_entity = Chapter(
@@ -106,11 +116,37 @@ async def persist_node(state: NovelAgentState, config) -> Command[Literal["progr
 
     if memory_service and novel_id:
         try:
+            # UPSERT：先删该章节索引的旧记忆，再存新版本
+            await memory_service.delete_chapter_memory(novel_id, current_index)
             await memory_service.store_chapter_memory(novel_id, completed_chapter)
-            logger.info(f"【持久化节点】长期记忆已存储")
+            logger.info(f"【持久化节点】长期记忆已存储（替换旧版）")
         except Exception as e:
             logger.info(f"【持久化节点】记忆存储失败(降级): {e}")
             pass
+
+    # ====== Plan A: 分层记忆 —— 生成 L层摘要 + S层故事状态 ======
+    if memory_service and novel_id and current_chapter_content:
+        try:
+            llm_config = config["configurable"].get("llm_config", {})
+            llm_instance = llm_config.get("llm_instance")
+            if llm_instance:
+                # --- L层：章节摘要 ---
+                summary_prompt = build_chapter_summary_prompt(
+                    completed_chapter['title'], current_chapter_content
+                )
+                summary = await llm_instance.generate(summary_prompt, temperature=CHAPTER_SUMMARY_TEMPERATURE)
+                await memory_service.store_chapter_summary(novel_id, current_index, summary[:500])
+                logger.info(f"【持久化节点·分层记忆】L层摘要已存储 | ch={current_index}")
+
+                # --- S层：故事状态 ---
+                state_prompt = build_story_state_prompt(
+                    current_index, completed_chapter['title'], current_chapter_content
+                )
+                story_state = await llm_instance.generate(state_prompt, temperature=STORY_STATE_TEMPERATURE)
+                await memory_service.update_story_state(novel_id, story_state[:1000])
+                logger.info(f"【持久化节点·分层记忆】S层故事状态已更新")
+        except Exception as e:
+            logger.info(f"【持久化节点·分层记忆】生成失败(降级): {e}")
 
     total_outline_raw = state.get("total_outline")
     if isinstance(total_outline_raw, str):

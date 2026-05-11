@@ -79,6 +79,12 @@ async def invoke_workflow(
         raise HTTPException(status_code=409, detail="该工作流正在执行中，请等待完成后再试")
     orchestrator.mark_executing(thread_id, True)
     
+    # 提取自动模式开关
+    if request.command and "_auto_mode" in request.command:
+        orchestrator.set_auto_mode(thread_id, request.command.pop("_auto_mode"))
+    if request.input and "_auto_mode" in request.input:
+        orchestrator.set_auto_mode(thread_id, request.input.pop("_auto_mode"))
+    
     import asyncio
     
     try:
@@ -184,6 +190,12 @@ async def stream_workflow_post(
     orchestrator: NovelOrchestrator = Depends(get_orchestrator),
 ):
     """SSE 流式获取工作流执行过程（POST 版本，支持恢复）"""
+    # 提取自动模式开关
+    if request.command and "_auto_mode" in request.command:
+        orchestrator.set_auto_mode(thread_id, request.command.pop("_auto_mode"))
+    if request.input and "_auto_mode" in request.input:
+        orchestrator.set_auto_mode(thread_id, request.input.pop("_auto_mode"))
+
     # 检查是否正在执行中（防重复）
     if orchestrator.is_executing(thread_id):
         logger.info(f"【工作流API·SSE】thread_id={thread_id} 正在执行中, 拒绝并发请求")

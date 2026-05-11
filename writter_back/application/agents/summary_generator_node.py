@@ -35,6 +35,16 @@ async def summary_generator_node(state: NovelAgentState, config) -> Command[Lite
     prompt = build_summary_prompt(novel_type, title, story_hint)
     ai_summary = await llm.generate(prompt, temperature=SUMMARY_TEMPERATURE)
     
+    # 自动模式：直接接受
+    auto_mode = config["configurable"].get("auto_mode", False)
+    if auto_mode:
+        logger.info(f"【简介生成节点】自动模式 | 接受AI生成")
+        logger.info(f"{'='*60}")
+        return Command(
+            goto="outline_node",
+            update={"summary": ai_summary}
+        )
+
     # 暂停，让用户确认或修改
     user_choice = interrupt({
         "action": "confirm_or_provide_summary",

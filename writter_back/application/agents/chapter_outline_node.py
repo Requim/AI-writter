@@ -76,6 +76,16 @@ async def chapter_outline_node(state: NovelAgentState, config) -> Command[Litera
     if word_count < 3000 or word_count > 7000:
         ai_outline["estimated_word_count"] = max(3000, min(7000, word_count))
     
+    # 自动模式：直接接受
+    auto_mode = config["configurable"].get("auto_mode", False)
+    if auto_mode:
+        logger.info(f"【章节细纲节点】自动模式 | 接受AI生成")
+        logger.info(f"{'='*60}")
+        return Command(
+            goto="router_agent",
+            update={"chapter_outlines": [ai_outline]}
+        )
+
     # 暂停，让用户审阅/修改
     user_decision = interrupt({
         "action": "review_or_provide_chapter_outline",

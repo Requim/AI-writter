@@ -52,6 +52,20 @@ async def progress_check_node(state: NovelAgentState, config) -> dict:
         logger.info(f"{'='*60}")
         return {"__route__": "continue", "current_chapter_index": current_index}
 
+    # 自动模式：不中断，直接继续下一章
+    auto_mode = config["configurable"].get("auto_mode", False)
+    if auto_mode:
+        logger.info(f"【进度检查节点】自动模式 | 继续创作第 {current_index} 章")
+        logger.info(f"{'='*60}")
+        return {
+            "__route__": "continue",
+            "current_chapter_index": current_index,
+            "current_chapter_content": "",
+            "reflection_issues": [],
+            "user_decision": {},
+            "memory_context": "",
+        }
+
     user_choice = interrupt({
         "action": "ready_for_next_chapter",
         "message": f"第{current_index}章已完成，共{total_chapters}章",

@@ -29,7 +29,8 @@ def build_chapter_outline_prompt(
 【本章上下文】
 书名/类型：{title} / {novel_type}
 本章主题/事件：{theme_str} | {events_str}
-前文提要：{ctx}
+前文提要（<S层故事状态> | <M层近期章节> | <L层历史章节摘录>）：
+{ctx}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 【核心生成约束——必须逐条遵守】
