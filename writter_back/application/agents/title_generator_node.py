@@ -1,6 +1,7 @@
 """书名生成节点 - 用户输入优先，否则AI生成"""
 import logging
 logger = logging.getLogger("uvicorn")
+from langchain_core.runnables import RunnableConfig
 from langgraph.types import interrupt, Command
 from typing import Literal
 from application.schemas.agent_state import NovelAgentState
@@ -30,7 +31,9 @@ def _parse_title_suggestions(text: str) -> list:
     return suggestions[:10]
 
 
-async def title_generator_node(state: NovelAgentState, config) -> Command[Literal["summary_node"]]:
+async def title_generator_node(
+    state: NovelAgentState, config: RunnableConfig
+) -> Command[Literal["summary_node"]]:
     """
     书名节点 - 用户输入优先，否则AI生成
     如果用户未提供书名，AI自动生成后询问用户确认
@@ -51,9 +54,7 @@ async def title_generator_node(state: NovelAgentState, config) -> Command[Litera
     llm = llm_config.get("llm_instance")
 
     if not llm:
-        logger.info("【书名生成节点】LLM不可用，跳过 -> persist")
-        logger.info(f"{'='*60}")
-        return Command(goto="summary_node")
+        raise RuntimeError("书名生成失败：LLM 不可用")
 
     # AI 生成书名候选
     prompt = build_title_prompt(novel_type)

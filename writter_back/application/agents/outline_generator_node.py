@@ -3,6 +3,7 @@
 import logging
 from typing import Literal
 
+from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command, interrupt
 
 from application.prompts.outline_prompts import (
@@ -17,8 +18,8 @@ logger = logging.getLogger("uvicorn")
 
 async def outline_generator_node(
     state: NovelAgentState,
-    config,
-) -> Command[Literal["persist_node"]]:
+    config: RunnableConfig,
+) -> Command[Literal["persist_node", "outline_node"]]:
     """Generate global constraints and volumes, never all chapter plans at once."""
     novel_type = state.get("novel_type", "")
     title = state.get("title", "")

@@ -1,6 +1,7 @@
 """修正节点 - 根据用户决策或AI自动修正"""
 import logging
 logger = logging.getLogger("uvicorn")
+from langchain_core.runnables import RunnableConfig
 from langgraph.types import interrupt, Command
 from typing import Literal
 from application.schemas.agent_state import NovelAgentState
@@ -18,7 +19,17 @@ from application.prompts.revision_prompts import (
 )
 
 
-async def revision_node(state: NovelAgentState, config) -> Command[Literal["chapter_writer_node", "persist_node"]]:
+async def revision_node(
+    state: NovelAgentState,
+    config: RunnableConfig,
+) -> Command[
+    Literal[
+        "chapter_writer_node",
+        "persist_node",
+        "reflection_node",
+        "revision_node",
+    ]
+]:
     """
     修正节点 - 根据用户决策或AI自动修正
     用户决策优先，否则AI根据问题列表自动修正
@@ -111,6 +122,8 @@ async def revision_node(state: NovelAgentState, config) -> Command[Literal["chap
                 system_prompt=build_revision_system_prompt(),
                 temperature=temperature,
             )
+            if not revised_content.strip():
+                raise RuntimeError("章节修订失败：模型未返回正文")
             original_len = len(current_content)
             revised_len = len(revised_content)
             logger.info(f"【修正节点】修正完成 | 原长度={original_len}字, 修正后={revised_len}字")
@@ -137,6 +150,8 @@ async def revision_node(state: NovelAgentState, config) -> Command[Literal["chap
                     system_prompt=build_revision_system_prompt(),
                     temperature=REFACTOR_TEMPERATURE + 0.1,
                 )
+                if not revised_content.strip():
+                    raise RuntimeError("章节修订扩写失败：模型未返回正文")
                 logger.info(f"【修正节点】扩充后字数: {len(revised_content)}字")
         else:
             logger.info("【修正节点】LLM不可用，保留原内容")

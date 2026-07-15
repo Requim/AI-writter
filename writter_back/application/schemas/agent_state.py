@@ -26,6 +26,7 @@ class NovelAgentState(TypedDict):
     
     # ========== 长期记忆 ==========
     memory_context: Optional[str]
+    memory_retrieved_for_chapter: Optional[int]
     
     # ========== 反思修正 ==========
     reflection_issues: Optional[List[Dict]]   # 发现的问题列表

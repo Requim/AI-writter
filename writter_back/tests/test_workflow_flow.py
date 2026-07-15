@@ -1,11 +1,15 @@
 """Tests for the deterministic macro-outline and per-chapter workflow."""
 
 import asyncio
+import ast
+import inspect
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
+from langgraph.graph import END, StateGraph
 
 from api.routers.workflow_router import (
     WorkflowInvokeRequest,
@@ -13,9 +17,18 @@ from api.routers.workflow_router import (
     _public_error_data,
 )
 from application.agents.router_agent import _route
+from application.agents.router_agent import router_agent
 from application.orchestrator import NovelOrchestrator
+from application.prompts.chapter_outline_prompts import CHAPTER_OUTLINE_SCHEMA
 from application.prompts.chapter_outline_prompts import build_chapter_outline_prompt
 from application.prompts.outline_prompts import build_outline_prompt, validate_outline
+from application.prompts.reflection_prompts import (
+    AGGREGATION_SCHEMA,
+    CHUNK_REFLECTION_SCHEMA,
+    REFLECTION_SCHEMA,
+)
+from application.schemas.agent_state import NovelAgentState
+from application.workflow_builder import WORKFLOW_NODES, create_novel_workflow
 from service.entities.identity import TenantContext
 
 
@@ -37,6 +50,151 @@ def orchestrator() -> NovelOrchestrator:
         memory_service=SimpleNamespace(),
         llm_config={},
     )
+
+
+class FakeWorkflowLLM:
+    def __init__(self) -> None:
+        self.chapter_outline_calls = 0
+        self.stream_calls = 0
+
+    async def generate(self, *_args, **_kwargs) -> str:
+        return "生成文本"
+
+    async def structured_generate(self, prompt, schema, **_kwargs):
+        del prompt
+        if schema is CHAPTER_OUTLINE_SCHEMA:
+            self.chapter_outline_calls += 1
+            return {
+                "chapter_number": 1,
+                "title": "第一章 回声",
+                "chapter_goal": "建立核心悬念",
+                "core_conflict": "主角收到不可能存在的来信",
+                "scenes": [],
+                "estimated_word_count": 3200,
+            }
+        if schema is CHUNK_REFLECTION_SCHEMA:
+            return {"issues": []}
+        if schema is AGGREGATION_SCHEMA or schema is REFLECTION_SCHEMA:
+            return {
+                "passed": True,
+                "overall_quality_score": 0.92,
+                "word_count_analysis": {
+                    "total_count": 3200,
+                    "effective_density": 92,
+                    "is_valid_word_count": True,
+                },
+                "issues": [],
+                "logic_chain_status": "连贯",
+                "foreshadowing_check": "有效",
+            }
+        raise AssertionError(f"Unexpected schema: {schema}")
+
+    async def stream_text(self, *_args, **_kwargs):
+        self.stream_calls += 1
+        yield "正文" * 1600
+
+
+def test_registered_nodes_use_langgraph_supported_signatures():
+    for name, node in WORKFLOW_NODES.items():
+        parameters = list(inspect.signature(node).parameters.values())
+        assert parameters and parameters[0].name == "state", name
+        if len(parameters) > 1:
+            assert parameters[1].name == "config", name
+
+
+def test_all_literal_command_targets_are_registered_nodes():
+    agents_dir = Path(__file__).parents[1] / "application" / "agents"
+    registered = set(WORKFLOW_NODES)
+    targets: list[tuple[str, int, str]] = []
+    for path in agents_dir.glob("*_node.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if not isinstance(node.func, ast.Name) or node.func.id != "Command":
+                continue
+            goto = next((item.value for item in node.keywords if item.arg == "goto"), None)
+            if isinstance(goto, ast.Constant) and isinstance(goto.value, str):
+                targets.append((path.name, node.lineno, goto.value))
+    invalid = [item for item in targets if item[2] not in registered]
+    assert not invalid
+
+
+@pytest.mark.asyncio
+async def test_router_is_invoked_by_langgraph_with_config_contract():
+    graph = StateGraph(NovelAgentState)
+    graph.add_node("router_agent", router_agent)
+
+    async def finish_node(_state):
+        return {"phase": "captured"}
+
+    for destination in (
+        "outline_node",
+        "memory_retrieval_node",
+        "chapter_outline_node",
+        "chapter_writer_node",
+        "reflection_node",
+    ):
+        graph.add_node(destination, finish_node)
+        graph.add_edge(destination, END)
+    graph.set_entry_point("router_agent")
+
+    result = await graph.compile().ainvoke(
+        {
+            "total_outline": {"total_chapters": 1},
+            "current_chapter_index": 0,
+            "chapter_outlines": [],
+        }
+    )
+    assert result["next_tool"] == "chapter_outline_node"
+    assert result["phase"] == "captured"
+
+
+@pytest.mark.asyncio
+async def test_fake_llm_completes_one_chapter_through_real_graph():
+    llm = FakeWorkflowLLM()
+    workflow = create_novel_workflow()
+    result = await workflow.ainvoke(
+        {
+            "novel_type": "suspense",
+            "title": "测试小说",
+            "summary": "测试简介",
+            "total_outline": {
+                "story_background": "测试世界",
+                "main_characters": [],
+                "main_plot": {},
+                "writing_style": "克制",
+                "total_chapters": 1,
+                "volumes": [],
+            },
+            "current_chapter_index": 0,
+            "chapter_outlines": [],
+            "completed_chapters": [],
+            "current_chapter_content": "",
+            "memory_context": "",
+            "is_completed": False,
+            "revision_attempts": 0,
+            "errors": [],
+        },
+        {
+            "recursion_limit": 40,
+            "configurable": {
+                "llm_config": {"llm_instance": llm},
+                "auto_mode": True,
+                "novel_id": "00000000-0000-0000-0000-000000000001",
+                "tenant_id": "00000000-0000-0000-0000-000000000002",
+                "novel_repository": None,
+                "memory_service": None,
+                "quota_service": None,
+            },
+        },
+    )
+
+    assert result["is_completed"] is True
+    assert result["current_chapter_index"] == 1
+    assert len(result["completed_chapters"]) == 1
+    assert llm.chapter_outline_calls == 1
+    assert llm.stream_calls == 1
 
 
 def test_macro_outline_prompt_does_not_request_all_chapters():
@@ -116,6 +274,15 @@ def test_chapter_outline_prompt_uses_current_volume_and_macro_context():
                 "memory_context": "",
             },
             "memory_retrieval_node",
+        ),
+        (
+            {
+                "total_outline": {"total_chapters": 10},
+                "current_chapter_index": 1,
+                "memory_context": "",
+                "memory_retrieved_for_chapter": 1,
+            },
+            "chapter_outline_node",
         ),
     ],
 )

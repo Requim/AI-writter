@@ -1,12 +1,16 @@
 """长期记忆检索节点"""
 import logging
 logger = logging.getLogger("uvicorn")
+from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
 from typing import Literal
 from application.schemas.agent_state import NovelAgentState
 
 
-async def memory_retrieval_node(state: NovelAgentState, config) -> Command[Literal["chapter_outline_node"]]:
+async def memory_retrieval_node(
+    state: NovelAgentState,
+    config: RunnableConfig,
+) -> Command[Literal["router_agent"]]:
     """
     长期记忆检索节点 - 检索前文上下文，确保章节连贯性
     降级链路：MemoryService → completed_chapters(state) → DB chapters
@@ -71,5 +75,8 @@ async def memory_retrieval_node(state: NovelAgentState, config) -> Command[Liter
     logger.info(f"{'='*60}")
     return Command(
         goto="router_agent",
-        update={"memory_context": memory_context}
+        update={
+            "memory_context": memory_context,
+            "memory_retrieved_for_chapter": current_index,
+        },
     )

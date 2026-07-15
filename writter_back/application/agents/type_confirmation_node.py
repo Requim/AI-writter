@@ -6,7 +6,9 @@ from typing import Literal
 from application.schemas.agent_state import NovelAgentState
 
 
-def type_confirmation_node(state: NovelAgentState) -> Command[Literal["title_node"]]:
+def type_confirmation_node(
+    state: NovelAgentState,
+) -> Command[Literal["title_node", "type_confirmation"]]:
     """
     类型确认节点 - 强制用户输入小说类型
     使用 interrupt() 暂停，等待用户通过 API 提供 novel_type
@@ -44,7 +46,7 @@ def type_confirmation_node(state: NovelAgentState) -> Command[Literal["title_nod
     # 验证用户输入
     if user_input not in available_types:
         logger.info(f"【类型确认节点】输入无效({user_input})，重新等待用户输入")
-        return Command(goto="type_confirmation_node")
+        return Command(goto="type_confirmation")
     
     logger.info(f"【类型确认节点】用户选择了类型: {available_types.get(user_input, user_input)} -> 书名节点")
     logger.info(f"{'='*60}")

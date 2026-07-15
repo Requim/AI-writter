@@ -1,13 +1,17 @@
 """章节细纲生成节点 - 用户输入优先，否则AI生成"""
 import logging
 logger = logging.getLogger("uvicorn")
+from langchain_core.runnables import RunnableConfig
 from langgraph.types import interrupt, Command
 from typing import Literal
 from application.schemas.agent_state import NovelAgentState
 from application.prompts.chapter_outline_prompts import build_chapter_outline_prompt, CHAPTER_OUTLINE_SCHEMA
 
 
-async def chapter_outline_node(state: NovelAgentState, config) -> Command[Literal["chapter_writer_node"]]:
+async def chapter_outline_node(
+    state: NovelAgentState,
+    config: RunnableConfig,
+) -> Command[Literal["router_agent", "chapter_writer_node", "chapter_outline_node"]]:
     """
     章节细纲生成节点 - 用户可提供，否则AI生成
     总纲只提供全局约束和卷规划，当前章节细纲在此即时生成。
@@ -34,7 +38,10 @@ async def chapter_outline_node(state: NovelAgentState, config) -> Command[Litera
         logger.info(f"{'='*60}")
         return Command(
             goto="router_agent",
-            update={"chapter_outlines": [state["chapter_outlines_input"]]},
+            update={
+                "chapter_outlines": [state["chapter_outlines_input"]],
+                "chapter_outlines_input": None,
+            },
         )
     
     # 从 config.configurable 获取 LLM 实例
@@ -42,9 +49,7 @@ async def chapter_outline_node(state: NovelAgentState, config) -> Command[Litera
     llm = llm_config.get("llm_instance")
     
     if not llm:
-        logger.info("【章节细纲节点】LLM不可用，跳过 -> 章节写作节点")
-        logger.info(f"{'='*60}")
-        return Command(goto="chapter_writer_node")
+        raise RuntimeError("章节细纲生成失败：LLM 不可用")
     
     # 基于宏观总纲、当前卷位置和前文记忆生成这一章的细纲。
     prompt = build_chapter_outline_prompt(

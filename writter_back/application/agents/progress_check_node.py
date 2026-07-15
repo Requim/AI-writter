@@ -1,6 +1,7 @@
 """进度检查节点 - 通过总纲进度条控制小说完结，每章完成后暂停等用户触发下一章"""
 import logging
 logger = logging.getLogger("uvicorn")
+from langchain_core.runnables import RunnableConfig
 from langgraph.types import interrupt
 import json
 from application.schemas.agent_state import NovelAgentState
@@ -20,7 +21,9 @@ def _safe_get_total_chapters(state: NovelAgentState) -> int:
     return 0
 
 
-async def progress_check_node(state: NovelAgentState, config) -> dict:
+async def progress_check_node(
+    state: NovelAgentState, config: RunnableConfig
+) -> dict[str, object]:
     is_completed = state.get("is_completed", False)
     current_index = state.get("current_chapter_index", 0)
     total_chapters = _safe_get_total_chapters(state)
@@ -39,8 +42,8 @@ async def progress_check_node(state: NovelAgentState, config) -> dict:
                 if novel and len(novel.chapters) < current_index:
                     logger.info(f"【进度检查节点】检测到章节被删除: DB有{len(novel.chapters)}章, state记录{current_index}章, 回退索引")
                     current_index = len(novel.chapters)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("【进度检查节点】数据库进度校验失败，沿用 checkpoint: %s", exc)
 
     if is_completed or (total_chapters > 0 and current_index >= total_chapters):
         logger.info("【进度检查节点】小说已完成! 进入 -> 结束")

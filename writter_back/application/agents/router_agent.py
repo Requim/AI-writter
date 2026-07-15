@@ -1,14 +1,23 @@
 """Deterministic routing for the per-chapter creation loop."""
 
 import logging
-from typing import Any
+from typing import Any, Literal
 
+from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
 
 from application.schemas.agent_state import NovelAgentState
 from application.streaming import emit_workflow_event
 
 logger = logging.getLogger("uvicorn")
+
+RouterDestination = Literal[
+    "outline_node",
+    "memory_retrieval_node",
+    "chapter_outline_node",
+    "chapter_writer_node",
+    "reflection_node",
+]
 
 
 def _outline_for_current_chapter(
@@ -32,7 +41,10 @@ def _route(state: NovelAgentState) -> tuple[str, str]:
     if content:
         return "reflection_node", f"第{chapter_number}章正文已生成，进入质量审读"
 
-    if current_index > 0 and not state.get("memory_context"):
+    if (
+        current_index > 0
+        and state.get("memory_retrieved_for_chapter") != current_index
+    ):
         return "memory_retrieval_node", f"生成第{chapter_number}章前先检索前文记忆"
 
     outlines = state.get("chapter_outlines", [])
@@ -42,8 +54,11 @@ def _route(state: NovelAgentState) -> tuple[str, str]:
     return "chapter_writer_node", f"第{chapter_number}章细纲就绪，开始生成正文"
 
 
-async def router_agent(state: NovelAgentState, _config) -> Command:
+async def router_agent(
+    state: NovelAgentState, config: RunnableConfig
+) -> Command[RouterDestination]:
     """Route the fixed writing process and expose the reason to the SSE timeline."""
+    del config
     next_tool, reasoning = _route(state)
     logger.info("【确定性路由】%s -> %s", reasoning, next_tool)
     emit_workflow_event(

@@ -1,6 +1,7 @@
 """反思检查节点 - 检查逻辑问题，报告给用户，由用户决策"""
 import logging
 logger = logging.getLogger("uvicorn")
+from langchain_core.runnables import RunnableConfig
 from langgraph.types import interrupt, Command
 from typing import Literal
 from application.schemas.agent_state import NovelAgentState
@@ -16,7 +17,9 @@ from application.prompts.reflection_prompts import (
 )
 
 
-async def reflection_node(state: NovelAgentState, config) -> Command[Literal["persist_node", "revision_node"]]:
+async def reflection_node(
+    state: NovelAgentState, config: RunnableConfig
+) -> Command[Literal["persist_node", "revision_node"]]:
     """
     反思检查节点 - 检查逻辑问题，报告给用户，由用户决策如何修正
     """
@@ -98,6 +101,8 @@ async def reflection_node(state: NovelAgentState, config) -> Command[Literal["pe
             schema=AGGREGATION_SCHEMA,
             temperature=0.1,
         )
+        if not isinstance(reflection_result, dict) or not reflection_result:
+            raise RuntimeError("章节质量审读失败：模型未返回有效结果")
 
         # 合并：聚合结果中的 issues + 所有分块中的 issues
         all_issues = reflection_result.get("issues", []) if reflection_result else []
@@ -128,6 +133,8 @@ async def reflection_node(state: NovelAgentState, config) -> Command[Literal["pe
             schema=REFLECTION_SCHEMA,
             temperature=0.1,
         )
+        if not isinstance(reflection_result, dict) or not reflection_result:
+            raise RuntimeError("章节质量审读失败：模型未返回有效结果")
 
     # 解析结构化输出
     quality_score = reflection_result.get("overall_quality_score", 0)

@@ -6,10 +6,12 @@
 """
 import logging
 logger = logging.getLogger("uvicorn")
+from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
 from typing import Literal
 from application.schemas.agent_state import NovelAgentState
 from application.streaming import collect_streamed_text, emit_workflow_event
+from service.ports.llm_service import LLMService
 from application.prompts.chapter_writer_prompts import (
     build_chapter_writer_prompt,
     build_first_scene_prompt,
@@ -143,7 +145,7 @@ async def _scene_queue_generate(
     novel_type: str,
     title: str,
     memory_context: str,
-    llm,
+    llm: LLMService,
     chapter_index: int,
     prev_chapter_tail: str = "",
 ) -> str:
@@ -280,7 +282,7 @@ async def _scene_queue_generate(
 
 async def _final_word_check(
     content: str,
-    llm,
+    llm: LLMService,
     system_prompt: str,
     chapter_index: int,
 ) -> str:
@@ -307,7 +309,9 @@ async def _final_word_check(
     return content
 
 
-async def _get_prev_chapter_tail(config, novel_id: str, current_chapter_index: int) -> str:
+async def _get_prev_chapter_tail(
+    config: RunnableConfig, novel_id: str, current_chapter_index: int
+) -> str:
     """从 DB 获取上一章正文末尾 1000 字，用于衔接"""
     repository = config["configurable"].get("novel_repository")
     if not repository or current_chapter_index <= 0:
@@ -335,7 +339,7 @@ async def _get_prev_chapter_tail(config, novel_id: str, current_chapter_index: i
 
 async def chapter_writer_node(
     state: NovelAgentState,
-    config,
+    config: RunnableConfig,
 ) -> Command[Literal["router_agent"]]:
     """
     章节内容填充节点 - 场景队列生成 + 动态字数校准
@@ -358,9 +362,7 @@ async def chapter_writer_node(
     llm = llm_config.get("llm_instance")
 
     if not llm:
-        logger.info("【章节写作节点】LLM不可用，跳过 -> 路由节点")
-        logger.info(f"{'='*60}")
-        return Command(goto="router_agent")
+        raise RuntimeError("章节正文生成失败：LLM 不可用")
 
     quota_service = config["configurable"].get("quota_service")
     tenant_context = config["configurable"].get("tenant_context")

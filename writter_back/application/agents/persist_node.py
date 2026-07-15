@@ -1,6 +1,7 @@
 """持久化节点 - 章节阶段写 chapters 表，设定阶段直接放行"""
 import logging
 logger = logging.getLogger("uvicorn")
+from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
 from typing import Literal
 from uuid import uuid4, UUID
@@ -14,7 +15,9 @@ from application.prompts.memory_prompts import (
 )
 
 
-async def persist_node(state: NovelAgentState, config) -> Command[Literal["progress_check_node"]]:
+async def persist_node(
+    state: NovelAgentState, config: RunnableConfig
+) -> Command[Literal["progress_check_node"]]:
     repository = config["configurable"].get("novel_repository")
     memory_service = config["configurable"].get("memory_service")
     novel_id = config["configurable"].get("novel_id", "")
@@ -27,49 +30,53 @@ async def persist_node(state: NovelAgentState, config) -> Command[Literal["progr
         logger.info(f"{'='*60}")
         logger.info(f"【持久化节点】进入 | novel_id={novel_id}, 阶段=设定")
         if repository and novel_id:
-            try:
-                novel = await repository.find_by_id(tenant_id, novel_id)
-                if novel:
-                    title_val = state.get("title")
-                    summary_val = state.get("summary")
-                    outline_raw = state.get("total_outline")
-                    updated = False
-                    if title_val:
-                        novel.title = title_val
-                        updated = True
-                    if summary_val:
-                        novel.summary = summary_val
-                        updated = True
-                    if isinstance(outline_raw, dict):
-                        from service.value_objects.outline import Outline
-                        outline_fields = {
-                            "story_background",
-                            "main_characters",
-                            "main_plot",
-                            "chapters",
-                            "writing_style",
-                            "total_chapters",
-                            "volumes",
-                        }
-                        filtered = {k: v for k, v in outline_raw.items() if k in outline_fields}
-                        try:
-                            novel.total_outline = Outline(**filtered)
-                        except Exception:
-                            pass
-                        updated = True
-                    # 同步 progress.total_chapters（用于进度条显示）
-                    total_ch = outline_raw.get("total_chapters", 0) if isinstance(outline_raw, dict) else 0
-                    if total_ch and novel.progress:
-                        old_progress = novel.progress.to_dict() if hasattr(novel.progress, 'to_dict') else {}
-                        old_progress["total_chapters"] = total_ch
-                        from service.value_objects.progress import Progress
-                        novel.progress = Progress(**old_progress)
-                        updated = True
-                    if updated:
-                        await repository.update(tenant_id, novel)
-                        logger.info(f"【持久化节点】novels 表已更新 | title={novel.title}, total_chapters={total_ch}")
-            except Exception as e:
-                logger.info(f"【持久化节点】更新 novels 失败(降级): {e}")
+            novel = await repository.find_by_id(tenant_id, novel_id)
+            if novel is None:
+                raise RuntimeError("小说设定保存失败：目标小说不存在")
+            title_val = state.get("title")
+            summary_val = state.get("summary")
+            outline_raw = state.get("total_outline")
+            updated = False
+            total_ch = 0
+            if title_val:
+                novel.title = title_val
+                updated = True
+            if summary_val:
+                novel.summary = summary_val
+                updated = True
+            if isinstance(outline_raw, dict):
+                from service.value_objects.outline import Outline
+
+                outline_fields = {
+                    "story_background",
+                    "main_characters",
+                    "main_plot",
+                    "chapters",
+                    "writing_style",
+                    "total_chapters",
+                    "volumes",
+                }
+                filtered = {k: v for k, v in outline_raw.items() if k in outline_fields}
+                try:
+                    novel.total_outline = Outline(**filtered)
+                except Exception as exc:
+                    raise RuntimeError("小说设定保存失败：宏观总纲格式无效") from exc
+                total_ch = int(outline_raw.get("total_chapters", 0) or 0)
+                updated = True
+            if total_ch and novel.progress:
+                old_progress = novel.progress.to_dict() if hasattr(novel.progress, 'to_dict') else {}
+                old_progress["total_chapters"] = total_ch
+                from service.value_objects.progress import Progress
+
+                novel.progress = Progress(**old_progress)
+                updated = True
+            if updated:
+                await repository.update(tenant_id, novel)
+                logger.info(
+                    "【持久化节点】novels 表已更新 | title=%s, total_chapters=%s",
+                    novel.title,
+                    total_ch,
+                )
         logger.info("【持久化节点】完成 -> 进度检查节点")
         logger.info(f"{'='*60}")
         return Command(goto="progress_check_node")

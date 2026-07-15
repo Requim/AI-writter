@@ -1,13 +1,17 @@
 """简介生成节点 - 用户输入优先，否则AI生成"""
 import logging
 logger = logging.getLogger("uvicorn")
+from langchain_core.runnables import RunnableConfig
 from langgraph.types import interrupt, Command
 from typing import Literal
 from application.schemas.agent_state import NovelAgentState
 from application.prompts.summary_prompts import build_summary_prompt, SUMMARY_TEMPERATURE, SUMMARY_TOP_P
 
 
-async def summary_generator_node(state: NovelAgentState, config) -> Command[Literal["outline_node"]]:
+async def summary_generator_node(
+    state: NovelAgentState,
+    config: RunnableConfig,
+) -> Command[Literal["outline_node", "summary_node"]]:
     """简介节点 - 用户输入优先，否则AI生成"""
     novel_type = state.get("novel_type", "")
     title = state.get("title", "")
@@ -26,9 +30,7 @@ async def summary_generator_node(state: NovelAgentState, config) -> Command[Lite
     llm = llm_config.get("llm_instance")
     
     if not llm:
-        logger.info("【简介生成节点】LLM不可用，跳过 -> persist")
-        logger.info(f"{'='*60}")
-        return Command(goto="outline_node")
+        raise RuntimeError("简介生成失败：LLM 不可用")
     
     # AI 生成简介（联动书名卖点，形成类型→书名→简介→总纲的闭环）
     story_hint = state.get("title_story_hint", "")
@@ -58,7 +60,7 @@ async def summary_generator_node(state: NovelAgentState, config) -> Command[Lite
         logger.info("【简介生成节点】用户接受了AI生成的简介")
     elif user_choice == "regenerate":
         logger.info("【简介生成节点】用户要求重新生成，循环回本节点")
-        return Command(goto="summary_generator_node")
+        return Command(goto="summary_node")
     else:
         final_summary = user_choice
         logger.info("【简介生成节点】用户提供了自定义简介")
