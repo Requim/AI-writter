@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { parseSseStream, streamWorkflow } from './workflow'
+import { parseSseStream, streamWorkflow, WorkflowRequestError } from './workflow'
 import type { WorkflowEvent } from '@/types/novel'
 import { useAuthStore } from '@/stores/authStore'
 
@@ -50,5 +50,22 @@ describe('parseSseStream', () => {
         }),
       }),
     )
+  })
+
+  it('extracts a readable FastAPI detail instead of exposing raw JSON', async () => {
+    const response = new Response(JSON.stringify({
+      detail: {
+        code: 'workflow_already_running',
+        message: '该作品已有创作任务，请查看当前阶段或先结束任务',
+      },
+    }), { status: 409, headers: { 'Content-Type': 'application/json' } })
+
+    const error = await parseSseStream(response, () => undefined).catch((reason: unknown) => reason)
+    expect(error).toBeInstanceOf(WorkflowRequestError)
+    expect(error).toMatchObject({
+      status: 409,
+      code: 'workflow_already_running',
+      message: '该作品已有创作任务，请查看当前阶段或先结束任务',
+    })
   })
 })

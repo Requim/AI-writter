@@ -1,5 +1,6 @@
 """Tests for the deterministic macro-outline and per-chapter workflow."""
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -12,9 +13,30 @@ from api.routers.workflow_router import (
     _public_error_data,
 )
 from application.agents.router_agent import _route
+from application.orchestrator import NovelOrchestrator
 from application.prompts.chapter_outline_prompts import build_chapter_outline_prompt
 from application.prompts.outline_prompts import build_outline_prompt, validate_outline
 from service.entities.identity import TenantContext
+
+
+def tenant_context() -> TenantContext:
+    return TenantContext(
+        tenant_id=uuid4(),
+        tenant_name="测试租户",
+        user_id=uuid4(),
+        role="owner",
+        is_platform_admin=False,
+        ai_enabled=True,
+        monthly_generation_limit=30,
+    )
+
+
+def orchestrator() -> NovelOrchestrator:
+    return NovelOrchestrator(
+        repository=SimpleNamespace(),
+        memory_service=SimpleNamespace(),
+        llm_config={},
+    )
 
 
 def test_macro_outline_prompt_does_not_request_all_chapters():
@@ -130,6 +152,45 @@ async def test_failed_run_reuses_checkpoint_quota_key():
     assert is_resume is False
     assert input_data["workflow_run_id"] == str(run_id)
     assert quota.reserve.await_args.args[1] == str(run_id)
+
+
+@pytest.mark.asyncio
+async def test_orphaned_lock_is_recovered_before_next_run():
+    service = orchestrator()
+    context = tenant_context()
+    thread_id = str(uuid4())
+    assert await service.try_start(context, thread_id) is True
+    key = service.execution_key(context, thread_id)
+    service._execution_snapshots[key]["started_at"] = "2020-01-01T00:00:00+00:00"
+
+    assert await service.try_start(context, thread_id) is True
+    service.finish(context, thread_id)
+
+
+@pytest.mark.asyncio
+async def test_cancel_waits_for_task_and_releases_lock():
+    service = orchestrator()
+    context = tenant_context()
+    thread_id = str(uuid4())
+    assert await service.try_start(context, thread_id) is True
+    task = asyncio.create_task(asyncio.Event().wait())
+    service.register_task(context, thread_id, task)
+
+    assert await service.cancel(context, thread_id) is True
+    assert task.cancelled()
+    assert service.is_executing(context, thread_id) is False
+
+
+@pytest.mark.asyncio
+async def test_cancel_does_not_release_lock_during_registration_grace():
+    service = orchestrator()
+    context = tenant_context()
+    thread_id = str(uuid4())
+    assert await service.try_start(context, thread_id) is True
+
+    assert await service.cancel(context, thread_id) is False
+    assert service.is_executing(context, thread_id) is True
+    service.finish(context, thread_id)
 
 
 def test_provider_524_is_safe_and_retryable():

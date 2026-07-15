@@ -3,6 +3,7 @@
 import asyncio
 import logging
 from collections.abc import AsyncIterator
+from datetime import datetime, timezone
 from typing import Any
 
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
@@ -23,6 +24,7 @@ from service.ports.agent_service import AgentOrchestrator
 logger = logging.getLogger("uvicorn")
 
 LARGE_STATE_FIELDS = {"current_chapter_content", "memory_context", "completed_chapters"}
+TASK_REGISTRATION_GRACE_SECONDS = 60.0
 
 
 class NovelOrchestrator(AgentOrchestrator):
@@ -43,10 +45,21 @@ class NovelOrchestrator(AgentOrchestrator):
         self._locks: dict[str, asyncio.Lock] = {}
         self._active_tasks: dict[str, asyncio.Task[Any]] = {}
         self._auto_mode: dict[str, bool] = {}
+        self._execution_snapshots: dict[str, dict[str, Any]] = {}
 
     @staticmethod
     def execution_key(context: TenantContext, thread_id: str) -> str:
         return f"{context.tenant_id}:{thread_id}"
+
+    def _registration_grace_expired(self, key: str) -> bool:
+        started_at = self._execution_snapshots.get(key, {}).get("started_at")
+        if not isinstance(started_at, str):
+            return False
+        try:
+            age = datetime.now(timezone.utc) - datetime.fromisoformat(started_at)
+        except ValueError:
+            return False
+        return age.total_seconds() > TASK_REGISTRATION_GRACE_SECONDS
 
     def _build_llm_instance(self):
         provider = self.llm_config.get("provider", "deepseek")
@@ -136,31 +149,106 @@ class NovelOrchestrator(AgentOrchestrator):
         key = self.execution_key(context, thread_id)
         lock = self._locks.setdefault(key, asyncio.Lock())
         if lock.locked():
-            return False
+            task = self._active_tasks.get(key)
+            orphaned = bool(task and task.done())
+            if task is None:
+                orphaned = self._registration_grace_expired(key)
+            if not orphaned:
+                return False
+            logger.warning("Recovering orphaned workflow lock for %s", thread_id)
+            self.finish(context, thread_id, task=task)
         await lock.acquire()
+        now = datetime.now(timezone.utc).isoformat()
+        self._execution_snapshots[key] = {
+            "status": "running",
+            "active_node": None,
+            "message": "正在连接创作工作流",
+            "started_at": now,
+            "last_activity_at": now,
+        }
         return True
 
     def register_task(
         self, context: TenantContext, thread_id: str, task: asyncio.Task[Any]
     ) -> None:
-        self._active_tasks[self.execution_key(context, thread_id)] = task
+        key = self.execution_key(context, thread_id)
+        self._active_tasks[key] = task
+        task.add_done_callback(
+            lambda completed: self.finish(context, thread_id, task=completed)
+        )
+
+    def record_activity(
+        self,
+        context: TenantContext,
+        thread_id: str,
+        *,
+        active_node: str | None = None,
+        message: str | None = None,
+        status: str = "running",
+    ) -> None:
+        key = self.execution_key(context, thread_id)
+        snapshot = self._execution_snapshots.setdefault(key, {})
+        snapshot["status"] = status
+        snapshot["last_activity_at"] = datetime.now(timezone.utc).isoformat()
+        if active_node is not None:
+            snapshot["active_node"] = active_node
+        if message is not None:
+            snapshot["message"] = message
 
     def is_executing(self, context: TenantContext, thread_id: str) -> bool:
         lock = self._locks.get(self.execution_key(context, thread_id))
         return bool(lock and lock.locked())
 
-    def finish(self, context: TenantContext, thread_id: str) -> None:
+    def finish(
+        self,
+        context: TenantContext,
+        thread_id: str,
+        *,
+        task: asyncio.Task[Any] | None = None,
+        status: str = "idle",
+    ) -> None:
         key = self.execution_key(context, thread_id)
+        current = self._active_tasks.get(key)
+        if task is not None and current is not task:
+            return
         self._active_tasks.pop(key, None)
         lock = self._locks.get(key)
         if lock and lock.locked():
             lock.release()
+        snapshot = self._execution_snapshots.get(key)
+        if snapshot is not None:
+            snapshot["status"] = status
+            snapshot["last_activity_at"] = datetime.now(timezone.utc).isoformat()
 
     async def cancel(self, context: TenantContext, thread_id: str) -> bool:
-        task = self._active_tasks.get(self.execution_key(context, thread_id))
-        if task is None or task.done():
-            return False
+        key = self.execution_key(context, thread_id)
+        task = self._active_tasks.get(key)
+        lock = self._locks.get(key)
+        if task is None:
+            if not self._registration_grace_expired(key):
+                return False
+            recovered = bool(lock and lock.locked())
+            self.finish(context, thread_id, status="cancelled")
+            return recovered
+        if task.done():
+            recovered = bool(lock and lock.locked())
+            self.finish(context, thread_id, task=task, status="cancelled")
+            return recovered
+        self.record_activity(
+            context,
+            thread_id,
+            message="正在结束当前任务",
+            status="cancelling",
+        )
         task.cancel()
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=5.0)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            pass
+        except Exception:
+            logger.exception("Workflow task failed while cancelling %s", thread_id)
+        finally:
+            self.finish(context, thread_id, task=task, status="cancelled")
         return True
 
     async def invoke(
@@ -196,6 +284,11 @@ class NovelOrchestrator(AgentOrchestrator):
         is_resume: bool = False,
     ) -> AsyncIterator[WorkflowEvent]:
         await self._ensure_workflow()
+        self.record_activity(
+            context,
+            thread_id,
+            message="正在恢复创作现场" if is_resume else "正在启动创作流程",
+        )
         payload: Any = (
             Command(resume=resume_value)
             if is_resume
@@ -208,19 +301,40 @@ class NovelOrchestrator(AgentOrchestrator):
             stream_mode=["custom", "updates"],
         ):
             if mode == "custom" and isinstance(chunk, dict):
+                data = chunk.get("data", {})
+                event_type = chunk.get("type", "status")
+                message = data.get("text") if isinstance(data, dict) else None
+                active_node = chunk.get("node")
+                if event_type == "reasoning" and isinstance(data, dict):
+                    active_node = data.get("next_node") or active_node
+                self.record_activity(
+                    context,
+                    thread_id,
+                    active_node=active_node,
+                    message=message if isinstance(message, str) else None,
+                )
                 sequence += 1
                 yield WorkflowEvent(
                     id=sequence,
-                    type=chunk.get("type", "status"),
+                    type=event_type,
                     thread_id=thread_id,
                     node=chunk.get("node"),
-                    data=chunk.get("data", {}),
+                    data=data,
                 )
                 continue
             if mode != "updates" or not isinstance(chunk, dict):
                 continue
             interrupts = self._interrupt_values(chunk.get("__interrupt__"))
             if interrupts:
+                message = None
+                if interrupts and isinstance(interrupts[0], dict):
+                    message = interrupts[0].get("message")
+                self.record_activity(
+                    context,
+                    thread_id,
+                    message=message or "等待人工确认后继续",
+                    status="paused",
+                )
                 sequence += 1
                 yield WorkflowEvent(
                     id=sequence,
@@ -231,6 +345,12 @@ class NovelOrchestrator(AgentOrchestrator):
             for node, update in chunk.items():
                 if node.startswith("__"):
                     continue
+                self.record_activity(
+                    context,
+                    thread_id,
+                    active_node=node,
+                    message=f"{node} 已完成",
+                )
                 sequence += 1
                 yield WorkflowEvent(
                     id=sequence,
@@ -260,6 +380,12 @@ class NovelOrchestrator(AgentOrchestrator):
                             "current_chapter": update.get("current_chapter_index"),
                         },
                     )
+        self.record_activity(
+            context,
+            thread_id,
+            message="本轮工作流已结束",
+            status="completed",
+        )
         sequence += 1
         yield WorkflowEvent(
             id=sequence,
@@ -292,11 +418,31 @@ class NovelOrchestrator(AgentOrchestrator):
             interrupts.extend(
                 self._interrupt_values(getattr(task, "interrupts", []))
             )
+        next_nodes = list(getattr(state, "next", ()) or ())
+        key = self.execution_key(context, thread_id)
+        execution = dict(self._execution_snapshots.get(key, {}))
+        if not execution.get("active_node") and next_nodes:
+            execution["active_node"] = next_nodes[0]
+        last_activity = execution.get("last_activity_at")
+        stale = False
+        if self.is_executing(context, thread_id) and isinstance(last_activity, str):
+            try:
+                elapsed = datetime.now(timezone.utc) - datetime.fromisoformat(last_activity)
+                stale = elapsed.total_seconds() > settings.WORKFLOW_TIMEOUT_SECONDS
+            except ValueError:
+                pass
+        execution["is_stale"] = stale
+        status = "running" if self.is_executing(context, thread_id) else "idle"
+        if interrupts and status == "idle":
+            status = "paused"
         return {
             "thread_id": thread_id,
-            "status": "running" if self.is_executing(context, thread_id) else "idle",
+            "status": status,
             "has_interrupt": bool(interrupts),
             "interrupts": interrupts,
+            "next_nodes": next_nodes,
+            "execution": execution,
+            "server_time": datetime.now(timezone.utc).isoformat(),
             "state": safe_values,
         }
 

@@ -134,7 +134,13 @@ async def _acquire(
     thread_id: str,
 ) -> None:
     if not await orchestrator.try_start(context, thread_id):
-        raise HTTPException(status_code=409, detail="该工作流正在执行中，请等待或取消当前任务")
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "workflow_already_running",
+                "message": "该作品已有创作任务，请查看当前阶段或先结束任务",
+            },
+        )
 
 
 @router.post("/{thread_id}/invoke", deprecated=True)
@@ -273,8 +279,12 @@ async def _stream_response(
         finally:
             if not producer.done():
                 producer.cancel()
-            await asyncio.gather(producer, return_exceptions=True)
-            orchestrator.finish(context, thread_id)
+            try:
+                await asyncio.wait_for(asyncio.shield(producer), timeout=5.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
+            finally:
+                orchestrator.finish(context, thread_id, task=producer)
 
     return StreamingResponse(
         generate(),
@@ -330,5 +340,11 @@ async def cancel_workflow(
     cancelled = await orchestrator.cancel(context, thread_id)
     return {
         "thread_id": thread_id,
-        "status": "cancelling" if cancelled else "idle",
+        "status": (
+            "cancelled"
+            if cancelled
+            else "running"
+            if orchestrator.is_executing(context, thread_id)
+            else "idle"
+        ),
     }

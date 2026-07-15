@@ -5,6 +5,7 @@ import {
   FileTextOutlined,
   HistoryOutlined,
   LeftOutlined,
+  PauseCircleOutlined,
   PlayCircleOutlined,
   ReloadOutlined,
   SaveOutlined,
@@ -57,7 +58,7 @@ export default function NovelStudio() {
   const selectedChapterRef = useRef<ChapterDetail | undefined>(undefined)
   const threadId = novel?.thread_id || novelId
   const workflow = useWorkflowStream(threadId)
-  const { state: workflowState, run, resume, cancel, hydrateInterrupt } = workflow
+  const { state: workflowState, run, resume, cancel, sync, hydrateSnapshot } = workflow
 
   const refresh = useCallback(async () => {
     if (!novelId) return
@@ -76,13 +77,13 @@ export default function NovelStudio() {
         setEditorContent(latest.content)
       }
       const snapshot = await workflowApi.state(novelData.thread_id || novelId)
-      hydrateInterrupt(snapshot.interrupts[0])
+      hydrateSnapshot(snapshot)
     } catch {
       message.error('无法载入稿件')
     } finally {
       setLoading(false)
     }
-  }, [hydrateInterrupt, message, novelId])
+  }, [hydrateSnapshot, message, novelId])
 
   useEffect(() => {
     queueMicrotask(() => void refresh())
@@ -104,6 +105,13 @@ export default function NovelStudio() {
     autoInterruptRef.current = key
     void resume(autoResumeValue(interrupt, novel?.novel_type || 'suspense'), true)
   }, [autoMode, novel?.novel_type, resume, workflowState.interrupt])
+
+  useEffect(() => {
+    if (workflowState.connection !== 'detached' || !['running', 'stalled'].includes(workflowState.status)) return
+    const refreshState = () => void sync().catch(() => undefined)
+    const timer = window.setInterval(refreshState, 15_000)
+    return () => window.clearInterval(timer)
+  }, [sync, workflowState.connection, workflowState.status])
 
   const openChapter = async (chapter: ChapterSummary) => {
     const detail = await novelApi.chapter(novelId, chapter.id)
@@ -151,11 +159,17 @@ export default function NovelStudio() {
     input: { novel_id: novelId, novel_type: novel?.novel_type || 'suspense', _auto_mode: autoMode },
   })
 
+  const stopWriting = async () => {
+    await cancel()
+    await refresh()
+  }
+
   if (loading) return <AppShell><div className="studio-loading"><Skeleton active /></div></AppShell>
   if (!novel) return <AppShell><div className="studio-loading">稿件不存在</div></AppShell>
 
   const displayedContent = workflowState.draft || editorContent
   const isLiveDraft = Boolean(workflowState.draft)
+  const isBusy = ['running', 'stalled', 'cancelling'].includes(workflowState.status)
 
   return (
     <AppShell>
@@ -172,8 +186,10 @@ export default function NovelStudio() {
               onChange={(value) => setAutoMode(value === 'auto')}
               options={[{ label: '手动', value: 'manual' }, { label: '自动', value: 'auto' }]}
             />
-            {workflowState.status === 'running' ? (
-              <Button danger icon={<StopOutlined />} onClick={() => void cancel()}>停止</Button>
+            {isBusy ? (
+              <Button danger icon={<StopOutlined />} loading={workflowState.status === 'cancelling'} onClick={() => void stopWriting()}>停止</Button>
+            ) : workflowState.status === 'paused' ? (
+              <Button icon={<PauseCircleOutlined />} onClick={() => setMobilePanel('workflow')}>等待确认</Button>
             ) : workflowState.status === 'error' && workflowState.retryable ? (
               <Button type="primary" icon={<ReloadOutlined />} onClick={() => void startWriting()}>重试当前步骤</Button>
             ) : (
@@ -225,7 +241,7 @@ export default function NovelStudio() {
                 {isLiveDraft ? (
                   <h2>AI 正在撰写第 {progress?.current_chapter ? progress.current_chapter + 1 : 1} 章</h2>
                 ) : (
-                  <Input value={editorTitle} onChange={(event) => setEditorTitle(event.target.value)} bordered={false} />
+                  <Input value={editorTitle} onChange={(event) => setEditorTitle(event.target.value)} variant="borderless" />
                 )}
               </div>
               {!isLiveDraft && selectedChapter && (
@@ -257,6 +273,8 @@ export default function NovelStudio() {
             state={workflowState}
             autoMode={autoMode}
             onResume={(value) => void resume(value, autoMode)}
+            onCancel={() => void stopWriting()}
+            onRefresh={() => void sync().catch(() => message.error('暂时无法同步任务状态'))}
           />
         </div>
       </div>

@@ -6,13 +6,51 @@ export interface WorkflowRequest {
   command?: Record<string, unknown>
 }
 
+export class WorkflowRequestError extends Error {
+  readonly status: number
+  readonly code?: string
+
+  constructor(
+    message: string,
+    status: number,
+    code?: string,
+  ) {
+    super(message)
+    this.name = 'WorkflowRequestError'
+    this.status = status
+    this.code = code
+  }
+}
+
+function responseError(response: Response, raw: string): WorkflowRequestError {
+  let detail: unknown = raw
+  try {
+    const payload = JSON.parse(raw) as { detail?: unknown }
+    detail = payload.detail ?? payload
+  } catch {
+    // Non-JSON upstream responses are presented as plain text.
+  }
+  if (detail && typeof detail === 'object') {
+    const value = detail as { code?: unknown; message?: unknown }
+    const message = typeof value.message === 'string' ? value.message : `请求失败（HTTP ${response.status}）`
+    return new WorkflowRequestError(
+      message,
+      response.status,
+      typeof value.code === 'string' ? value.code : undefined,
+    )
+  }
+  return new WorkflowRequestError(
+    typeof detail === 'string' && detail.trim() ? detail : `请求失败（HTTP ${response.status}）`,
+    response.status,
+  )
+}
+
 export async function parseSseStream(
   response: Response,
   onEvent: (event: WorkflowEvent) => void,
 ): Promise<void> {
   if (!response.ok) {
-    const detail = await response.text()
-    throw new Error(detail || `HTTP ${response.status}`)
+    throw responseError(response, await response.text())
   }
   if (!response.body) throw new Error('浏览器未提供可读取的响应流')
 

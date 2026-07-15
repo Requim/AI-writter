@@ -87,10 +87,22 @@ export interface InterruptInfo {
   [key: string]: unknown
 }
 
+export interface WorkflowExecutionSnapshot {
+  status?: 'running' | 'cancelling' | 'completed' | 'cancelled' | 'idle' | string
+  active_node?: string
+  message?: string
+  started_at?: string
+  last_activity_at?: string
+  is_stale?: boolean
+}
+
 export interface WorkflowSnapshot {
   thread_id: string
-  status: 'running' | 'idle' | 'unknown'
+  status: 'running' | 'paused' | 'idle' | 'unknown'
   has_interrupt: boolean
   interrupts: InterruptInfo[]
+  next_nodes?: string[]
+  execution?: WorkflowExecutionSnapshot
+  server_time?: string
   state: Record<string, unknown>
 }
