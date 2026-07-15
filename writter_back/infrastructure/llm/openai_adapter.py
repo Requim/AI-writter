@@ -13,13 +13,14 @@ class OpenAIAdapter(BaseLLMAdapter):
         model: str = "gpt-4o",
         timeout: float = 180.0,
         base_url: str | None = None,
+        max_retries: int = 2,
     ):
         super().__init__(api_key=api_key, model=model, timeout=timeout)
         self.client = openai.AsyncOpenAI(
             api_key=api_key,
             base_url=base_url,
             timeout=timeout,
-            max_retries=0,
+            max_retries=max_retries,
         )
 
     async def generate(self, prompt: str, system_prompt: Optional[str] = None,

@@ -12,6 +12,8 @@ export interface WorkflowViewState {
   issues: ReflectionIssue[]
   interrupt?: InterruptInfo
   progress?: number
+  retryable?: boolean
+  retryAfter?: number
   events: WorkflowEvent[]
   error?: string
 }
@@ -31,7 +33,14 @@ export const initialWorkflowState: WorkflowViewState = {
 }
 
 export function workflowReducer(state: WorkflowViewState, action: Action): WorkflowViewState {
-  if (action.type === 'start') return { ...state, status: 'running', interrupt: undefined, error: undefined }
+  if (action.type === 'start') return {
+    ...state,
+    status: 'running',
+    interrupt: undefined,
+    error: undefined,
+    retryable: undefined,
+    retryAfter: undefined,
+  }
   if (action.type === 'failure') return { ...state, status: 'error', error: action.message }
   if (action.type === 'cancelled') return { ...state, status: 'idle', activeNode: undefined }
   if (action.type === 'hydrate') return {
@@ -62,6 +71,8 @@ export function workflowReducer(state: WorkflowViewState, action: Action): Workf
   if (event.type === 'error') {
     next.status = 'error'
     next.error = typeof event.data.message === 'string' ? event.data.message : '工作流执行失败'
+    next.retryable = event.data.retryable === true
+    next.retryAfter = typeof event.data.retry_after === 'number' ? event.data.retry_after : undefined
   }
   return next
 }

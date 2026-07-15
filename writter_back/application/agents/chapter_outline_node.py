@@ -10,7 +10,7 @@ from application.prompts.chapter_outline_prompts import build_chapter_outline_pr
 async def chapter_outline_node(state: NovelAgentState, config) -> Command[Literal["chapter_writer_node"]]:
     """
     章节细纲生成节点 - 用户可提供，否则AI生成
-    总纲通过 total_outline 传递，包含章节规划
+    总纲只提供全局约束和卷规划，当前章节细纲在此即时生成。
     """
     novel_type = state.get("novel_type", "")
     title = state.get("title", "")
@@ -32,7 +32,10 @@ async def chapter_outline_node(state: NovelAgentState, config) -> Command[Litera
     if state.get("chapter_outlines_input"):
         logger.info("【章节细纲节点】使用用户提供的细纲 -> 章节写作节点")
         logger.info(f"{'='*60}")
-        return Command(goto="chapter_writer_node")
+        return Command(
+            goto="router_agent",
+            update={"chapter_outlines": [state["chapter_outlines_input"]]},
+        )
     
     # 从 config.configurable 获取 LLM 实例
     llm_config = config["configurable"].get("llm_config", {})
@@ -43,17 +46,12 @@ async def chapter_outline_node(state: NovelAgentState, config) -> Command[Litera
         logger.info(f"{'='*60}")
         return Command(goto="chapter_writer_node")
     
-    # 从总纲领获取当前章节规划
-    chapters = total_outline.get("chapters", [])
-    chapter_plan = chapters[current_index] if current_index < len(chapters) else {"theme": "未指定", "key_events": []}
-    
-    # AI 生成详细章节细纲
+    # 基于宏观总纲、当前卷位置和前文记忆生成这一章的细纲。
     prompt = build_chapter_outline_prompt(
         chapter_index=current_index + 1,
         novel_type=novel_type,
         title=title,
-        chapter_theme=chapter_plan.get('theme', '未指定'),
-        key_events=chapter_plan.get('key_events', []),
+        total_outline=total_outline,
         memory_context=memory_context,
     )
 

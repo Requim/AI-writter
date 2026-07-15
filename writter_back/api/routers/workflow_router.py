@@ -71,7 +71,8 @@ async def _prepare_request(
     auto_mode = command.pop("_auto_mode", input_data.pop("_auto_mode", False))
     orchestrator.set_auto_mode(context, thread_id, bool(auto_mode))
     if not is_resume:
-        run_id = str(input_data.get("workflow_run_id") or uuid4())
+        existing_run_id = await orchestrator.get_workflow_run_id(context, thread_id)
+        run_id = str(input_data.get("workflow_run_id") or existing_run_id or uuid4())
         input_data["workflow_run_id"] = run_id
         input_data["novel_id"] = thread_id
         try:
@@ -82,7 +83,49 @@ async def _prepare_request(
 
 
 def _public_error(exc: Exception) -> str:
-    return str(exc) if settings.DEBUG else "工作流执行失败，请检查后端日志"
+    return _public_error_data(exc)["message"]
+
+
+def _public_error_data(exc: Exception) -> dict[str, Any]:
+    if settings.DEBUG:
+        return {"code": "workflow_failed", "message": str(exc), "retryable": False}
+
+    status = getattr(exc, "status_code", None)
+    body = getattr(exc, "body", None)
+    body_data = body if isinstance(body, dict) else {}
+    retry_after = body_data.get("retry_after")
+    if status in {408, 504, 524}:
+        return {
+            "code": "provider_timeout",
+            "message": "模型服务生成超时，请重试当前步骤",
+            "retryable": True,
+            "retry_after": retry_after,
+        }
+    if status == 429:
+        return {
+            "code": "provider_rate_limited",
+            "message": "模型服务当前繁忙，请稍后重试",
+            "retryable": True,
+            "retry_after": retry_after,
+        }
+    if isinstance(status, int) and status >= 500:
+        return {
+            "code": "provider_unavailable",
+            "message": "模型服务暂时不可用，请重试当前步骤",
+            "retryable": True,
+            "retry_after": retry_after,
+        }
+    if exc.__class__.__name__ in {"APITimeoutError", "APIConnectionError"}:
+        return {
+            "code": "provider_connection_failed",
+            "message": "无法稳定连接模型服务，请重试当前步骤",
+            "retryable": True,
+        }
+    return {
+        "code": "workflow_failed",
+        "message": "工作流执行失败，请联系管理员查看日志",
+        "retryable": False,
+    }
 
 
 async def _acquire(
@@ -223,7 +266,7 @@ async def _stream_response(
                         id=heartbeat_id + 1,
                         type="error",
                         thread_id=thread_id,
-                        data={"message": _public_error(item)},
+                        data=_public_error_data(item),
                     ).to_sse()
                     break
                 yield item.to_sse()

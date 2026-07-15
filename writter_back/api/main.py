@@ -43,6 +43,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             "openai_base_url": settings.OPENAI_BASE_URL,
             "anthropic_api_key": settings.ANTHROPIC_API_KEY,
             "timeout": settings.LLM_TIMEOUT_SECONDS,
+            "max_retries": settings.LLM_MAX_RETRIES,
         },
         quota_service=quota_service,
     )

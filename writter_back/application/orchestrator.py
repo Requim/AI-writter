@@ -52,19 +52,29 @@ class NovelOrchestrator(AgentOrchestrator):
         provider = self.llm_config.get("provider", "deepseek")
         model = self.llm_config.get("model", "deepseek-chat")
         timeout = float(self.llm_config.get("timeout", settings.LLM_TIMEOUT_SECONDS))
+        max_retries = int(
+            self.llm_config.get("max_retries", settings.LLM_MAX_RETRIES)
+        )
         if provider == "openai":
             return OpenAIAdapter(
                 self.llm_config.get("openai_api_key") or "",
                 model,
                 timeout,
                 base_url=self.llm_config.get("openai_base_url"),
+                max_retries=max_retries,
             )
         if provider == "anthropic":
             return AnthropicAdapter(
-                self.llm_config.get("anthropic_api_key") or "", model, timeout
+                self.llm_config.get("anthropic_api_key") or "",
+                model,
+                timeout,
+                max_retries=max_retries,
             )
         return DeepSeekAdapter(
-            self.llm_config.get("deepseek_api_key") or "", model, timeout
+            self.llm_config.get("deepseek_api_key") or "",
+            model,
+            timeout,
+            max_retries=max_retries,
         )
 
     def _get_llm_instance(self):
@@ -289,6 +299,17 @@ class NovelOrchestrator(AgentOrchestrator):
             "interrupts": interrupts,
             "state": safe_values,
         }
+
+    async def get_workflow_run_id(
+        self, context: TenantContext, thread_id: str
+    ) -> str | None:
+        """Read the private idempotency key from the latest checkpoint."""
+        await self._ensure_workflow()
+        state = await self._workflow.aget_state(
+            self._make_config(context, thread_id, include_llm=False)
+        )
+        value = (getattr(state, "values", {}) or {}).get("workflow_run_id")
+        return str(value) if value else None
 
     async def aclose(self) -> None:
         for task in list(self._active_tasks.values()):

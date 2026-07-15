@@ -42,7 +42,15 @@ async def persist_node(state: NovelAgentState, config) -> Command[Literal["progr
                         updated = True
                     if isinstance(outline_raw, dict):
                         from service.value_objects.outline import Outline
-                        outline_fields = {'story_background', 'main_characters', 'main_plot', 'chapters', 'writing_style', 'total_chapters'}
+                        outline_fields = {
+                            "story_background",
+                            "main_characters",
+                            "main_plot",
+                            "chapters",
+                            "writing_style",
+                            "total_chapters",
+                            "volumes",
+                        }
                         filtered = {k: v for k, v in outline_raw.items() if k in outline_fields}
                         try:
                             novel.total_outline = Outline(**filtered)

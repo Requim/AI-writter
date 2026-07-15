@@ -10,13 +10,19 @@ from .base import BaseLLMAdapter, safe_json_parse
 class DeepSeekAdapter(BaseLLMAdapter):
     """DeepSeek适配器"""
 
-    def __init__(self, api_key: str, model: str = "deepseek-chat", timeout: float = 180.0):
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "deepseek-chat",
+        timeout: float = 180.0,
+        max_retries: int = 2,
+    ):
         super().__init__(api_key=api_key, model=model, timeout=timeout)
         self.client = openai.AsyncOpenAI(
             api_key=api_key,
             base_url="https://api.deepseek.com",
             timeout=timeout,
-            max_retries=0,
+            max_retries=max_retries,
         )
 
     async def generate(self, prompt: str, system_prompt: Optional[str] = None,

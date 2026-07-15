@@ -174,6 +174,8 @@ export default function NovelStudio() {
             />
             {workflowState.status === 'running' ? (
               <Button danger icon={<StopOutlined />} onClick={() => void cancel()}>停止</Button>
+            ) : workflowState.status === 'error' && workflowState.retryable ? (
+              <Button type="primary" icon={<ReloadOutlined />} onClick={() => void startWriting()}>重试当前步骤</Button>
             ) : (
               <Button type="primary" icon={<PlayCircleOutlined />} onClick={() => void startWriting()}>继续创作</Button>
             )}
