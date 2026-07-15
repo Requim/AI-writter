@@ -100,7 +100,6 @@ async def main():
 
                 # 反序列化 total_outline blob（msgpack 格式，十六进制编码）
                 if blob_row:
-                    import struct
                     try:
                         raw_bytes = bytes(blob_row)
                         # msgpack 解码
@@ -151,7 +150,7 @@ async def main():
                     fixed_count += 1
                     logger.info(f"  UPDATED: {updates}")
                 else:
-                    logger.info(f"  Nothing to update")
+                    logger.info("  Nothing to update")
 
             except Exception as e:
                 logger.info(f"  Error: {type(e).__name__}: {e}")

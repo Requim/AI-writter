@@ -3,8 +3,7 @@ import logging
 logger = logging.getLogger("uvicorn")
 import json
 import re
-from abc import abstractmethod
-from typing import Dict, List, Optional, Any
+from typing import Any, AsyncIterator, Dict, List, Optional
 from service.ports.llm_service import LLMService
 
 
@@ -50,13 +49,25 @@ def safe_json_parse(content: str) -> Dict[str, Any]:
 class BaseLLMAdapter(LLMService):
     """LLM适配器基类"""
 
-    def __init__(self, api_key: str, model: str):
+    def __init__(self, api_key: str, model: str, timeout: float = 180.0):
+        if not api_key:
+            raise ValueError(f"Missing API key for model {model}")
         self.api_key = api_key
         self.model = model
+        self.timeout = timeout
         self.temperature = 0.7
 
     async def generate(self, prompt: str, system_prompt: Optional[str] = None,
                        temperature: float = 0.7, top_p: float = 1.0) -> str:
+        raise NotImplementedError
+
+    def stream_text(
+        self,
+        prompt: str,
+        system_prompt: Optional[str] = None,
+        temperature: float = 0.7,
+        top_p: float = 1.0,
+    ) -> AsyncIterator[str]:
         raise NotImplementedError
 
     async def structured_generate(self, prompt: str, schema: Dict[str, Any],

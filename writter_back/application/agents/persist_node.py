@@ -17,7 +17,8 @@ from application.prompts.memory_prompts import (
 async def persist_node(state: NovelAgentState, config) -> Command[Literal["progress_check_node"]]:
     repository = config["configurable"].get("novel_repository")
     memory_service = config["configurable"].get("memory_service")
-    novel_id = config["configurable"].get("thread_id", "")
+    novel_id = config["configurable"].get("novel_id", "")
+    tenant_id = config["configurable"].get("tenant_id", "")
     current_index = state.get("current_chapter_index", 0)
     current_chapter_content = state.get("current_chapter_content", "")
 
@@ -27,7 +28,7 @@ async def persist_node(state: NovelAgentState, config) -> Command[Literal["progr
         logger.info(f"【持久化节点】进入 | novel_id={novel_id}, 阶段=设定")
         if repository and novel_id:
             try:
-                novel = await repository.find_by_id(novel_id)
+                novel = await repository.find_by_id(tenant_id, novel_id)
                 if novel:
                     title_val = state.get("title")
                     summary_val = state.get("summary")
@@ -57,11 +58,11 @@ async def persist_node(state: NovelAgentState, config) -> Command[Literal["progr
                         novel.progress = Progress(**old_progress)
                         updated = True
                     if updated:
-                        await repository.update(novel)
+                        await repository.update(tenant_id, novel)
                         logger.info(f"【持久化节点】novels 表已更新 | title={novel.title}, total_chapters={total_ch}")
             except Exception as e:
                 logger.info(f"【持久化节点】更新 novels 失败(降级): {e}")
-        logger.info(f"【持久化节点】完成 -> 进度检查节点")
+        logger.info("【持久化节点】完成 -> 进度检查节点")
         logger.info(f"{'='*60}")
         return Command(goto="progress_check_node")
 
@@ -83,46 +84,54 @@ async def persist_node(state: NovelAgentState, config) -> Command[Literal["progr
         "status": "completed",
     }
 
+    total_outline_raw = state.get("total_outline")
+    if isinstance(total_outline_raw, str):
+        import json as _json
+        try:
+            total_outline_raw = _json.loads(total_outline_raw)
+        except Exception:
+            total_outline_raw = {}
+    total_chapters = total_outline_raw.get("total_chapters", 0) if isinstance(total_outline_raw, dict) else 0
+    completed_count = current_index + 1
+    new_percentage = (completed_count / total_chapters * 100) if total_chapters > 0 else 0
+    is_completed = completed_count >= total_chapters if total_chapters else False
+
     if repository and novel_id:
-        try:
-            # UPSERT：先删该章节索引的旧版本，再保存新版本，保证每章只有一行
-            await repository.delete_chapters_by_index(novel_id, current_index)
-            logger.info(f"【持久化节点】已清理 ch={current_index} 旧版本")
+        from service.entities.chapter import Chapter
+        from service.value_objects.progress import Progress
 
-            from service.entities.chapter import Chapter
-            from uuid import UUID
-            chapter_entity = Chapter(
-                id=UUID(chapter_id),
-                novel_id=UUID(novel_id),
-                chapter_index=current_index,
-                title=completed_chapter["title"],
-                outline=chapter_outline,
-                content=current_chapter_content,
-                word_count=completed_chapter["word_count"],
-                status="completed",
-                created_at=datetime.now(),
-                updated_at=datetime.now(),
-            )
-            await repository.save_chapter(novel_id, chapter_entity)
-            logger.info(f"【持久化节点】章节已保存 | ch={current_index}, {completed_chapter['title']}, {completed_chapter['word_count']}字")
-
-            novel = await repository.find_by_id_with_chapters(novel_id)
-            if novel:
-                await repository.update(novel)
-                logger.info(f"【持久化节点】进度已更新")
-        except Exception as e:
-            logger.info(f"【持久化节点】章节保存失败(降级): {e}")
-            pass
-
-    if memory_service and novel_id:
-        try:
-            # UPSERT：先删该章节索引的旧记忆，再存新版本
-            await memory_service.delete_chapter_memory(novel_id, current_index)
-            await memory_service.store_chapter_memory(novel_id, completed_chapter)
-            logger.info(f"【持久化节点】长期记忆已存储（替换旧版）")
-        except Exception as e:
-            logger.info(f"【持久化节点】记忆存储失败(降级): {e}")
-            pass
+        chapter_entity = Chapter(
+            id=UUID(chapter_id),
+            novel_id=UUID(novel_id),
+            chapter_index=current_index,
+            title=completed_chapter["title"],
+            outline=chapter_outline,
+            content=current_chapter_content,
+            word_count=completed_chapter["word_count"],
+            status="completed",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+        )
+        memory_content, memory_metadata = memory_service.build_chapter_memory(completed_chapter)
+        progress = Progress(
+            current_chapter=completed_count,
+            total_chapters=total_chapters,
+            percentage=new_percentage,
+            status="completed" if is_completed else "writing",
+        )
+        await repository.replace_chapter(
+            tenant_id,
+            novel_id,
+            chapter_entity,
+            memory_content,
+            memory_metadata,
+            progress,
+        )
+        logger.info(
+            "【持久化节点】章节、记忆和进度已原子保存 | ch=%s, title=%s",
+            current_index,
+            completed_chapter["title"],
+        )
 
     # ====== Plan A: 分层记忆 —— 生成 L层摘要 + S层故事状态 ======
     if memory_service and novel_id and current_chapter_content:
@@ -135,7 +144,9 @@ async def persist_node(state: NovelAgentState, config) -> Command[Literal["progr
                     completed_chapter['title'], current_chapter_content
                 )
                 summary = await llm_instance.generate(summary_prompt, temperature=CHAPTER_SUMMARY_TEMPERATURE)
-                await memory_service.store_chapter_summary(novel_id, current_index, summary[:500])
+                await memory_service.store_chapter_summary(
+                    tenant_id, novel_id, current_index, summary[:500]
+                )
                 logger.info(f"【持久化节点·分层记忆】L层摘要已存储 | ch={current_index}")
 
                 # --- S层：故事状态 ---
@@ -143,21 +154,12 @@ async def persist_node(state: NovelAgentState, config) -> Command[Literal["progr
                     current_index, completed_chapter['title'], current_chapter_content
                 )
                 story_state = await llm_instance.generate(state_prompt, temperature=STORY_STATE_TEMPERATURE)
-                await memory_service.update_story_state(novel_id, story_state[:1000])
-                logger.info(f"【持久化节点·分层记忆】S层故事状态已更新")
+                await memory_service.update_story_state(
+                    tenant_id, novel_id, story_state[:1000]
+                )
+                logger.info("【持久化节点·分层记忆】S层故事状态已更新")
         except Exception as e:
             logger.info(f"【持久化节点·分层记忆】生成失败(降级): {e}")
-
-    total_outline_raw = state.get("total_outline")
-    if isinstance(total_outline_raw, str):
-        import json as _json
-        try:
-            total_outline_raw = _json.loads(total_outline_raw)
-        except Exception:
-            total_outline_raw = {}
-    total_chapters = total_outline_raw.get("total_chapters", 0) if isinstance(total_outline_raw, dict) else 0
-    new_percentage = ((current_index + 1) / total_chapters * 100) if total_chapters > 0 else 0
-    is_completed = (current_index + 1) >= total_chapters
 
     logger.info(f"【持久化节点】完成 -> 进度检查节点 | {new_percentage:.1f}%, 完结={'是' if is_completed else '否'}")
     logger.info(f"{'='*60}")

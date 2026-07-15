@@ -13,7 +13,8 @@ async def memory_retrieval_node(state: NovelAgentState, config) -> Command[Liter
     """
     memory_service = config["configurable"].get("memory_service")
     repository = config["configurable"].get("novel_repository")
-    novel_id = config["configurable"].get("thread_id", "")  # thread_id = novel_id
+    novel_id = config["configurable"].get("novel_id", "")
+    tenant_id = config["configurable"].get("tenant_id", "")
     current_index = state.get("current_chapter_index", 0)
     memory_status = '✅ 已连接' if memory_service else '❌ 不可用'
     logger.info(f"{'='*60}")
@@ -24,7 +25,9 @@ async def memory_retrieval_node(state: NovelAgentState, config) -> Command[Liter
 
     # ====== 第一优先：MemoryService（novel_memories 表） ======
     if memory_service and novel_id:
-        memory_context = await memory_service.get_hierarchical_context(novel_id, current_index)
+        memory_context = await memory_service.get_hierarchical_context(
+            tenant_id, novel_id, current_index
+        )
         if memory_context:
             retrieval_source = "MemoryService"
 
@@ -42,13 +45,12 @@ async def memory_retrieval_node(state: NovelAgentState, config) -> Command[Liter
                 )
             memory_context = "\n\n".join(memory_parts)
             retrieval_source = "completed_chapters"
-            logger.info(f"【记忆检索节点】从 completed_chapters 降级获取记忆")
+            logger.info("【记忆检索节点】从 completed_chapters 降级获取记忆")
 
     # ====== 第三优先：直接从 DB chapters 表查询 ======
     if not memory_context and repository and novel_id:
         try:
-            from uuid import UUID
-            novel = await repository.find_by_id_with_chapters(novel_id)
+            novel = await repository.find_by_id_with_chapters(tenant_id, novel_id)
             if novel and hasattr(novel, 'chapters') and novel.chapters:
                 chapters_sorted = sorted(novel.chapters, key=lambda c: c.chapter_index)
                 memory_parts = []

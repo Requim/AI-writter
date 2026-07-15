@@ -1,5 +1,5 @@
 """LangGraph工作流构建器"""
-from langgraph.graph import StateGraph, START, END
+from langgraph.graph import StateGraph, END
 from application.schemas.agent_state import NovelAgentState
 from application.agents import (
     type_confirmation_node,

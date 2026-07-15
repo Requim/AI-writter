@@ -17,7 +17,7 @@ dependencies = [
     "pydantic-settings>=2.0.0",
     "python-dotenv>=1.0.0",
     "PyJWT>=2.9.0",
-    "passlib[bcrypt]>=1.7.4",
+    "argon2-cffi>=23.1.0",
     "alembic>=1.13.0",
     "langgraph-checkpoint-postgres>=0.1.0",
     "openai>=1.55.0",
@@ -52,4 +52,35 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+
+[tool.ruff]
+target-version = "py311"
+exclude = ["_check_*.py", "scripts"]
+
+[tool.ruff.lint]
+ignore = ["E402"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+check_untyped_defs = true
+warn_unused_ignores = true
+explicit_package_bases = true
+mypy_path = "."
+follow_imports = "skip"
+disallow_untyped_defs = true
+files = [
+    "config.py",
+    "api/main.py",
+    "api/routers/workflow_router.py",
+    "application/events.py",
+    "application/auth_service.py",
+    "application/quota_service.py",
+    "application/streaming.py",
+    "api/dependencies.py",
+    "api/routers/auth_router.py",
+    "api/routers/tenant_router.py",
+    "api/routers/admin_router.py",
+]
+exclude = ["scripts/", "_check_.*\\.py"]
 

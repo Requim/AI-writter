@@ -1,50 +1,58 @@
-import axios from 'axios'
-import type { AxiosInstance, AxiosRequestConfig } from 'axios'
-import { message } from 'antd'
+import axios, { type InternalAxiosRequestConfig } from 'axios'
+import { useAuthStore } from '@/stores/authStore'
+import type { AuthSession } from '@/types/auth'
 
-// 创建 Axios 实例
-const apiClient: AxiosInstance = axios.create({
+interface RetryConfig extends InternalAxiosRequestConfig {
+  _retry?: boolean
+}
+
+export const apiClient = axios.create({
   baseURL: '/api',
-  timeout: 600000,
-  headers: {
-    'Content-Type': 'application/json'
-  }
+  timeout: 30_000,
+  headers: { 'Content-Type': 'application/json' },
 })
 
-// 请求拦截器
-apiClient.interceptors.request.use(
-  (config) => {
-    const token = localStorage.getItem('token')
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`
-    }
-    return config
-  },
-  (error) => {
-    return Promise.reject(error)
-  }
-)
+apiClient.interceptors.request.use((config) => {
+  const { accessToken, currentTenantId } = useAuthStore.getState()
+  if (accessToken) config.headers.Authorization = `Bearer ${accessToken}`
+  if (currentTenantId) config.headers['X-Tenant-ID'] = currentTenantId
+  return config
+})
 
-// 响应拦截器
+let refreshPromise: Promise<AuthSession> | undefined
+
+async function refreshSession(): Promise<AuthSession> {
+  const refreshToken = useAuthStore.getState().refreshToken
+  if (!refreshToken) throw new Error('No refresh token')
+  refreshPromise ??= axios
+    .post<AuthSession>('/api/v1/auth/refresh', { refresh_token: refreshToken })
+    .then(({ data }) => {
+      useAuthStore.getState().setSession(data)
+      return data
+    })
+    .finally(() => { refreshPromise = undefined })
+  return refreshPromise
+}
+
 apiClient.interceptors.response.use(
-  (response) => response.data,
-  (error) => {
-    if (error.response) {
-      const { status, data } = error.response
-      if (status === 401) {
-        localStorage.removeItem('token')
-        window.location.href = '/login'
-        message.error('请先登录')
-      } else if (status === 404) {
-        // 404 由调用方自行处理，不弹出全局提示
-      } else {
-        message.error(data.detail || '请求失败')
-      }
-    } else {
-      message.error('网络错误，请检查后端是否启动')
+  (response) => response,
+  async (error: unknown) => {
+    if (!axios.isAxiosError(error) || !error.config || error.response?.status !== 401) {
+      return Promise.reject(error)
     }
-    return Promise.reject(error)
-  }
+    const config = error.config as RetryConfig
+    if (config._retry || config.url?.includes('/v1/auth/')) {
+      return Promise.reject(error)
+    }
+    config._retry = true
+    try {
+      const session = await refreshSession()
+      config.headers.Authorization = `Bearer ${session.access_token}`
+      return apiClient(config)
+    } catch (refreshError) {
+      useAuthStore.getState().clear()
+      if (!window.location.pathname.startsWith('/login')) window.location.assign('/login')
+      return Promise.reject(refreshError)
+    }
+  },
 )
-
-export default apiClient

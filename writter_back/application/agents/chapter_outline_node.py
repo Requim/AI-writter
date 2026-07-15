@@ -30,7 +30,7 @@ async def chapter_outline_node(state: NovelAgentState, config) -> Command[Litera
     logger.info(f"【章节细纲节点】进入 | 书名={title}, 第 {current_index+1} 章, 用户已提供细纲={'是' if has_user_outline else '否'}, 前文记忆={mem_status}")
     
     if state.get("chapter_outlines_input"):
-        logger.info(f"【章节细纲节点】使用用户提供的细纲 -> 章节写作节点")
+        logger.info("【章节细纲节点】使用用户提供的细纲 -> 章节写作节点")
         logger.info(f"{'='*60}")
         return Command(goto="chapter_writer_node")
     
@@ -39,7 +39,7 @@ async def chapter_outline_node(state: NovelAgentState, config) -> Command[Litera
     llm = llm_config.get("llm_instance")
     
     if not llm:
-        logger.info(f"【章节细纲节点】LLM不可用，跳过 -> 章节写作节点")
+        logger.info("【章节细纲节点】LLM不可用，跳过 -> 章节写作节点")
         logger.info(f"{'='*60}")
         return Command(goto="chapter_writer_node")
     
@@ -63,14 +63,9 @@ async def chapter_outline_node(state: NovelAgentState, config) -> Command[Litera
         temperature=0.7,
     )
     
-    # JSON 解析失败时使用默认细纲
+    # 空细纲会让正文生成失去约束，必须显式失败并由上层重试。
     if not ai_outline:
-        logger.info(f"【章节细纲节点】JSON解析失败，使用默认细纲")
-        ai_outline = {
-            "title": f"第{current_index + 1}章",
-            "estimated_word_count": 4500,
-            "scenes": [{"location": "", "characters": [], "events": [], "purpose": ""}],
-        }
+        raise RuntimeError(f"第 {current_index + 1} 章细纲生成失败：模型未返回有效 JSON")
     
     # 验证字数规划
     word_count = ai_outline.get("estimated_word_count", 4500)
@@ -80,7 +75,7 @@ async def chapter_outline_node(state: NovelAgentState, config) -> Command[Litera
     # 自动模式：直接接受
     auto_mode = config["configurable"].get("auto_mode", False)
     if auto_mode:
-        logger.info(f"【章节细纲节点】自动模式 | 接受AI生成")
+        logger.info("【章节细纲节点】自动模式 | 接受AI生成")
         logger.info(f"{'='*60}")
         return Command(
             goto="router_agent",
@@ -97,17 +92,17 @@ async def chapter_outline_node(state: NovelAgentState, config) -> Command[Litera
     })
     
     if user_decision == "accept":
-        logger.info(f"【章节细纲节点】用户接受AI细纲 -> 路由节点")
+        logger.info("【章节细纲节点】用户接受AI细纲 -> 路由节点")
         logger.info(f"{'='*60}")
         return Command(
             goto="router_agent",
             update={"chapter_outlines": [ai_outline]}
         )
     elif user_decision == "regenerate":
-        logger.info(f"【章节细纲节点】用户要求重新生成，循环回本节点")
+        logger.info("【章节细纲节点】用户要求重新生成，循环回本节点")
         return Command(goto="chapter_outline_node")
     else:
-        logger.info(f"【章节细纲节点】用户提供了自定义细纲 -> 路由节点")
+        logger.info("【章节细纲节点】用户提供了自定义细纲 -> 路由节点")
         logger.info(f"{'='*60}")
         return Command(
             goto="router_agent",

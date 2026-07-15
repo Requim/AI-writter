@@ -1,7 +1,6 @@
 """进度检查节点 - 通过总纲进度条控制小说完结，每章完成后暂停等用户触发下一章"""
 import logging
 logger = logging.getLogger("uvicorn")
-from langgraph.graph import END
 from langgraph.types import interrupt
 import json
 from application.schemas.agent_state import NovelAgentState
@@ -33,9 +32,10 @@ async def progress_check_node(state: NovelAgentState, config) -> dict:
     try:
         repo = config["configurable"].get("novel_repository")
         if repo and current_index > 0:
-            novel_id = config["configurable"].get("thread_id", "")
+            novel_id = config["configurable"].get("novel_id", "")
+            tenant_id = config["configurable"].get("tenant_id", "")
             if novel_id:
-                novel = await repo.find_by_id_with_chapters(novel_id)
+                novel = await repo.find_by_id_with_chapters(tenant_id, novel_id)
                 if novel and len(novel.chapters) < current_index:
                     logger.info(f"【进度检查节点】检测到章节被删除: DB有{len(novel.chapters)}章, state记录{current_index}章, 回退索引")
                     current_index = len(novel.chapters)
@@ -43,12 +43,12 @@ async def progress_check_node(state: NovelAgentState, config) -> dict:
         pass
 
     if is_completed or (total_chapters > 0 and current_index >= total_chapters):
-        logger.info(f"【进度检查节点】小说已完成! 进入 -> 结束")
+        logger.info("【进度检查节点】小说已完成! 进入 -> 结束")
         logger.info(f"{'='*60}")
         return {"__route__": "end"}
 
     if current_index == 0:
-        logger.info(f"【进度检查节点】首章创作 -> 记忆检索节点")
+        logger.info("【进度检查节点】首章创作 -> 记忆检索节点")
         logger.info(f"{'='*60}")
         return {"__route__": "continue", "current_chapter_index": current_index}
 
@@ -66,7 +66,7 @@ async def progress_check_node(state: NovelAgentState, config) -> dict:
             "memory_context": "",
         }
 
-    user_choice = interrupt({
+    interrupt({
         "action": "ready_for_next_chapter",
         "message": f"第{current_index}章已完成，共{total_chapters}章",
         "current_chapter": current_index,

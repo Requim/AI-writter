@@ -1,648 +1,120 @@
-# AI 小说自动创作系统 (NovelWriter)
+# 墨间 Novel Writer
 
-> 基于 LangGraph + PostgreSQL + FastAPI + React 19 构建的具备**长期记忆**、**大纲规划**和**反思修正**能力的 AI Agent 小说创作系统。
+支持公开注册和租户数据隔离的 AI 小说创作工作台。系统使用 React + FastAPI + LangGraph，把选题、总纲、章节生成、质量审读、修订和长期记忆组织为一个可恢复工作流。
 
----
+## 主要能力
 
-## 目录
+- 编辑部式书架、创建向导和统一三栏创作工作台
+- DeepSeek、OpenAI、Anthropic 三种模型适配器
+- 正文与修订内容通过 SSE 实时输出，包含路由理由、质量评分和进度
+- 手动审阅与自动创作两种模式，支持取消和 checkpoint 恢复
+- PostgreSQL 章节、进度与记忆一致性存储
+- Alembic 非破坏基线、Docker Compose 一键启动
+- 邮箱密码登录、多租户切换、成员角色和平台管理
+- 每租户按月计量的大纲与章节生成额度
 
-- [系统架构](#系统架构)
-- [核心设计](#核心设计)
-- [项目结构](#项目结构)
-- [快速开始](#快速开始)
-- [输出逻辑链路](#输出逻辑链路)
-- [API 接口](#api-接口)
-- [LangGraph 工作流](#langgraph-工作流)
-- [优化点清单](#优化点清单)
-- [进度追踪](#进度追踪)
-- [集成测试](#集成测试)
+## Docker 启动
 
----
+1. 从根目录的 `.env.example` 创建 `.env`。
+2. 修改 `POSTGRES_PASSWORD` 和 `JWT_SECRET`，并填写所选模型对应的 API Key。
+3. 启动服务：
 
-## 系统架构
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                     前端层 (Frontend)                       │
-│  writter_front/  (React 19 + TypeScript + Ant Design)       │
-│  - 小说配置界面    - 进度可视化    - 中断处理UI          │
-│  - 自动模式       - SSE 流式面板   - 章节查看/编辑       │
-└──────────────────────────┬──────────────────────────────────┘
-                           │ REST API / SSE Stream
-┌──────────────────────────▼──────────────────────────────────┐
-│                   API层 (API Layer)                        │
-│  writter_back/api/  (FastAPI + Uvicorn)                   │
-│  - Depends注入   - 请求校验   - 路由分发                  │
-│  - novel_router (CRUD + 进度)                            │
-│  - workflow_router (invoke/stream + SSE)                  │
-└──────────────────────────┬──────────────────────────────────┘
-                           │
-┌──────────────────────────▼──────────────────────────────────┐
-│               应用层 (Application Layer)                     │
-│  writter_back/application/                                │
-│  - NovelOrchestrator (持有依赖，驱动工作流)                │
-│  - AgentWorkflow (LangGraph 11节点 + 自愈循环修正)        │
-│  - NovelAgentState (18字段 TypedDict)                     │
-└──────────────────────────┬──────────────────────────────────┘
-                           │
-┌──────────────────────────▼──────────────────────────────────┐
-│                服务层 (Service Layer)                        │
-│  writter_back/service/                                     │
-│  - Novel (小说聚合根)  - Chapter (章节实体)                │
-│  - ports/ (LLMService, MemoryService, NovelRepository 接口) │
-└──────────────────────────┬──────────────────────────────────┘
-                           │
-┌──────────────────────────▼──────────────────────────────────┐
-│            基础设施层 (Infrastructure Layer)                 │
-│  writter_back/infrastructure/                              │
-│  - PostgreSQL (NovelRepository, Chapter 仓储实现)          │
-│  - LangGraph (PostgresSaver Checkpointer)                  │
-│  - LLM Adapters (OpenAI/Anthropic/DeepSeek)              │
-│  - VectorStore (pgvector, 长期记忆检索)                     │
-└─────────────────────────────────────────────────────────────┘
+```powershell
+docker compose up --build
 ```
 
----
+访问 `http://localhost:5173`。后端接口文档位于 `http://localhost:8000/docs`。
 
-## 核心设计
+Compose 固定一个后端 worker。同一租户内的同一本小说同一时间只允许一个生成任务。
 
-### SOLID 原则
-
-| 原则 | 实现方式 |
-|------|----------|
-| **S** 单一职责 | 每个模块只负责一个功能（类型确认、书名生成、反思检查各为独立节点） |
-| **O** 开闭原则 | LangGraph 节点可插拔，新增节点不影响现有流程 |
-| **L** 里氏替换 | 所有 LLM 适配器实现同一服务接口，可无缝替换 |
-| **I** 接口隔离 | 端口接口粒度精细（LLMService、MemoryService、NovelRepository） |
-| **D** 依赖倒置 | 服务层定义接口，基础设施层实现；应用层依赖抽象而非实现 |
-
-### 依赖注入机制
-
-本项目采用 **双轨制依赖注入**：
-
-#### 1. LangGraph Config 注入（Agent 节点用）
-```python
-# orchestrator.py
-def _make_config(self, thread_id):
-    return {
-        "configurable": {
-            "thread_id": thread_id,
-            "memory_service": self.memory_service,
-            "novel_repository": self.repository,
-            "llm_config": self.llm_config,
-        }
-    }
-
-# agent 节点通过第二个参数接收
-async def memory_retrieval_node(state, config):
-    memory_service = config["configurable"]["memory_service"]
-```
-
-#### 2. FastAPI Depends 注入（API 路由用）
-```python
-# novel_router.py
-def get_repository() -> PostgresNovelRepository:
-    return PostgresNovelRepository(settings.DATABASE_URL)
-
-@router.post("")
-async def create_novel(repo=Depends(get_repository)):
-    ...
-```
-
----
-
-## 输出逻辑链路
-
-```
-小说类型（必选，用户输入）
-    ↓
-书名（用户输入 → AI生成 → 用户确认）
-    ↓
-简介（用户输入 → AI生成 → 用户确认）
-    ↓
-总纲领（用户输入 → AI生成 → 用户审阅/修改）
-    ↓
-┌─────────────── 循环开始 ───────────────┐
-│                                            │
-│  进度检查：已完成？──是──→ 完结退出      │
-│      │ 否                               │
-│      ▼                                    │
-│  长期记忆检索（MemoryService 查询前文）    │
-│      ↓                                    │
-│  Router Agent（LLM 决策下一步）            │
-│      ↓                                    │
-│  单章节细纲（AI生成）                     │
-│      ↓                                    │
-│  章节内容填充（场景队列，每场景独立生成） │
-│      ↓                                    │
-│  反思检查（AI自查 7点清单 + 质量评分）    │
-│      │                                    │
-│  有问题？──是──► 自动修正（自动模式）     │
-│      │              │                     │
-│      │              ├─ 循环修正（最多3次）│
-│      │              └─ 降级放行           │
-│      ▼                                    │
-│  持久化（写DB + 存三层记忆）              │
-│      │                                    │
-│  更新进度（repository.update）            │
-│      │                                    │
-└──────┴────────────────────────────────────┘
-```
-
----
-
-## 项目结构
-
-```
-NovelWritter/
-├── README.md                  # 本文件 - 总架构文档
-├── writter_back/             # 后端（FastAPI + LangGraph）
-│   ├── pyproject.toml      # uv 项目配置
-│   ├── .python-version     # Python 3.11
-│   ├── README.md           # 后端详细文档（含API、工作流说明）
-│   ├── config.py           # 集中化配置（pydantic-settings）
-│   ├── service/           # 服务层
-│   │   ├── entities/      # Novel, Chapter 实体
-│   │   ├── value_objects/ # NovelType, Outline, Progress
-│   │   └── ports/        # LLMService, MemoryService 等接口
-│   ├── infrastructure/     # 基础设施层
-│   │   ├── database/     # SQLAlchemy 模型 + 仓储实现
-│   │   ├── llm/          # OpenAI, DeepSeek, Anthropic 适配器
-│   │   └── memory/       # PostgreSQL 长期记忆实现（三层记忆）
-│   ├── application/        # 应用层
-│   │   ├── orchestrator.py # NovelOrchestrator（驱动工作流）
-│   │   ├── agents/       # LangGraph 节点（11个节点）
-│   │   ├── schemas/      # NovelAgentState 状态定义
-│   │   └── workflow_builder.py  # 工作流构建器
-│   └── api/              # API层
-│       ├── main.py        # FastAPI 入口 + 生命周期
-│       └── routers/       # FastAPI 路由（novel, workflow）
-└── writter_front/            # 前端（React 19 + Vite）
-    ├── package.json        # 依赖配置（React 19, Ant Design 6, Zustand 5）
-    ├── vite.config.ts      # Vite 配置（@ 别名、/api 代理、React 插件）
-    ├── tsconfig.json       # TypeScript 项目引用
-    ├── tsconfig.app.json   # 应用 TS 配置
-    ├── README.md           # 前端详细文档
-    └── src/
-        ├── api/           # Axios 客户端（client.ts, novel.ts）
-        ├── pages/         # 页面组件
-        │   ├── BookShelf.tsx       # 书架（卡片网格 + 批量删除）
-        │   ├── NovelConfig.tsx     # 创作配置（6步向导 + interrupt + 自动模式）
-        │   ├── NovelProgress.tsx   # 进度查看（进度条 + 章节编辑）
-        │   └── Login.tsx           # 用户登录
-        ├── stores/        # Zustand 状态管理（novelStore.ts）
-        ├── App.tsx        # 根组件（路由 + ConfigProvider）
-        └── main.tsx       # 入口文件
-```
-
----
-
-## 快速开始
-
-### 环境要求
-
-| 组件 | 版本 | 说明 |
-|------|------|------|
-| Python | >= 3.11 | 后端运行环境 |
-| Node.js | >= 18 | 前端运行环境 |
-| PostgreSQL | >= 16 | 需安装 pgvector 扩展 |
-| Redis | >= 6 | 可选，用于 LangGraph Platform |
-
-### 1. 数据库准备
+首次部署可临时设置 `PLATFORM_ADMIN_EMAIL` 和 `PLATFORM_ADMIN_PASSWORD`，迁移后执行：
 
 ```bash
-# 创建数据库
-createdb novel_writer
-
-# 启用 pgvector 扩展
-psql novel_writer -c "CREATE EXTENSION IF NOT EXISTS vector;"
+docker compose exec backend uv run --no-sync python -m scripts.bootstrap_admin
 ```
 
-### 2. 后端启动
+引导完成后应从 `.env` 清除平台管理员明文密码并重建后端容器。
+
+生产服务器使用 `docker-compose.prod.yml` 覆盖端口并接入现有反向代理网络：
 
 ```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up --build -d
+```
+
+## 本地开发
+
+后端：
+
+```powershell
 cd writter_back
-
-# 配置环境变量（创建 .env 文件）
-cat > .env << EOF
-DATABASE_URL=postgresql+asyncpg://user:password@localhost:5432/novel_writer
-DEEPSEEK_API_KEY=sk-xxxxxxxx
-DEEPSEEK_MODEL=deepseek-chat
-OPENAI_API_KEY=sk-xxxxxxxx
-OPENAI_MODEL=gpt-4o
-ANTHROPIC_API_KEY=sk-ant-xxxxxxxx
-ANTHROPIC_MODEL=claude-sonnet-4-20250514
-MIN_CHAPTER_WORDS=3000
-MAX_CHAPTER_WORDS=6000
-EOF
-
-# 安装依赖并启动
-uv sync
-uv run uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
+Copy-Item .env.example .env
+uv sync --frozen --all-groups
+uv run alembic upgrade head
+uv run uvicorn api.main:app --reload
 ```
 
-后端监听 `http://localhost:8000`。
+前端：
 
-### 3. 前端启动
-
-```bash
+```powershell
 cd writter_front
-npm install
+npm ci
 npm run dev
 ```
 
-前端监听 `http://localhost:5173`，API 请求通过 Vite 代理转发到后端。
+前端开发服务器会把 `/api` 代理到 `http://localhost:8000`。
 
----
+## 验证
 
-## API 接口
+```powershell
+cd writter_front
+npm run lint
+npm run test
+npm run build
 
-### 小说管理
+cd ../writter_back
+uv run ruff check .
+uv run mypy
+uv run pytest tests/test_streaming_contracts.py -q
+```
 
-| 方法 | 路径 | 说明 | 状态 |
-|------|------|------|------|
-| POST | `/api/v1/novels` | 创建小说（启动创作流程） | ✅ 已实现 + 测试通过 |
-| GET | `/api/v1/novels` | 查询用户所有小说 | ✅ 已实现 + 测试通过 |
-| GET | `/api/v1/novels/{id}` | 获取小说详情 | ✅ 已实现 + 测试通过 |
-| DELETE | `/api/v1/novels/{id}` | 删除小说 | ✅ 已实现 |
-| GET | `/api/v1/novels/{id}/progress` | 获取进度 | ✅ 已实现 + 测试通过 |
-| GET | `/api/v1/novels/{id}/chapters` | 获取所有章节 | ✅ 已实现 + 测试通过 |
-| GET | `/api/v1/novels/{id}/chapters/{cid}` | 获取章节详情 | ✅ 已实现 |
-| PUT | `/api/v1/novels/{id}/chapters/{cid}` | 更新章节内容 | ✅ 已实现 |
-| POST | `/api/v1/novels/{id}/chapters/batch-delete` | 批量删除章节 | ✅ 已实现 |
-| POST | `/api/v1/novels/{id}/chapters/{cid}/rewrite` | 重写指定章节 | ✅ 已实现 |
+数据库集成测试需要通过 `TEST_DATABASE_URL` 指向独立测试数据库，测试会清理其中的全部测试表。
 
-### 工作流控制（支持 interrupt/resume）
+## 认证与租户上下文
 
-| 方法 | 路径 | 说明 | 状态 |
-|------|------|------|------|
-| POST | `/api/v1/workflows/{thread_id}/invoke` | 启动/恢复工作流 | ✅ 已实现 |
-| POST | `/api/v1/workflows/{thread_id}/stream` | SSE 流式 POST | ✅ 已实现 |
-| GET | `/api/v1/workflows/{thread_id}/stream` | SSE 流式 GET | ✅ 已实现 |
-| GET | `/api/v1/workflows/{thread_id}/state` | 获取工作流状态 | ✅ 已实现 |
+注册入口为 `POST /api/v1/auth/register`。除注册、登录、刷新和邀请接受外，业务 API 必须携带：
 
-### Interrupt 响应格式
+```http
+Authorization: Bearer <access-token>
+X-Tenant-ID: <tenant-uuid>
+```
 
-工作流中断时，API 返回包含 `__interrupt__` 的响应：
+服务端根据成员关系验证租户身份；前端传入的小说或工作流 UUID 不能跨租户访问。Access Token 有效期 15 分钟，Refresh Token 有效期 30 天并在刷新时轮换。
+
+## SSE 事件协议
+
+统一入口为 `POST /api/v1/workflows/{thread_id}/stream`。事件包结构为：
 
 ```json
 {
-  "__interrupt__": [
-    {
-      "value": {
-        "action": "require_novel_type",
-        "message": "请选择小说类型（必选）",
-        "available_types": {"suspense": "悬疑", "sci_fi": "科幻"}
-      }
-    }
-  ]
+  "id": 12,
+  "type": "content_delta",
+  "thread_id": "...",
+  "node": "chapter_writer_node",
+  "data": {
+    "chapter_index": 0,
+    "operation": "append",
+    "text": "正文片段"
+  },
+  "timestamp": "2026-07-15T00:00:00Z"
 }
 ```
 
-恢复工作流：
-
-```bash
-POST /api/v1/workflows/{thread_id}/invoke
-{
-  "command": {"resume": "sci_fi"}
-}
-```
-
----
-
-## LangGraph 工作流
-
-### Agent 节点列表（12个）
-
-| 节点 | 职责 | 用户交互 | LLM调用 | 状态 |
-|------|------|----------|---------|------|
-| `type_confirmation` | 强制用户输入小说类型 | interrupt() 暂停 | 无 | ✅ 完整 |
-| `title_node` | 书名生成 | interrupt() 确认 | `generate()` temp=0.9 | ✅ 完整 |
-| `summary_node` | 简介生成 | interrupt() 确认 | `generate()` temp=0.8 | ✅ 完整 |
-| `outline_node` | 总纲领生成 | interrupt() 审阅 | `structured_generate()` | ✅ 完整 |
-| `progress_check_node` | 进度检查 | 自动（完结判断） | 无 | ✅ 完整 |
-| `memory_retrieval_node` | 长期记忆检索 | 自动（MemoryService） | 无 | ✅ 已接入 |
-| `chapter_outline_node` | 章节细纲生成 | 自动/中断确认 | `structured_generate()` | ✅ 完整 |
-| `chapter_writer_node` | 章节内容填充 | 自动（场景队列生成） | `generate()` | ✅ 完整 |
-| `reflection_node` | 反思检查 | 自动/中断报告问题 | `structured_generate()` | ✅ 完整 |
-| `revision_node` | 修正节点 | 自动/中断4种决策 | `generate()` | ✅ 完整 |
-| `persist_node` | 持久化 | 自动（写DB+三层记忆） | 无 | ✅ 已接入 |
-| `router_agent` | LLM 路由决策 | 自动 | `structured_generate()` | ✅ 完整 |
-
-### 工作流图结构
-
-```
-START → type_confirmation → title_node → summary_node → outline_node
-                                                        ↓
-progress_check ────────────────────────────────→ (is_completed?)
-   ├─ 是 → END
-   └─ 否 → memory_retrieval_node → router_agent → chapter_outline_node
-                                                    ↓
-                                              router_agent → chapter_writer_node
-                                                              ↓
-                                                        router_agent → reflection_node
-                                                            ├─ 通过 → persist_node → progress_check
-                                                            └─ 有问 → revision_node → reflection_node（循环最多3次）
-                                                                                          ↓
-                                                                                    降级放行 persist_node
-```
-
-### 字数约束
-
-- **章节细纲**：`estimated_word_count` 3000-6000 字
-- **章节内容**：`chapter_writer_node` 场景队列生成，字数不足时自动扩展（**已取消截断**）
-- **反思检查**：`reflection_node` 验证质量评分 >= 0.8，有效密度 >= 70%
-- **记忆衔接**：每章写作时自动注入上一章末尾 1000 字，保证故事连贯性
-
-### LLM 参数配置
-
-各节点使用不同的 temperature / top_p 参数，平衡创造性与稳定性。
-
-| 节点 | 调用方法 | temperature | top_p | 说明 |
-|------|----------|-------------|-------|------|
-| `title_node`（书名生成） | `generate()` | 1.0 | 0.95 | 高随机性，鼓励创意书名 |
-| `summary_node`（简介生成） | `generate()` | 0.8 | 0.92 | 中等随机，保持风格一致 |
-| `outline_node`（总大纲） | `structured_generate()` | 0.85 | 0.92 | 结构化输出，兼顾创意与格式 |
-| `chapter_outline_node`（章节细纲） | `structured_generate()` | 0.7 | 1.0 | 结构化输出，稳定性优先 |
-| `chapter_writer_node`（正文生成） | `generate()` | 0.78 | 1.0 | 叙事输出，维持一致文风 |
-| `reflection_node`（反思检查） | `structured_generate()` | 0.1 | 1.0 | 最低随机，确保判断一致性 |
-| `revision_node` Patch 模式 | `generate()` | 0.3 | 1.0 | 局部修正，低随机保精度 |
-| `revision_node` Refactor 模式 | `generate()` | 0.55 | 1.0 | 全文重构，中等创造性 |
-| `router_agent`（路由决策） | `structured_generate()` | 0.3 | 1.0 | 稳定决策，避免随机路由 |
-
-### 自动模式特性
-
-自动模式下工作流完全自主运行：
-- 设定阶段：自动选择类型、接受书名/简介/大纲
-- 章节创作：自动完成细纲生成 → 写作 → 质量检查 → 修正（循环最多3次）→ 持久化
-- 中断处理：收到 interrupt 后自动 resume，无需用户确认
-- 修正循环：质量不达标时自动修正最多 3 次，仍不达标则降级放行
-
----
-
-## 优化点清单
-
-### P0 — 用户体验
-
-#### 1. chapter_writer_node 流式输出 🔴
-
-**问题**：一整章（8000+ 字）完全生成完才返回，用户干等 60-120 秒看不到任何反馈。
-
-**方案**：LLM streaming + SSE 逐段推送到前端，用户看到文字逐步出现。
-
-- 难度：**中**
-- 改动：~50 行（LLM adapter + 节点层 + 前端）
-- 风险：低
-
-#### 2. router_agent 决策推送到前端 🟡
-
-**问题**：`router_reasoning` 只在后端日志里，用户不知道 AI 在做什么（"正在检索记忆"、"需要生成细纲"等）。
-
-**方案**：SSE 流中推送 `router_reasoning`，前端流式面板显示 AI 决策理由。
-
-- 难度：**极易**
-- 改动：~5 行
-- 风险：极低
-
-#### 3. 修正循环进度显示 🟡
-
-**问题**：自动模式下循环修正时，前端只看到节点标签刷过，不知道修正了几次、当前第几次。
-
-**方案**：前端显示"质量检查未通过 (评分 0.3)，正在自动修正 (第 2/3 次)"。
-
-- 难度：**易**
-- 改动：~15 行
-- 风险：低
-
-### P1 — 性能
-
-#### 4. SSE 流传输体积过大 🟡
-
-**问题**：SSE 每个 chunk 携带完整的 state 增量，`current_chapter_content`（8000+ 字正文）每次节点切换都传输一次。
-
-**方案**：过滤掉大文本字段（`current_chapter_content`、`memory_context`），只在必要时传输。
-
-- 难度：**易**
-- 改动：~10 行
-- 风险：低
-
-#### 5. LLM 超时配置硬编码 🟢
-
-**问题**：DeepSeek adapter 中 `timeout=180.0` 硬编码，与 workflow_router 的超时不统一。
-
-**方案**：从 `config.py` 读取超时配置，统一各层超时。
-
-- 难度：**极易**
-- 改动：~5 行
-- 风险：极低
-
-### P2 — 健壮性
-
-#### 6. chapter_outline_node JSON 解析失败降级不充分 🟡
-
-**问题**：JSON 解析全部失败后返回空字典，但节点没有检查细纲是否为空就直接 `accept`，导致写作节点拿到空细纲。
-
-**方案**：JSON 全部失败后重新构造 prompt 让 LLM 再次生成，或记录 error 到 state。
-
-- 难度：**易**
-- 改动：~10 行
-- 风险：低
-
-#### 7. completed_chapters 使用 add reducer 导致删除计数不准确 🟢
-
-**问题**：`completed_chapters: Annotated[List[Dict], add]` 使用 LangGraph 的 `add` reducer，批量删除 DB 章节后列表不会自动减少。
-
-**方案**：进度计算依赖 `current_chapter_index` 而非 `completed_chapters.length`。
-
-- 难度：**易**
-- 改动：~5 行
-- 风险：低
-
-### P3 — 架构
-
-#### 8. SSE resume 路径使用 ainvoke 而非 astream 🟡
-
-**问题**：resume 路径调用 `orchestrator.resume()`（内部是 `ainvoke`），返回单一 result，而非逐节点产出。
-
-**方案**：resume 路径也走 `astream(Command(resume=...), config)`，实现逐节点推送。
-
-- 难度：**中**
-- 改动：~15 行
-- 风险：中（LangGraph 版本兼容性）
-
-#### 9. 未使用的 LLM Adapter 🟢
-
-**问题**：代码中支持 3 个 LLM provider，但实际只用 DeepSeek。OpenAI 和 Anthropic adapter 可能已因 API 变化失效。
-
-**方案**：删除未使用的 adapter 或写集成测试验证。
-
-- 难度：**极易**（删除）/ **中**（测试）
-- 改动：~5 行（删除）
-- 风险：低
-
-### 优先级标记
-
-| 标记 | 含义 |
-|------|------|
-| 🔴 | 高收益，建议优先做 |
-| 🟡 | 值得做，收益明确 |
-| 🟢 | 小优化，有空做 |
-
----
-
-## 进度追踪
-
-### 后端进度
-
-- [x] Phase 0: 项目初始化 (uv + pyproject.toml)
-- [x] Phase 1: 服务层 (Novel, Chapter, NovelType, Outline, Progress, Ports)
-- [x] Phase 2: 基础设施层 (PostgreSQL仓储、LLM适配器、长期记忆)
-- [x] Phase 3: 应用层 (11个Agent节点 + workflow_builder)
-  - [x] type_confirmation_node（强制用户输入，无AI fallback）
-  - [x] title_generator_node（AI生成 + interrupt确认）
-  - [x] summary_generator_node（AI生成 + interrupt确认）
-  - [x] outline_generator_node（结构化JSON + interrupt审阅）
-  - [x] progress_check_node（完结条件判断）
-  - [x] memory_retrieval_node（三层记忆检索 + 三级降级）
-  - [x] chapter_outline_node（结构化JSON + 重试机制）
-  - [x] chapter_writer_node（场景队列生成 + 上一章尾部衔接）
-  - [x] reflection_node（7点检查 + 质量评分 >= 0.8）
-  - [x] revision_node（自动模式循环修正，最多3次）
-  - [x] persist_node（DB写入 + 三层记忆：S层故事状态 + M层近期章节 + L层历史摘要）
-  - [x] router_agent（LLM 驱动路由决策 + 强制记忆检索守卫）
-- [x] Phase 4: API层 (FastAPI路由、interrupt/resume接口) **【已完成】**
-  - [x] novel_router.py：接入 PostgresNovelRepository，完整 CRUD
-  - [x] workflow_router.py：接入 NovelOrchestrator，invoke/stream/state
-  - [x] orchestrator.py：持有所有依赖驱动工作流，自动模式支持
-- [x] Phase 5: 配置集中化 (config.py + .env)
-- [x] Phase 6: 集成测试 **【已完成】**
-  - [x] 测试数据库隔离 (novel_writer_test)
-  - [x] tests/conftest.py：测试配置 + fixtures
-  - [x] tests/test_novel_crud.py：8个测试全部通过
-    - [x] test_create_novel
-    - [x] test_create_novel_invalid_type
-    - [x] test_get_novel
-    - [x] test_get_novel_not_found
-    - [x] test_list_novels
-    - [x] test_get_progress
-    - [x] test_list_chapters_empty
-    - [x] test_create_novel_with_outline
-  - [ ] tests/test_workflow_e2e.py — 待实现（需 mock LLM）
-  - [ ] tests/test_agents.py — 待实现
-- [ ] Phase 7: Docker Compose 部署配置
-
-### 前端进度
-
-- [x] 基础脚手架 (React 19 + TypeScript + Vite)
-- [x] API客户端封装 (Axios + 拦截器 + TypeScript 类型)
-- [x] Zustand 状态管理 (novelStore + persist)
-- [x] 书架页面 (BookShelf.tsx - 卡片网格 + 批量删除 + 简介Tooltip)
-- [x] 创作配置页面 (NovelConfig.tsx - 6步向导 + SSE流式通信 + 自动模式)
-- [x] 进度查看页面 (NovelProgress.tsx - 章节目录 + 章节编辑弹窗)
-- [x] 工作流中断处理UI (6种 interrupt action 响应 + 链式自动resume)
-- [x] 章节查看/编辑功能 (Modal + TextArea)
-- [x] 登录页面 (Login.tsx)
-- [x] 自动模式：流式节点执行面板
-- [x] 自动模式：中断链式自动继续创作
-- [ ] 公共组件库 (components/)
-- [ ] 全局类型定义 (types/)
-- [ ] 用户认证模块完整对接后端
-- [ ] 单元测试
-
----
-
-## 集成测试
-
-### 测试目标
-
-验证以下核心流程端到端可用：
-
-1. **小说创建** → `POST /api/v1/novels` 返回 novel_id + thread_id ✅
-2. **工作流启动** → `POST /api/v1/workflows/{thread_id}/invoke` 正确触发 interrupt ✅
-3. **Interrupt 恢复** → 依次提供 type → title → summary → outline，工作流推进 ✅
-4. **章节生成** → 工作流自动完成记忆检索 → 细纲 → 内容 → 反思 → 持久化 ✅
-5. **进度查询** → `GET /api/v1/novels/{id}/progress` 返回正确进度 ✅
-6. **章节列表** → `GET /api/v1/novels/{id}/chapters` 返回已生成章节 ✅
-
-### 自动化测试（已完成 ✅）
-
-```
-tests/
-├── conftest.py          # 测试配置，数据库隔离
-├── test_novel_crud.py  # 8个测试全部通过 ✅
-│   ├── test_create_novel           ✅
-│   ├── test_create_novel_invalid_type ✅
-│   ├── test_get_novel              ✅
-│   ├── test_get_novel_not_found    ✅
-│   ├── test_list_novels            ✅
-│   ├── test_get_progress           ✅
-│   ├── test_list_chapters_empty    ✅
-│   └── test_create_novel_with_outline ✅
-└── test_workflow_e2e.py # ⚠️ 尚未实现（需 mock LLM 或真实 API Key）
-```
-
-**测试覆盖：**
-- ✅ 小说 CRUD（创建/查询/列表/进度/章节列表）
-- ⚠️ 工作流 E2E（未实现：需 mock LLMService 或配置真实 API Key）
-
-**测试数据库**：`novel_writer_test`（与生产库 `novel_writer` 隔离）
-
-**运行测试**：
-```bash
-cd writter_back
-$env:DATABASE_URL="postgresql+asyncpg://postgres:mima12138@localhost:5432/novel_writer_test"
-uv run pytest tests/ -v
-```
-
-### 手动测试步骤
-
-```bash
-# 1. 创建小说
-curl -X POST http://localhost:8000/api/v1/novels \
-  -H "Content-Type: application/json" \
-  -d '{"novel_type": "suspense", "title": "测试小说"}'
-# 记录返回的 novel_id / thread_id
-
-# 2. 启动工作流（预期：返回 require_novel_type interrupt）
-curl -X POST http://localhost:8000/api/v1/workflows/{thread_id}/invoke \
-  -H "Content-Type: application/json" \
-  -d '{"input": {"novel_id": "{thread_id}", "novel_type": "suspense"}}'
-
-# 3. 恢复工作流（提供书名）
-curl -X POST http://localhost:8000/api/v1/workflows/{thread_id}/invoke \
-  -H "Content-Type: application/json" \
-  -d '{"command": {"resume": "我的悬疑小说"}}'
-
-# 4. 继续恢复（提供简介、大纲...）
-# ...
-
-# 5. 查询进度
-curl http://localhost:8000/api/v1/novels/{novel_id}/progress
-
-# 6. 查询章节列表
-curl http://localhost:8000/api/v1/novels/{novel_id}/chapters
-```
-
-### 自动化测试（待实现）
-
-- [ ] `tests/test_workflow_e2e.py` — 工作流端到端测试
-- [ ] `tests/test_agents.py` — Agent 节点单元测试
-
----
-
-## 技术栈
-
-| 层级 | 技术 |
-|------|------|
-| 前端 | React 19, TypeScript, Vite, Ant Design 6, Zustand 5, Axios |
-| API | FastAPI, Uvicorn, Pydantic |
-| Agent | LangGraph 0.2+, LangChain Core |
-| LLM | DeepSeek (主力), OpenAI GPT-4o, Anthropic Claude |
-| 数据库 | PostgreSQL 16, pgvector, SQLAlchemy 2.0 |
-| 依赖管理 | uv (Python), npm (Node.js) |
-
----
-
-## 许可证
-
-内部项目，仅供学习交流使用。
+事件类型包括 `status`、`reasoning`、`content_delta`、`quality`、`interrupt`、`progress`、`completed`、`heartbeat` 和 `error`。服务端不会在节点切换时重复发送完整正文或记忆上下文。
+
+## 安全说明
+
+- 仓库不包含数据库口令或模型 API Key，所有凭据只从 `.env` 读取。
+- 曾经提交到仓库的 Key 应视为已泄漏，必须在供应商控制台撤销并重新生成。
+- JWT Secret 不提供生产默认值，Refresh Token 在数据库中只保存 SHA-256 哈希。
+- 密码使用 Argon2id；邀请链接一次性使用并在 7 天后过期。
+- 不建议将后端端口直接暴露到公网。
