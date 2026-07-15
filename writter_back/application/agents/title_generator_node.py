@@ -51,7 +51,7 @@ async def title_generator_node(state: NovelAgentState, config) -> Command[Litera
     llm = llm_config.get("llm_instance")
 
     if not llm:
-        logger.info(f"【书名生成节点】LLM不可用，跳过 -> persist")
+        logger.info("【书名生成节点】LLM不可用，跳过 -> persist")
         logger.info(f"{'='*60}")
         return Command(goto="summary_node")
 
@@ -64,7 +64,7 @@ async def title_generator_node(state: NovelAgentState, config) -> Command[Litera
     ai_suggestions_list = ai_titles  # [{title, hint}, ...]
 
     if not ai_suggestions_list:
-        logger.info(f"【书名生成节点】未解析到有效书名，使用默认")
+        logger.info("【书名生成节点】未解析到有效书名，使用默认")
         ai_suggestions_list = [{"title": "未命名小说", "hint": ""}]
 
     # 自动模式：取第一个候选

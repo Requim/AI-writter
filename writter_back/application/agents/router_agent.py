@@ -2,8 +2,9 @@
 import logging
 logger = logging.getLogger("uvicorn")
 from langgraph.types import Command
-from typing import Literal, Dict, Any
+from typing import Dict
 from application.schemas.agent_state import NovelAgentState
+from application.streaming import emit_workflow_event
 
 # ================ 工具注册表 ================
 # 写作循环中每个节点对应一个"工具"，LLM 从中选择下一步
@@ -84,7 +85,7 @@ async def router_agent(state: NovelAgentState, config) -> Command:
     # 正常流程下 router_agent 只会在写作阶段被到达（has_outline=True）
     # 如果 state 异常导致无大纲就到达了这里，路由到 outline_node 修复
     if not has_outline:
-        logger.info(f"【路由节点】⚠️ 异常状态：无总大纲但到达路由节点 -> outline_node")
+        logger.info("【路由节点】⚠️ 异常状态：无总大纲但到达路由节点 -> outline_node")
         logger.info(f"{'='*60}")
         return Command(goto="outline_node")
 
@@ -94,7 +95,7 @@ async def router_agent(state: NovelAgentState, config) -> Command:
 
     if not llm:
         # LLM 不可用时：走默认路径（persist → progress_check → continue 循环）
-        logger.info(f"【路由节点】LLM不可用 -> progress_check_node")
+        logger.info("【路由节点】LLM不可用 -> progress_check_node")
         logger.info(f"{'='*60}")
         return Command(goto="progress_check_node", update={"phase": "writing", "graph_version": "v2"})
 
@@ -166,6 +167,11 @@ async def router_agent(state: NovelAgentState, config) -> Command:
     reasoning = decision.get("reasoning", "")
 
     logger.info(f"【路由节点】LLM 决策: {reasoning} -> {next_tool}")
+    emit_workflow_event(
+        "reasoning",
+        {"text": reasoning, "next_node": next_tool},
+        "router_agent",
+    )
     logger.info(f"{'='*60}")
 
     return Command(

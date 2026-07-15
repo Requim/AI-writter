@@ -1,199 +1,301 @@
-"""Agent编排器实现 - 持有所有依赖，驱动LangGraph工作流"""
+"""Tenant-scoped LangGraph orchestration and public workflow events."""
+
+import asyncio
 import logging
-logger = logging.getLogger("uvicorn")
+from collections.abc import AsyncIterator
+from typing import Any
+
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.types import Command
-from typing import Dict, Any
-from application.workflow_builder import create_novel_workflow
-from service.ports.agent_service import AgentOrchestrator
-from infrastructure.memory.postgres_memory import PostgresMemoryAdapter
-from infrastructure.database.repository import PostgresNovelRepository
-from config import settings
 from psycopg.rows import dict_row
-from infrastructure.llm import DeepSeekAdapter, OpenAIAdapter, AnthropicAdapter
+from psycopg_pool import AsyncConnectionPool
+
+from application.events import WorkflowEvent
+from application.quota_service import QuotaService
+from application.workflow_builder import create_novel_workflow
+from config import settings
+from infrastructure.database.repository import PostgresNovelRepository
+from infrastructure.llm import AnthropicAdapter, DeepSeekAdapter, OpenAIAdapter
+from infrastructure.memory.postgres_memory import PostgresMemoryAdapter
+from service.entities.identity import TenantContext
+from service.ports.agent_service import AgentOrchestrator
+
+logger = logging.getLogger("uvicorn")
+
+LARGE_STATE_FIELDS = {"current_chapter_content", "memory_context", "completed_chapters"}
 
 
 class NovelOrchestrator(AgentOrchestrator):
-    """Agent编排器 - 组装依赖并驱动工作流"""
-
     def __init__(
         self,
         repository: PostgresNovelRepository,
         memory_service: PostgresMemoryAdapter,
-        llm_config: Dict[str, Any],
+        llm_config: dict[str, Any],
+        quota_service: QuotaService | None = None,
     ):
         self.repository = repository
         self.memory_service = memory_service
         self.llm_config = llm_config
+        self.quota_service = quota_service
         self._workflow = None
         self._checkpointer = None
-        # 提前创建 LLM 实例，注入给 Agent 节点使用
-        self._llm_instance = self._build_llm_instance()
-        # 执行中标记，防止并发请求导致同一章节重复生成
-        self._executing: Dict[str, bool] = {}
-        # 自动模式开关表：thread_id -> bool
-        self._auto_mode: Dict[str, bool] = {}
+        self._llm_instance = None
+        self._locks: dict[str, asyncio.Lock] = {}
+        self._active_tasks: dict[str, asyncio.Task[Any]] = {}
+        self._auto_mode: dict[str, bool] = {}
 
-    def is_executing(self, thread_id: str) -> bool:
-        """检查指定 thread_id 的工作流是否正在执行中"""
-        return self._executing.get(thread_id, False)
-
-    def mark_executing(self, thread_id: str, value: bool) -> None:
-        """标记指定 thread_id 的工作流执行状态"""
-        self._executing[thread_id] = value
+    @staticmethod
+    def execution_key(context: TenantContext, thread_id: str) -> str:
+        return f"{context.tenant_id}:{thread_id}"
 
     def _build_llm_instance(self):
-        """根据配置创建 LLM 适配器实例"""
         provider = self.llm_config.get("provider", "deepseek")
         model = self.llm_config.get("model", "deepseek-chat")
-
+        timeout = float(self.llm_config.get("timeout", settings.LLM_TIMEOUT_SECONDS))
         if provider == "openai":
-            api_key = self.llm_config.get("openai_api_key", "")
-            return OpenAIAdapter(api_key=api_key, model=model)
-        elif provider == "anthropic":
-            api_key = self.llm_config.get("anthropic_api_key", "")
-            return AnthropicAdapter(api_key=api_key, model=model)
-        else:
-            # 默认 DeepSeek
-            api_key = self.llm_config.get("deepseek_api_key", "")
-            return DeepSeekAdapter(api_key=api_key, model=model)
-
-    async def _ensure_workflow(self):
-        if self._workflow is None:
-            # Use AsyncPostgresSaver for async operations
-            # psycopg AsyncConnection expects URL without +asyncpg
-            db_url = settings.DATABASE_URL
-            if "+asyncpg" in db_url:
-                db_url = db_url.replace("postgresql+asyncpg://", "postgresql://")
-
-            # Use from_conn_string (async context manager) to create the checkpointer.
-            # from_conn_string auto-manages connection lifecycle with correct settings.
-            # The checkpointer must outlive the context, so we use a persistent
-            # connection pattern instead.
-            from psycopg_pool import AsyncConnectionPool
-
-            pool = AsyncConnectionPool(
-                db_url,
-                min_size=1,
-                max_size=2,
-                kwargs={
-                    "autocommit": True,
-                    "row_factory": dict_row,
-                    "prepare_threshold": 0,
-                },
-                open=False,
+            return OpenAIAdapter(
+                self.llm_config.get("openai_api_key") or "",
+                model,
+                timeout,
+                base_url=self.llm_config.get("openai_base_url"),
             )
-            await pool.open()
-            self._checkpointer = AsyncPostgresSaver(conn=pool)
-            await self._checkpointer.setup()
+        if provider == "anthropic":
+            return AnthropicAdapter(
+                self.llm_config.get("anthropic_api_key") or "", model, timeout
+            )
+        return DeepSeekAdapter(
+            self.llm_config.get("deepseek_api_key") or "", model, timeout
+        )
 
-            logger.info(f"{'='*60}")
-            logger.info(f"【编排器】检查点就绪 ✅")
-            self._workflow = create_novel_workflow(checkpointer=self._checkpointer)
-            logger.info(f"【编排器】工作流创建完成 ✅")
-            logger.info(f"{'='*60}")
+    def _get_llm_instance(self):
+        if self._llm_instance is None:
+            self._llm_instance = self._build_llm_instance()
+        return self._llm_instance
 
-    def set_auto_mode(self, thread_id: str, enabled: bool) -> None:
-        """设置自动模式开关"""
-        self._auto_mode[thread_id] = enabled
-        logger.info(f"【编排器】thread_id={thread_id} 自动模式={'ON' if enabled else 'OFF'}")
+    async def _ensure_workflow(self) -> None:
+        if self._workflow is not None:
+            return
+        db_url = settings.LANGGRAPH_CHECKPOINTER_URI or settings.DATABASE_URL
+        db_url = db_url.replace("postgresql+asyncpg://", "postgresql://")
+        pool = AsyncConnectionPool(
+            db_url,
+            min_size=1,
+            max_size=2,
+            kwargs={
+                "autocommit": True,
+                "row_factory": dict_row,
+                "prepare_threshold": 0,
+            },
+            open=False,
+        )
+        await pool.open()
+        self._checkpointer = AsyncPostgresSaver(conn=pool)
+        await self._checkpointer.setup()
+        self._workflow = create_novel_workflow(checkpointer=self._checkpointer)
+        logger.info("Tenant-scoped workflow and checkpoint pool are ready")
 
-    def _make_config(self, thread_id: str) -> Dict[str, Any]:
+    def set_auto_mode(
+        self, context: TenantContext, thread_id: str, enabled: bool
+    ) -> None:
+        self._auto_mode[self.execution_key(context, thread_id)] = enabled
+
+    def _make_config(
+        self,
+        context: TenantContext,
+        thread_id: str,
+        include_llm: bool = True,
+    ) -> dict[str, Any]:
+        internal_thread_id = self.execution_key(context, thread_id)
+        llm = self._get_llm_instance() if include_llm else self._llm_instance
         return {
             "configurable": {
-                "thread_id": thread_id,
-                "auto_mode": self._auto_mode.get(thread_id, False),
+                "thread_id": internal_thread_id,
+                "public_thread_id": thread_id,
+                "novel_id": thread_id,
+                "tenant_id": str(context.tenant_id),
+                "tenant_context": context,
+                "auto_mode": self._auto_mode.get(internal_thread_id, False),
                 "memory_service": self.memory_service,
                 "novel_repository": self.repository,
-                "llm_config": {
-                    **self.llm_config,
-                    "llm_instance": self._llm_instance,
-                },
+                "quota_service": self.quota_service,
+                "llm_config": {**self.llm_config, "llm_instance": llm},
             }
         }
 
-    async def invoke(self, thread_id: str, input_data: Dict[str, Any]) -> Dict[str, Any]:
-        """启动新工作流"""
-        logger.info(f"{'='*60}")
-        logger.info(f"【编排器·启动】进入 | thread_id={thread_id}, 输入字段={list(input_data.keys())}")
-        await self._ensure_workflow()
-        config = self._make_config(thread_id)
-        result = await self._workflow.ainvoke(input_data, config)
-        has_interrupt = "__interrupt__" in str(type(result)) or (isinstance(result, dict) and "__interrupt__" in result)
-        logger.info(f"【编排器·启动】完成 | thread_id={thread_id}, 产生中断={'是' if has_interrupt else '否'}")
-        logger.info(f"{'='*60}")
-        return result
+    async def try_start(self, context: TenantContext, thread_id: str) -> bool:
+        key = self.execution_key(context, thread_id)
+        lock = self._locks.setdefault(key, asyncio.Lock())
+        if lock.locked():
+            return False
+        await lock.acquire()
+        return True
 
-    async def resume(self, thread_id: str, resume_value: Any) -> Dict[str, Any]:
-        """恢复被中断的工作流"""
-        logger.info(f"{'='*60}")
-        logger.info(f"【编排器·恢复】进入 | thread_id={thread_id}, 恢复值类型={type(resume_value).__name__}, 恢复值={str(resume_value)[:100]}")
+    def register_task(
+        self, context: TenantContext, thread_id: str, task: asyncio.Task[Any]
+    ) -> None:
+        self._active_tasks[self.execution_key(context, thread_id)] = task
+
+    def is_executing(self, context: TenantContext, thread_id: str) -> bool:
+        lock = self._locks.get(self.execution_key(context, thread_id))
+        return bool(lock and lock.locked())
+
+    def finish(self, context: TenantContext, thread_id: str) -> None:
+        key = self.execution_key(context, thread_id)
+        self._active_tasks.pop(key, None)
+        lock = self._locks.get(key)
+        if lock and lock.locked():
+            lock.release()
+
+    async def cancel(self, context: TenantContext, thread_id: str) -> bool:
+        task = self._active_tasks.get(self.execution_key(context, thread_id))
+        if task is None or task.done():
+            return False
+        task.cancel()
+        return True
+
+    async def invoke(
+        self, context: TenantContext, thread_id: str, input_data: dict[str, Any]
+    ) -> dict[str, Any]:
         await self._ensure_workflow()
-        config = self._make_config(thread_id)
-        try:
-            result = await self._workflow.ainvoke(
-                Command(resume=resume_value),
-                config,
+        return await self._workflow.ainvoke(
+            input_data, self._make_config(context, thread_id)
+        )
+
+    async def resume(
+        self, context: TenantContext, thread_id: str, resume_value: Any
+    ) -> dict[str, Any]:
+        await self._ensure_workflow()
+        return await self._workflow.ainvoke(
+            Command(resume=resume_value),
+            self._make_config(context, thread_id),
+        )
+
+    @staticmethod
+    def _interrupt_values(value: Any) -> list[Any]:
+        if not value:
+            return []
+        values = value if isinstance(value, (list, tuple)) else [value]
+        return [getattr(item, "value", item) for item in values]
+
+    async def stream_events(
+        self,
+        context: TenantContext,
+        thread_id: str,
+        input_data: dict[str, Any] | None = None,
+        resume_value: Any = None,
+        is_resume: bool = False,
+    ) -> AsyncIterator[WorkflowEvent]:
+        await self._ensure_workflow()
+        payload: Any = (
+            Command(resume=resume_value)
+            if is_resume
+            else (input_data or {"novel_id": thread_id})
+        )
+        sequence = 0
+        async for mode, chunk in self._workflow.astream(
+            payload,
+            self._make_config(context, thread_id),
+            stream_mode=["custom", "updates"],
+        ):
+            if mode == "custom" and isinstance(chunk, dict):
+                sequence += 1
+                yield WorkflowEvent(
+                    id=sequence,
+                    type=chunk.get("type", "status"),
+                    thread_id=thread_id,
+                    node=chunk.get("node"),
+                    data=chunk.get("data", {}),
+                )
+                continue
+            if mode != "updates" or not isinstance(chunk, dict):
+                continue
+            interrupts = self._interrupt_values(chunk.get("__interrupt__"))
+            if interrupts:
+                sequence += 1
+                yield WorkflowEvent(
+                    id=sequence,
+                    type="interrupt",
+                    thread_id=thread_id,
+                    data={"interrupts": interrupts},
+                )
+            for node, update in chunk.items():
+                if node.startswith("__"):
+                    continue
+                sequence += 1
+                yield WorkflowEvent(
+                    id=sequence,
+                    type="status",
+                    thread_id=thread_id,
+                    node=node,
+                    data={"status": "completed"},
+                )
+                if isinstance(update, dict) and "router_reasoning" in update:
+                    sequence += 1
+                    yield WorkflowEvent(
+                        id=sequence,
+                        type="reasoning",
+                        thread_id=thread_id,
+                        node=node,
+                        data={"text": update["router_reasoning"]},
+                    )
+                if isinstance(update, dict) and "progress_percentage" in update:
+                    sequence += 1
+                    yield WorkflowEvent(
+                        id=sequence,
+                        type="progress",
+                        thread_id=thread_id,
+                        node=node,
+                        data={
+                            "percentage": update["progress_percentage"],
+                            "current_chapter": update.get("current_chapter_index"),
+                        },
+                    )
+        sequence += 1
+        yield WorkflowEvent(
+            id=sequence,
+            type="completed",
+            thread_id=thread_id,
+            data={"status": "idle"},
+        )
+
+    async def stream(
+        self, context: TenantContext, thread_id: str, input_data: dict[str, Any]
+    ):
+        async for event in self.stream_events(
+            context, thread_id, input_data=input_data
+        ):
+            yield event.model_dump(mode="json")
+
+    async def get_public_state(
+        self, context: TenantContext, thread_id: str
+    ) -> dict[str, Any]:
+        await self._ensure_workflow()
+        state = await self._workflow.aget_state(
+            self._make_config(context, thread_id, include_llm=False)
+        )
+        values = getattr(state, "values", {}) or {}
+        safe_values = {
+            key: value for key, value in values.items() if key not in LARGE_STATE_FIELDS
+        }
+        interrupts = []
+        for task in getattr(state, "tasks", []) or []:
+            interrupts.extend(
+                self._interrupt_values(getattr(task, "interrupts", []))
             )
-        except Exception as e:
-            error_str = str(e).lower()
-            # checkpoint 不兼容时自动降级（如旧版 v1 checkpoint 迁移到 v2 图）
-            if "checkpoint" in error_str or "node" in error_str:
-                logger.info(f"【编排器·恢复】Checkpoint 不兼容，降级重启: {e}")
-                return await self._rebuild_from_state(thread_id)
-            raise
-        has_interrupt = "__interrupt__" in str(type(result)) or (isinstance(result, dict) and "__interrupt__" in result)
-        logger.info(f"【编排器·恢复】完成 | thread_id={thread_id}, 产生中断={'是' if has_interrupt else '否'}")
-        logger.info(f"{'='*60}")
-        return result
+        return {
+            "thread_id": thread_id,
+            "status": "running" if self.is_executing(context, thread_id) else "idle",
+            "has_interrupt": bool(interrupts),
+            "interrupts": interrupts,
+            "state": safe_values,
+        }
 
-    async def _rebuild_from_state(self, thread_id: str) -> Dict[str, Any]:
-        """降级恢复：从已有 state 重启，不丢失数据"""
-        logger.info(f"{'='*60}")
-        logger.info(f"【编排器·降级】从已有 state 重建 | thread_id={thread_id}")
-        config = self._make_config(thread_id)
-        try:
-            old_state = await self._workflow.aget_state(config)
-            values = getattr(old_state, 'values', {}) or {}
-        except Exception:
-            values = {}
-        
-        if values.get("novel_type"):
-            result = await self.invoke(thread_id, {
-                "novel_id": thread_id,
-                "novel_type": values.get("novel_type", ""),
-                "title": values.get("title", ""),
-                "summary": values.get("summary", ""),
-                "total_outline": values.get("total_outline", {}),
-                "graph_version": "v2",
-            })
-            logger.info(f"【编排器·降级】重建成功 | thread_id={thread_id}")
-            logger.info(f"{'='*60}")
-            return result
-        
-        logger.info(f"【编排器·降级】state 为空，无法重建 | thread_id={thread_id}")
-        logger.info(f"{'='*60}")
-        raise RuntimeError(f"无法从 checkpoint 恢复 thread_id={thread_id}，且无已有 state 可用")
-
-    async def stream(self, thread_id: str, input_data):
-        """流式执行工作流，yield SSE chunks"""
-        input_desc = list(input_data.keys()) if isinstance(input_data, dict) else type(input_data).__name__
-        logger.info(f"{'='*60}")
-        logger.info(f"【编排器·流式】开始 | thread_id={thread_id}, 输入={input_desc}")
-        await self._ensure_workflow()
-        config = self._make_config(thread_id)
-        chunk_count = 0
-        async for chunk in self._workflow.astream(input_data, config):
-            chunk_count += 1
-            logger.info(f"【编排器·流式】数据块 #{chunk_count} | 类型={type(chunk).__name__}")
-            yield chunk
-        logger.info(f"【编排器·流式】结束 | thread_id={thread_id}, 总计数据块={chunk_count}")
-        logger.info(f"{'='*60}")
-
-    async def aclose(self):
-        """关闭连接池，释放后端资源"""
+    async def aclose(self) -> None:
+        for task in list(self._active_tasks.values()):
+            task.cancel()
+        if self._active_tasks:
+            await asyncio.gather(*self._active_tasks.values(), return_exceptions=True)
         if self._checkpointer is not None:
             pool = self._checkpointer.conn
-            if hasattr(pool, 'close'):
+            if hasattr(pool, "close"):
                 await pool.close()
-                logger.info("【编排器】连接池已关闭")

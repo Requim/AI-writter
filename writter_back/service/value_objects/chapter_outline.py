@@ -1,6 +1,6 @@
 """章节细纲值对象"""
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict, Any
+from typing import List, Dict, Any
 
 
 @dataclass

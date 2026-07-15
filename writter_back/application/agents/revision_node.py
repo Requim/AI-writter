@@ -4,7 +4,7 @@ logger = logging.getLogger("uvicorn")
 from langgraph.types import interrupt, Command
 from typing import Literal
 from application.schemas.agent_state import NovelAgentState
-import json
+from application.streaming import collect_streamed_text, emit_workflow_event
 from application.prompts.revision_prompts import (
     build_user_instruction_revision_prompt,
     build_patch_revision_prompt,
@@ -42,12 +42,12 @@ async def revision_node(state: NovelAgentState, config) -> Command[Literal["chap
     llm = llm_config.get("llm_instance")
 
     if action == "accept":
-        logger.info(f"【修正节点】用户选择忽略问题 -> 持久化节点")
+        logger.info("【修正节点】用户选择忽略问题 -> 持久化节点")
         logger.info(f"{'='*60}")
         return Command(goto="persist_node")
 
     elif action == "regenerate":
-        logger.info(f"【修正节点】用户要求重新生成 -> 章节写作节点")
+        logger.info("【修正节点】用户要求重新生成 -> 章节写作节点")
         logger.info(f"{'='*60}")
         return Command(goto="chapter_writer_node")
 
@@ -97,10 +97,19 @@ async def revision_node(state: NovelAgentState, config) -> Command[Literal["chap
         if llm:
             mode_label = {'patch': 'Patch局部修正', 'refactor': 'Refactor全文重构', 'user_instruction': '用户指令修正'}.get(mode, mode)
             logger.info(f"【修正节点】正在{'按用户指令' if instructions else 'AI自动'}修正内容... 模式={mode_label}, temperature={temperature}")
-            revised_content = await llm.generate(
+            chapter_index = state.get("current_chapter_index", 0)
+            emit_workflow_event(
+                "content_delta",
+                {"chapter_index": chapter_index, "operation": "reset", "text": ""},
+                "revision_node",
+            )
+            revised_content = await collect_streamed_text(
+                llm,
                 revision_prompt,
+                node="revision_node",
+                chapter_index=chapter_index,
                 system_prompt=build_revision_system_prompt(),
-                temperature=temperature
+                temperature=temperature,
             )
             original_len = len(current_content)
             revised_len = len(revised_content)
@@ -115,14 +124,22 @@ async def revision_node(state: NovelAgentState, config) -> Command[Literal["chap
                     chapter_outline=chapter_outline,
                     target_words=target,
                 )
-                revised_content = await llm.generate(
+                emit_workflow_event(
+                    "content_delta",
+                    {"chapter_index": chapter_index, "operation": "reset", "text": ""},
+                    "revision_node",
+                )
+                revised_content = await collect_streamed_text(
+                    llm,
                     expansion_prompt,
+                    node="revision_node",
+                    chapter_index=chapter_index,
                     system_prompt=build_revision_system_prompt(),
-                    temperature=REFACTOR_TEMPERATURE + 0.1
+                    temperature=REFACTOR_TEMPERATURE + 0.1,
                 )
                 logger.info(f"【修正节点】扩充后字数: {len(revised_content)}字")
         else:
-            logger.info(f"【修正节点】LLM不可用，保留原内容")
+            logger.info("【修正节点】LLM不可用，保留原内容")
             revised_content = current_content
 
         # 自动模式：修正后走回 reflection_node 再次检查（循环修正）
@@ -156,18 +173,18 @@ async def revision_node(state: NovelAgentState, config) -> Command[Literal["chap
         })
 
         if user_confirmation == "accept":
-            logger.info(f"【修正节点】用户确认修正结果 -> 持久化节点")
+            logger.info("【修正节点】用户确认修正结果 -> 持久化节点")
             logger.info(f"{'='*60}")
             return Command(
                 goto="persist_node",
                 update={"current_chapter_content": revised_content}
             )
         elif user_confirmation == "regenerate":
-            logger.info(f"【修正节点】用户要求重新生成 -> 章节写作节点")
+            logger.info("【修正节点】用户要求重新生成 -> 章节写作节点")
             logger.info(f"{'='*60}")
             return Command(goto="chapter_writer_node")
         else:
-            logger.info(f"【修正节点】用户提供了新的修正指令，继续修正")
+            logger.info("【修正节点】用户提供了新的修正指令，继续修正")
             return Command(
                 goto="revision_node",
                 update={

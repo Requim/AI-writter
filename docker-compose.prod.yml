@@ -1,0 +1,25 @@
+services:
+  database:
+    container_name: novel-writer-database
+
+  backend:
+    container_name: novel-writer-backend
+    ports: !reset []
+
+  frontend:
+    container_name: novel-writer-frontend
+    build:
+      context: ./writter_front
+      dockerfile: Dockerfile.runtime
+    ports: !override
+      - "127.0.0.1:5173:80"
+    networks:
+      default:
+      edge:
+        aliases:
+          - novel-writer-frontend
+
+networks:
+  edge:
+    external: true
+    name: unlimitworld_default

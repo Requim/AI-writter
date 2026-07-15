@@ -26,7 +26,7 @@ async def summary_generator_node(state: NovelAgentState, config) -> Command[Lite
     llm = llm_config.get("llm_instance")
     
     if not llm:
-        logger.info(f"【简介生成节点】LLM不可用，跳过 -> persist")
+        logger.info("【简介生成节点】LLM不可用，跳过 -> persist")
         logger.info(f"{'='*60}")
         return Command(goto="outline_node")
     
@@ -38,7 +38,7 @@ async def summary_generator_node(state: NovelAgentState, config) -> Command[Lite
     # 自动模式：直接接受
     auto_mode = config["configurable"].get("auto_mode", False)
     if auto_mode:
-        logger.info(f"【简介生成节点】自动模式 | 接受AI生成")
+        logger.info("【简介生成节点】自动模式 | 接受AI生成")
         logger.info(f"{'='*60}")
         return Command(
             goto="outline_node",
@@ -55,13 +55,13 @@ async def summary_generator_node(state: NovelAgentState, config) -> Command[Lite
     
     if user_choice == "accept":
         final_summary = ai_summary
-        logger.info(f"【简介生成节点】用户接受了AI生成的简介")
+        logger.info("【简介生成节点】用户接受了AI生成的简介")
     elif user_choice == "regenerate":
-        logger.info(f"【简介生成节点】用户要求重新生成，循环回本节点")
+        logger.info("【简介生成节点】用户要求重新生成，循环回本节点")
         return Command(goto="summary_generator_node")
     else:
         final_summary = user_choice
-        logger.info(f"【简介生成节点】用户提供了自定义简介")
+        logger.info("【简介生成节点】用户提供了自定义简介")
 
     logger.info(f"{'='*60}")
     return Command(

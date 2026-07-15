@@ -1,72 +1,47 @@
-import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { Card, Form, Input, Button, message } from 'antd'
-import axios from 'axios'
+import { ArrowRightOutlined, LockOutlined, MailOutlined } from '@ant-design/icons'
+import { App, Button, Form, Input } from 'antd'
+import { Link, Navigate, useNavigate, useSearchParams } from 'react-router-dom'
+import { AuthLayout } from '@/components/AuthLayout'
+import { authApi } from '@/api/auth'
+import { useAuthStore } from '@/stores/authStore'
 
-const Login = () => {
+export default function Login() {
+  const { message } = App.useApp()
   const navigate = useNavigate()
-  const [loading, setLoading] = useState(false)
-  const [username, setUsername] = useState('')
-  const [password, setPassword] = useState('')
+  const [params] = useSearchParams()
+  const accessToken = useAuthStore((state) => state.accessToken)
+  const setSession = useAuthStore((state) => state.setSession)
+  if (accessToken) return <Navigate to={params.get('next') || '/'} replace />
 
-  const handleLogin = async () => {
-    if (!username || !password) {
-      message.warning('请输入用户名和密码')
-      return
-    }
-    
-    setLoading(true)
+  const submit = async (values: { email: string; password: string }) => {
     try {
-      // TODO: 对接真实登录 API
-      const res = await axios.post('/api/v1/auth/login', {
-        username,
-        password
-      })
-      
-      localStorage.setItem('token', res.data.token)
-      localStorage.setItem('user_id', res.data.user_id)
-      message.success('登录成功')
-      navigate('/')
-    } catch (error: any) {
-      message.error(error.response?.data?.detail || '登录失败')
-    } finally {
-      setLoading(false)
+      setSession(await authApi.login(values))
+      const invite = params.get('invite')
+      navigate(invite ? `/invite/${invite}` : (params.get('next') || '/'), { replace: true })
+    } catch {
+      message.error('邮箱或密码不正确')
     }
   }
 
   return (
-    <div style={{ maxWidth: 400, margin: '100px auto', padding: '0 20px' }}>
-      <Card title="用户登录">
-        <Form layout="vertical" onFinish={handleLogin}>
-          <Form.Item label="用户名">
-            <Input
-              value={username}
-              onChange={e => setUsername(e.target.value)}
-              placeholder="请输入用户名"
-            />
+    <AuthLayout>
+      <div className="auth-form page-enter">
+        <span className="eyebrow">欢迎回来</span>
+        <h2>进入编辑部</h2>
+        <p>选择工作区后，只会看到属于该租户的创作资料。</p>
+        <Form layout="vertical" onFinish={submit} requiredMark={false}>
+          <Form.Item name="email" label="邮箱" rules={[{ required: true }, { type: 'email' }]}>
+            <Input size="large" prefix={<MailOutlined />} autoComplete="email" />
           </Form.Item>
-          
-          <Form.Item label="密码">
-            <Input.Password
-              value={password}
-              onChange={e => setPassword(e.target.value)}
-              placeholder="请输入密码"
-            />
+          <Form.Item name="password" label="密码" rules={[{ required: true }]}>
+            <Input.Password size="large" prefix={<LockOutlined />} autoComplete="current-password" />
           </Form.Item>
-          
-          <Form.Item>
-            <Button type="primary" htmlType="submit" loading={loading} block>
-              登录
-            </Button>
-          </Form.Item>
-          
-          <div style={{ textAlign: 'center' }}>
-            <a onClick={() => message.info('注册功能开发中')}>没有账号？立即注册</a>
-          </div>
+          <Button htmlType="submit" type="primary" size="large" block icon={<ArrowRightOutlined />} iconPosition="end">
+            登录
+          </Button>
         </Form>
-      </Card>
-    </div>
+        <div className="auth-switch">还没有账号？ <Link to="/register">创建编辑部</Link></div>
+      </div>
+    </AuthLayout>
   )
 }
-
-export default Login

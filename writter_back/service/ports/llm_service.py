@@ -1,6 +1,6 @@
 """LLM服务接口 - 服务层定义，基础设施层实现"""
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional, Any
+from typing import Any, AsyncIterator, Dict, List, Optional
 
 
 class LLMService(ABC):
@@ -11,6 +11,17 @@ class LLMService(ABC):
                       temperature: float = 0.7, top_p: float = 1.0) -> str:
         """生成文本"""
         pass
+
+    @abstractmethod
+    def stream_text(
+        self,
+        prompt: str,
+        system_prompt: Optional[str] = None,
+        temperature: float = 0.7,
+        top_p: float = 1.0,
+    ) -> AsyncIterator[str]:
+        """流式生成文本片段"""
+        raise NotImplementedError
     
     @abstractmethod
     async def structured_generate(self, prompt: str, schema: Dict[str, Any], 

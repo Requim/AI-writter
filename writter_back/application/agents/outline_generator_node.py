@@ -36,7 +36,7 @@ async def outline_generator_node(state: NovelAgentState, config) -> Command[Lite
 
     # 用户已提供总纲领，直接使用
     if isinstance(state.get("total_outline"), dict):
-        logger.info(f"【总大纲生成节点】跳过 | 使用已有大纲")
+        logger.info("【总大纲生成节点】跳过 | 使用已有大纲")
         logger.info(f"{'='*60}")
         return Command(goto="persist_node", update={"__next_node__": "progress_check_node"})
 
@@ -45,21 +45,21 @@ async def outline_generator_node(state: NovelAgentState, config) -> Command[Lite
     llm = llm_config.get("llm_instance")
 
     if not llm:
-        logger.info(f"【总大纲生成节点】LLM不可用，跳过")
+        logger.info("【总大纲生成节点】LLM不可用，跳过")
         logger.info(f"{'='*60}")
         return Command(goto="persist_node", update={"__next_node__": "progress_check_node"})
 
     # ==================== Phase 1: 单次生成完整大纲 ====================
-    logger.info(f"【总大纲生成节点】Phase 1: 单次生成完整大纲...")
+    logger.info("【总大纲生成节点】Phase 1: 单次生成完整大纲...")
     prompt = build_outline_prompt(novel_type, title, summary)
     ai_outline = await llm.structured_generate(prompt=prompt, schema=OUTLINE_SCHEMA, temperature=0.85, top_p=0.92)
 
     if not ai_outline:
-        logger.info(f"【总大纲生成节点】Phase 1 返回空，使用空大纲兜底")
+        logger.info("【总大纲生成节点】Phase 1 返回空，使用空大纲兜底")
         ai_outline = _empty_outline()
 
     # 检测截断
-    truncation_issues = detect_truncation(ai_outline)
+    detect_truncation(ai_outline)
     chapters = ai_outline.get("chapters", [])
     total = ai_outline.get("total_chapters", 0)
     is_truncated = total > 0 and len(chapters) < total
@@ -72,14 +72,14 @@ async def outline_generator_node(state: NovelAgentState, config) -> Command[Lite
 
     # ==================== Phase 2 (fallback): 截断降级 ====================
     if is_truncated:
-        logger.info(f"【总大纲生成节点】检测到截断，降级到两阶段生成...")
+        logger.info("【总大纲生成节点】检测到截断，降级到两阶段生成...")
 
         # 从 Phase 1 结果中提取宏观字段
         macro_outline = _extract_macro(ai_outline)
 
         # 如果宏观信息不足，重新生成
         if not macro_outline.get("story_background") or len(macro_outline.get("main_characters", [])) < 3:
-            logger.info(f"【总大纲生成节点】宏观信息不足，重新生成宏观总纲...")
+            logger.info("【总大纲生成节点】宏观信息不足，重新生成宏观总纲...")
             macro_outline = await llm.structured_generate(
                 prompt=build_outline_prompt(novel_type, title, summary),
                 schema=MACRO_ONLY_SCHEMA,
@@ -89,7 +89,7 @@ async def outline_generator_node(state: NovelAgentState, config) -> Command[Lite
                 macro_outline = _empty_macro()
 
         # 用宏观总纲生成完整章节
-        logger.info(f"【总大纲生成节点】Phase 2: 基于宏观总纲生成章节...")
+        logger.info("【总大纲生成节点】Phase 2: 基于宏观总纲生成章节...")
         chapters_prompt = build_chapters_only_prompt(novel_type, title, summary, macro_outline)
         chapters_result = await llm.structured_generate(
             prompt=chapters_prompt,
@@ -122,7 +122,7 @@ async def outline_generator_node(state: NovelAgentState, config) -> Command[Lite
     # 自动模式：直接接受
     auto_mode = config["configurable"].get("auto_mode", False)
     if auto_mode:
-        logger.info(f"【总大纲生成节点】自动模式 | 接受AI生成")
+        logger.info("【总大纲生成节点】自动模式 | 接受AI生成")
         logger.info(f"{'='*60}")
         return Command(
             goto="persist_node",
@@ -142,17 +142,17 @@ async def outline_generator_node(state: NovelAgentState, config) -> Command[Lite
     })
 
     if user_decision == "accept":
-        logger.info(f"【总大纲生成节点】用户接受了AI生成的大纲")
+        logger.info("【总大纲生成节点】用户接受了AI生成的大纲")
         logger.info(f"{'='*60}")
         return Command(
             goto="persist_node",
             update={"total_outline": ai_outline, "__next_node__": "progress_check_node"}
         )
     elif user_decision == "regenerate":
-        logger.info(f"【总大纲生成节点】用户要求重新生成，循环回本节点")
+        logger.info("【总大纲生成节点】用户要求重新生成，循环回本节点")
         return Command(goto="outline_generator_node")
     else:
-        logger.info(f"【总大纲生成节点】用户提供了自定义大纲")
+        logger.info("【总大纲生成节点】用户提供了自定义大纲")
         logger.info(f"{'='*60}")
         return Command(
             goto="persist_node",

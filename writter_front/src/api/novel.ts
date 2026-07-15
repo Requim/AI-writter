@@ -1,147 +1,42 @@
-import apiClient from './client'
+import { apiClient } from './client'
+import type {
+  ChapterDetail,
+  ChapterSummary,
+  NovelCreateRequest,
+  NovelResponse,
+  ProgressResponse,
+  WorkflowSnapshot,
+} from '@/types/novel'
 
-// 类型定义
-export interface NovelCreateRequest {
-  novel_type: string
-  title?: string
-  summary?: string
-  total_outline?: Record<string, any>
+async function data<T>(request: Promise<{ data: T }>): Promise<T> {
+  return (await request).data
 }
 
-export interface NovelResponse {
-  id: string
-  novel_type: string
-  title?: string
-  summary?: string
-  status: string
-  progress_percentage?: number
-  thread_id?: string
-  total_outline?: {
-    total_chapters?: number
-    [key: string]: any
-  }
-}
-
-export interface ProgressResponse {
-  current_chapter: number
-  total_chapters: number
-  percentage: number
-  status: string
-}
-
-export interface ChapterResponse {
-  id: string
-  chapter_index: number
-  title: string
-  word_count: number
-  status: string
-}
-
-export interface WorkflowInvokeResponse {
-  __interrupt__?: Array<{ value: InterruptInfo }>
-  [key: string]: any
-}
-
-export interface WordCountAnalysis {
-  total_count: number
-  effective_density: number
-  is_valid_word_count: boolean
-}
-
-export interface ReflectionIssue {
-  type: string
-  severity: 'low' | 'medium' | 'high'
-  location: string
-  description: string
-  evidence?: string
-  suggestion?: string
-}
-
-export interface InterruptInfo {
-  action: string
-  message: string
-  data?: Record<string, any>
-  // AI-generated content fields
-  ai_suggestions?: string[]
-  ai_generated_summary?: string
-  ai_generated_outline?: Record<string, any>
-  // Reflection fields
-  issues?: ReflectionIssue[]
-  chapter_number?: number
-  quality_score?: number
-  word_count?: number
-  word_count_analysis?: WordCountAnalysis
-  chapter_content_preview?: string
-  revised_content_preview?: string
-  // Logic chain & foreshadowing checks (from reflection)
-  logic_chain_status?: string
-  foreshadowing_check?: string
-  // Chapter progress fields
-  current_chapter?: number
-  total_chapters?: number
-  progress_percentage?: number
-  // Outline validation
-  validation?: {
-    issues: string[]
-    [key: string]: any
-  }
-  // Outline note
-  note?: string
-}
-
-// Novel API
 export const novelApi = {
-  createNovel: (data: NovelCreateRequest) =>
-    apiClient.post('/v1/novels', data),
-
-  getNovels: () =>
-    apiClient.get('/v1/novels'),
-
-  getNovel: (novelId: string) =>
-    apiClient.get(`/v1/novels/${novelId}`),
-
-  getProgress: (novelId: string) =>
-    apiClient.get(`/v1/novels/${novelId}/progress`),
-
-  getChapters: (novelId: string) =>
-    apiClient.get(`/v1/novels/${novelId}/chapters`),
-
-  getChapter: (novelId: string, chapterId: string) =>
-    apiClient.get(`/v1/novels/${novelId}/chapters/${chapterId}`),
-
-  updateChapter: (novelId: string, chapterId: string, data: any) =>
-    apiClient.put(`/v1/novels/${novelId}/chapters/${chapterId}`, data),
-
-  deleteNovel: (novelId: string) =>
-    apiClient.delete(`/v1/novels/${novelId}`),
-
+  create: (payload: NovelCreateRequest) =>
+    data<{ novel_id: string; thread_id: string; status: string }>(apiClient.post('/v1/novels', payload)),
+  list: () => data<NovelResponse[]>(apiClient.get('/v1/novels')),
+  get: (novelId: string) => data<NovelResponse>(apiClient.get(`/v1/novels/${novelId}`)),
+  progress: (novelId: string) =>
+    data<ProgressResponse>(apiClient.get(`/v1/novels/${novelId}/progress`)),
+  chapters: (novelId: string) =>
+    data<ChapterSummary[]>(apiClient.get(`/v1/novels/${novelId}/chapters`)),
+  chapter: (novelId: string, chapterId: string) =>
+    data<ChapterDetail>(apiClient.get(`/v1/novels/${novelId}/chapters/${chapterId}`)),
+  updateChapter: (novelId: string, chapterId: string, payload: Pick<ChapterDetail, 'title' | 'content'>) =>
+    data<ChapterDetail>(apiClient.put(`/v1/novels/${novelId}/chapters/${chapterId}`, payload)),
   rewriteChapter: (novelId: string, chapterId: string) =>
-    apiClient.post(`/v1/novels/${novelId}/chapters/${chapterId}/rewrite`),
-
+    data<ChapterDetail>(apiClient.post(`/v1/novels/${novelId}/chapters/${chapterId}/rewrite`)),
+  remove: (novelId: string) => data<{ status: string }>(apiClient.delete(`/v1/novels/${novelId}`)),
   batchDeleteChapters: (novelId: string, chapterIds: string[]) =>
-    apiClient.post(`/v1/novels/${novelId}/chapters/batch-delete`, { chapter_ids: chapterIds }),
+    data<{ status: string; count: number; rewind_to: number | null }>(
+      apiClient.post(`/v1/novels/${novelId}/chapters/batch-delete`, { chapter_ids: chapterIds }),
+    ),
 }
 
-// Workflow API
 export const workflowApi = {
-  invokeWorkflow: (threadId: string, data?: any) =>
-    apiClient.post(`/v1/workflows/${threadId}/invoke`, data),
-
-  getWorkflowState: (threadId: string) =>
-    apiClient.get(`/v1/workflows/${threadId}/state`),
-
-  /** SSE 流式调用（返回 fetch Response，由调用方读取流） */
-  streamWorkflow: (threadId: string, data?: any): Promise<Response> =>
-    fetch(`/api/v1/workflows/${threadId}/stream`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data || {}),
-    }),
-
-  streamWorkflowGet: (threadId: string) => {
-    const eventSource = new EventSource(
-      `${window.location.origin}/api/v1/workflows/${threadId}/stream`
-    )
-    return eventSource
-  }
+  state: (threadId: string) =>
+    data<WorkflowSnapshot>(apiClient.get(`/v1/workflows/${threadId}/state`)),
+  cancel: (threadId: string) =>
+    data<{ thread_id: string; status: string }>(apiClient.post(`/v1/workflows/${threadId}/cancel`)),
 }

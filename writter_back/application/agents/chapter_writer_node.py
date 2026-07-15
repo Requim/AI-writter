@@ -9,6 +9,7 @@ logger = logging.getLogger("uvicorn")
 from langgraph.types import Command
 from typing import Literal
 from application.schemas.agent_state import NovelAgentState
+from application.streaming import collect_streamed_text, emit_workflow_event
 from application.prompts.chapter_writer_prompts import (
     build_chapter_writer_prompt,
     build_first_scene_prompt,
@@ -143,6 +144,7 @@ async def _scene_queue_generate(
     title: str,
     memory_context: str,
     llm,
+    chapter_index: int,
     prev_chapter_tail: str = "",
 ) -> str:
     """场景队列生成：逐个场景生成，每步上下文透传 + 动态校准"""
@@ -161,7 +163,6 @@ async def _scene_queue_generate(
 
     for i, scene in enumerate(scenes):
         is_first = (i == 0)
-        is_last = (i == num_scenes - 1)
         target = targets[i]
 
         # 统一系统提示词
@@ -224,10 +225,14 @@ async def _scene_queue_generate(
         )
 
         # ── 生成场景内容 ──
-        content = await llm.generate(
+        content = await collect_streamed_text(
+            llm,
             prompt=prompt,
+            node="chapter_writer_node",
+            chapter_index=chapter_index,
             system_prompt=system_prompt,
             temperature=CHAPTER_WRITER_TEMPERATURE,
+            prefix="\n\n" if i > 0 else "",
         )
         actual_count = len(content)
         logger.info(f"【场景队列】{scene_tag} 生成完成: {actual_count}字")
@@ -249,11 +254,15 @@ async def _scene_queue_generate(
                 existing_content=content,
                 correction_note=correction,
             )
-            extra = await llm.generate(
+            extra = await collect_streamed_text(
+                llm,
                 extra_prompt,
+                node="chapter_writer_node",
+                chapter_index=chapter_index,
                 temperature=CHAPTER_WRITER_TEMPERATURE,
+                prefix="\n\n",
             )
-            content += "\n\n" + extra
+            content += extra
             logger.info(
                 f"【场景队列】{scene_tag} 扩展后: {len(content)}字",
             )
@@ -262,7 +271,7 @@ async def _scene_queue_generate(
         adjusted_targets.append(target)
 
     # 2. 拼接所有场景
-    logger.info(f"【场景队列】所有场景生成完成, 准备拼接...")
+    logger.info("【场景队列】所有场景生成完成, 准备拼接...")
     full_content = "\n\n".join(scene_contents)
     logger.info(f"【场景队列】拼接后总字数: {len(full_content)}字")
 
@@ -273,6 +282,7 @@ async def _final_word_check(
     content: str,
     llm,
     system_prompt: str,
+    chapter_index: int,
 ) -> str:
     """最终字数检查：不足则扩展（不再截断）"""
     word_count = len(content)
@@ -280,11 +290,16 @@ async def _final_word_check(
     if word_count < MIN_WORDS:
         logger.info(f"【字数检查】字数不足 ({word_count}字)，正在扩展内容...")
         continue_prompt = build_chapter_continue_prompt(word_count, content)
-        additional_content = await llm.generate(
+        additional_content = await collect_streamed_text(
+            llm,
             continue_prompt,
+            node="chapter_writer_node",
+            chapter_index=chapter_index,
+            system_prompt=system_prompt,
             temperature=CHAPTER_WRITER_TEMPERATURE,
+            prefix="\n\n",
         )
-        content += "\n\n" + additional_content
+        content += additional_content
         logger.info(f"【字数检查】扩展后字数: {len(content)}字")
     else:
         logger.info(f"【字数检查】字数合格: {word_count}字")
@@ -298,7 +313,8 @@ async def _get_prev_chapter_tail(config, novel_id: str, current_chapter_index: i
     if not repository or current_chapter_index <= 0:
         return ""
     try:
-        novel = await repository.find_by_id_with_chapters(novel_id)
+        tenant_id = config["configurable"].get("tenant_id", "")
+        novel = await repository.find_by_id_with_chapters(tenant_id, novel_id)
         if not novel or not hasattr(novel, 'chapters'):
             return ""
         chapters_sorted = sorted(novel.chapters, key=lambda c: c.chapter_index)
@@ -342,9 +358,26 @@ async def chapter_writer_node(
     llm = llm_config.get("llm_instance")
 
     if not llm:
-        logger.info(f"【章节写作节点】LLM不可用，跳过 -> 路由节点")
+        logger.info("【章节写作节点】LLM不可用，跳过 -> 路由节点")
         logger.info(f"{'='*60}")
         return Command(goto="router_agent")
+
+    quota_service = config["configurable"].get("quota_service")
+    tenant_context = config["configurable"].get("tenant_context")
+    workflow_run_id = state.get("workflow_run_id")
+    current_idx = state.get("current_chapter_index", 0)
+    if (
+        quota_service
+        and tenant_context
+        and workflow_run_id
+        and not config["configurable"].get("quota_operation_pre_reserved", False)
+    ):
+        await quota_service.reserve(
+            tenant_context,
+            workflow_run_id,
+            "chapter",
+            current_idx,
+        )
 
     # 判断使用场景队列还是降级
     scenes = chapter_outline.get("scenes", [])
@@ -352,8 +385,12 @@ async def chapter_writer_node(
     system_prompt = build_chapter_system_prompt(novel_type)
 
     # 获取上一章尾部用于衔接（只在非第一章时有效）
-    novel_id = config["configurable"].get("thread_id", "")
-    current_idx = state.get("current_chapter_index", 0)
+    novel_id = config["configurable"].get("novel_id", "")
+    emit_workflow_event(
+        "content_delta",
+        {"chapter_index": current_idx, "operation": "reset", "text": ""},
+        "chapter_writer_node",
+    )
     prev_tail = await _get_prev_chapter_tail(config, novel_id, current_idx)
 
     if use_scene_queue:
@@ -368,6 +405,7 @@ async def chapter_writer_node(
             title=title,
             memory_context=memory_context,
             llm=llm,
+            chapter_index=current_idx,
             prev_chapter_tail=prev_tail,
         )
     else:
@@ -377,14 +415,17 @@ async def chapter_writer_node(
         prompt = build_chapter_writer_prompt(
             chapter_outline, novel_type, title, memory_context, prev_chapter_tail=prev_tail,
         )
-        content = await llm.generate(
+        content = await collect_streamed_text(
+            llm,
             prompt=prompt,
+            node="chapter_writer_node",
+            chapter_index=current_idx,
             system_prompt=system_prompt,
             temperature=CHAPTER_WRITER_TEMPERATURE,
         )
 
     # 最终字数检查（不足则扩展，不再截断）
-    content = await _final_word_check(content, llm, system_prompt)
+    content = await _final_word_check(content, llm, system_prompt, current_idx)
 
     logger.info(
         f"【章节写作节点】完成 -> 路由节点 | 最终字数: {len(content)}字",

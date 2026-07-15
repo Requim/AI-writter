@@ -3,8 +3,8 @@ import logging
 logger = logging.getLogger("uvicorn")
 from langgraph.types import interrupt, Command
 from typing import Literal
-import json
 from application.schemas.agent_state import NovelAgentState
+from application.streaming import emit_workflow_event
 from application.prompts.reflection_prompts import (
     build_reflection_prompt,
     build_chunk_reflection_prompt,
@@ -42,7 +42,7 @@ async def reflection_node(state: NovelAgentState, config) -> Command[Literal["pe
     llm = llm_config.get("llm_instance")
 
     if not llm:
-        logger.info(f"【反思检查节点】LLM不可用，跳过检查 -> 持久化节点")
+        logger.info("【反思检查节点】LLM不可用，跳过检查 -> 持久化节点")
         logger.info(f"{'='*60}")
         return Command(goto="persist_node")
 
@@ -141,6 +141,16 @@ async def reflection_node(state: NovelAgentState, config) -> Command[Literal["pe
     passed = reflection_result.get("passed", False)
     density_ok = effective_density >= 70
     quality_ok = quality_score >= 0.8
+    emit_workflow_event(
+        "quality",
+        {
+            "score": quality_score,
+            "issues": reflection_result.get("issues", []),
+            "attempt": state.get("revision_attempts", 0),
+            "max_attempts": config["configurable"].get("max_reflection_loops", 5),
+        },
+        "reflection_node",
+    )
 
     if passed and quality_ok and is_valid_words and density_ok:
         logger.info(f"【反思检查节点】检查通过! 质量评分={quality_score}, "
@@ -201,7 +211,7 @@ async def reflection_node(state: NovelAgentState, config) -> Command[Literal["pe
 
     user_decision = interrupt({
         "action": "review_reflection_issues",
-        "message": f"章节内容检查发现问题，请审阅并决定修正方式",
+        "message": "章节内容检查发现问题，请审阅并决定修正方式",
         "chapter_number": state.get("current_chapter_index", 0) + 1,
         "quality_score": quality_score,
         "word_count_analysis": word_analysis,
@@ -216,7 +226,7 @@ async def reflection_node(state: NovelAgentState, config) -> Command[Literal["pe
                "4) 'regenerate' - 重新生成本章内容"
     })
 
-    logger.info(f"【反思检查节点】准备前往 -> 修正节点 (等待用户决策)")
+    logger.info("【反思检查节点】准备前往 -> 修正节点 (等待用户决策)")
 
     # 解析用户决策
     if user_decision == "accept":

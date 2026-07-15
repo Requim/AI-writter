@@ -1,5 +1,5 @@
 """LangGraph Agent状态定义"""
-from typing import Annotated, List, Optional, Dict, Any
+from typing import Annotated, List, Optional, Dict
 from operator import add
 from typing_extensions import TypedDict
 
@@ -40,6 +40,7 @@ class NovelAgentState(TypedDict):
     
     # ========== LLM配置（注入用） ==========
     llm_config: Optional[Dict]                # LLM配置，用于节点中获取LLM实例
+    workflow_run_id: Optional[str]            # 配额幂等键，恢复时沿用
 
     # ========== 内部路由 ==========
     __next_node__: Optional[str]               # persist_node 设定阶段的目标节点

@@ -1,279 +1,291 @@
-"""工作流路由 - 支持 interrupt/resume"""
+"""Authenticated, tenant-scoped workflow streaming, resume and cancellation."""
+
+import asyncio
 import logging
-logger = logging.getLogger("uvicorn")
-from fastapi import APIRouter, HTTPException, Depends
-from typing import Optional, Any, Dict, AsyncGenerator
-from pydantic import BaseModel
-import json
+from collections.abc import AsyncIterator
+from typing import Any
+from uuid import uuid4
 
-from application.orchestrator import NovelOrchestrator
-from infrastructure.database.repository import PostgresNovelRepository
-from infrastructure.memory.postgres_memory import PostgresMemoryAdapter
-from config import settings
-
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
+from api.dependencies import get_tenant_context
+from application.events import WorkflowEvent
+from application.orchestrator import NovelOrchestrator
+from application.quota_service import QuotaService
+from config import settings
+from infrastructure.database.identity_repository import (
+    AIUnavailableError,
+    QuotaExceededError,
+)
+from infrastructure.database.repository import PostgresNovelRepository
+from service.entities.identity import TenantContext
+
+logger = logging.getLogger("uvicorn")
 router = APIRouter()
 
-# ---------- Dependency Injection ----------
-_workflow_orchestrator: Optional[NovelOrchestrator] = None
+
+def get_orchestrator(request: Request) -> NovelOrchestrator:
+    return request.app.state.orchestrator
 
 
-async def shutdown_orchestrator():
-    """应用关闭时释放编排器的连接池"""
-    global _workflow_orchestrator
-    if _workflow_orchestrator is not None:
-        await _workflow_orchestrator.aclose()
-        _workflow_orchestrator = None
+def get_repository(request: Request) -> PostgresNovelRepository:
+    return request.app.state.repository
 
 
-async def get_orchestrator() -> NovelOrchestrator:
-    global _workflow_orchestrator
-    if _workflow_orchestrator is None:
-        repo = PostgresNovelRepository(settings.DATABASE_URL)
-        async_session = repo.async_session
-        # PostgresMemoryAdapter expects the async URL with +asyncpg
-        memory_service = PostgresMemoryAdapter(settings.DATABASE_URL, async_session)
-        llm_config = {
-            "provider": settings.DEFAULT_LLM_PROVIDER,
-            "model": settings.DEFAULT_MODEL_NAME,
-            "deepseek_api_key": settings.DEEPSEEK_API_KEY,
-            "openai_api_key": settings.OPENAI_API_KEY,
-            "anthropic_api_key": settings.ANTHROPIC_API_KEY,
-        }
-        _workflow_orchestrator = NovelOrchestrator(
-            repository=repo,
-            memory_service=memory_service,
-            llm_config=llm_config,
-        )
-    return _workflow_orchestrator
+def get_quota_service(request: Request) -> QuotaService:
+    return request.app.state.quota_service
 
 
-# ---------- Request / Response Schemas ----------
 class WorkflowInvokeRequest(BaseModel):
-    input: Optional[Dict[str, Any]] = None
-    command: Optional[Dict[str, Any]] = None
+    input: dict[str, Any] | None = None
+    command: dict[str, Any] | None = None
 
 
-# ---------- Endpoints ----------
-@router.post("/{thread_id}/invoke")
+async def _authorize_thread(
+    context: TenantContext,
+    thread_id: str,
+    repository: PostgresNovelRepository,
+) -> None:
+    try:
+        novel = await repository.find_by_id(str(context.tenant_id), thread_id)
+    except ValueError:
+        novel = None
+    if novel is None:
+        raise HTTPException(status_code=404, detail="小说不存在")
+
+
+async def _prepare_request(
+    request: WorkflowInvokeRequest,
+    context: TenantContext,
+    thread_id: str,
+    orchestrator: NovelOrchestrator,
+    quota: QuotaService,
+) -> tuple[dict[str, Any] | None, Any, bool]:
+    input_data = dict(request.input or {})
+    command = dict(request.command or {})
+    input_data.pop("tenant_id", None)
+    command.pop("tenant_id", None)
+    is_resume = request.command is not None
+    auto_mode = command.pop("_auto_mode", input_data.pop("_auto_mode", False))
+    orchestrator.set_auto_mode(context, thread_id, bool(auto_mode))
+    if not is_resume:
+        run_id = str(input_data.get("workflow_run_id") or uuid4())
+        input_data["workflow_run_id"] = run_id
+        input_data["novel_id"] = thread_id
+        try:
+            await quota.reserve(context, run_id, "outline", -1)
+        except (QuotaExceededError, AIUnavailableError) as exc:
+            raise HTTPException(status_code=429, detail={"code": "quota_exceeded", "message": str(exc)}) from exc
+    return input_data if not is_resume else None, command.get("resume"), is_resume
+
+
+def _public_error(exc: Exception) -> str:
+    return str(exc) if settings.DEBUG else "工作流执行失败，请检查后端日志"
+
+
+async def _acquire(
+    orchestrator: NovelOrchestrator,
+    context: TenantContext,
+    thread_id: str,
+) -> None:
+    if not await orchestrator.try_start(context, thread_id):
+        raise HTTPException(status_code=409, detail="该工作流正在执行中，请等待或取消当前任务")
+
+
+@router.post("/{thread_id}/invoke", deprecated=True)
 async def invoke_workflow(
     thread_id: str,
     request: WorkflowInvokeRequest,
+    context: TenantContext = Depends(get_tenant_context),
     orchestrator: NovelOrchestrator = Depends(get_orchestrator),
-):
-    """
-    启动或恢复工作流
-    - 首次调用：传入 input（包含 novel_id, novel_type 等）
-    - 恢复调用：传入 command: {"resume": ...}
-    """
-    mode = '恢复' if request.command is not None else '启动'
-    logger.info(f"{'='*60}")
-    logger.info(f"【工作流API·{mode}】进入 | thread_id={thread_id}")
-    if request.command is not None:
-        logger.info(f"【工作流API·{mode}】请求体={request.model_dump()}")
-    
-    # 检查是否正在执行中（防重复）
-    if orchestrator.is_executing(thread_id):
-        logger.info(f"【工作流API·{mode}】thread_id={thread_id} 正在执行中, 拒绝并发请求")
-        raise HTTPException(status_code=409, detail="该工作流正在执行中，请等待完成后再试")
-    orchestrator.mark_executing(thread_id, True)
-    
-    # 提取自动模式开关
-    if request.command and "_auto_mode" in request.command:
-        orchestrator.set_auto_mode(thread_id, request.command.pop("_auto_mode"))
-    if request.input and "_auto_mode" in request.input:
-        orchestrator.set_auto_mode(thread_id, request.input.pop("_auto_mode"))
-    
-    import asyncio
-    
+    repository: PostgresNovelRepository = Depends(get_repository),
+    quota: QuotaService = Depends(get_quota_service),
+) -> Any:
+    await _authorize_thread(context, thread_id, repository)
+    await _acquire(orchestrator, context, thread_id)
     try:
-        if request.command is not None:
-            resume_value = request.command.get("resume")
-            logger.info(f"【工作流API·恢复】thread_id={thread_id}, 恢复值类型={type(resume_value).__name__}, 恢复值预览={str(resume_value)[:80]}")
-            try:
-                result = await asyncio.wait_for(
-                    orchestrator.resume(thread_id, resume_value),
-                    timeout=600.0
-                )
-            except asyncio.TimeoutError:
-                logger.info(f"【工作流API·恢复】超时! thread_id={thread_id}")
-                raise HTTPException(status_code=504, detail="工作流执行超时，请稍后重试")
-        else:
-            input_data = request.input or {}
-            input_data.setdefault("novel_id", thread_id)
-            logger.info(f"【工作流API·启动】thread_id={thread_id}, 输入字段={list(input_data.keys())}")
-            try:
-                result = await asyncio.wait_for(
-                    orchestrator.invoke(thread_id, input_data),
-                    timeout=600.0
-                )
-            except asyncio.TimeoutError:
-                logger.info(f"【工作流API·启动】超时! thread_id={thread_id}")
-                raise HTTPException(status_code=504, detail="工作流执行超时，请稍后重试")
-        
-        has_interrupt = "__interrupt__" in str(type(result)) or (isinstance(result, dict) and "__interrupt__" in result)
-        logger.info(f"【工作流API·{mode}】完成 | thread_id={thread_id}, 结果类型={type(result).__name__}, 产生中断={'是' if has_interrupt else '否'}")
-        # 诊断：打印中断数据的前200字符
-        if has_interrupt and isinstance(result, dict):
-            interrupt_raw = result.get("__interrupt__")
-            if interrupt_raw:
-                first_int = interrupt_raw[0] if hasattr(interrupt_raw, '__getitem__') else None
-                int_value = getattr(first_int, 'value', str(first_int)[:200]) if first_int else 'N/A'
-                logger.info(f"【工作流API·诊断】中断数量={len(interrupt_raw) if hasattr(interrupt_raw, '__len__') else '?'}, 第一个中断value={str(int_value)[:200]}")
-        logger.info(f"{'='*60}")
-        return result
+        input_data, resume_value, is_resume = await _prepare_request(
+            request, context, thread_id, orchestrator, quota
+        )
+        current = asyncio.current_task()
+        if current:
+            orchestrator.register_task(context, thread_id, current)
+        operation = (
+            orchestrator.resume(context, thread_id, resume_value)
+            if is_resume
+            else orchestrator.invoke(context, thread_id, input_data or {})
+        )
+        return await asyncio.wait_for(
+            operation, timeout=settings.WORKFLOW_TIMEOUT_SECONDS
+        )
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(status_code=504, detail="工作流执行超时") from exc
+    except asyncio.CancelledError:
+        raise HTTPException(status_code=409, detail="工作流已取消")
     except HTTPException:
         raise
-    except asyncio.TimeoutError:
-        logger.info(f"【工作流API】超时(外层捕获) | thread_id={thread_id}")
-        logger.info(f"{'='*60}")
-        raise HTTPException(status_code=504, detail="工作流执行超时，请检查后端日志")
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        logger.info(f"【工作流API】错误 | thread_id={thread_id}, 错误={str(e)}")
-        logger.info(f"{'='*60}")
-        raise HTTPException(status_code=500, detail=f"工作流执行失败: {str(e)}")
+    except Exception as exc:
+        logger.exception("Workflow invocation failed for %s", thread_id)
+        raise HTTPException(status_code=500, detail=_public_error(exc)) from exc
     finally:
-        orchestrator.mark_executing(thread_id, False)
+        orchestrator.finish(context, thread_id)
 
 
 @router.get("/{thread_id}/state")
 async def get_workflow_state(
     thread_id: str,
+    context: TenantContext = Depends(get_tenant_context),
     orchestrator: NovelOrchestrator = Depends(get_orchestrator),
-):
-    """
-    获取工作流当前状态
-    - 返回是否有待处理的中断及其内容
-    """
-    await orchestrator._ensure_workflow()
-    config = orchestrator._make_config(thread_id)
-    import asyncio
+    repository: PostgresNovelRepository = Depends(get_repository),
+) -> dict[str, Any]:
+    await _authorize_thread(context, thread_id, repository)
     try:
-        state = await asyncio.wait_for(
-            orchestrator._workflow.aget_state(config),
-            timeout=10.0
+        return await asyncio.wait_for(
+            orchestrator.get_public_state(context, thread_id), timeout=10.0
         )
     except asyncio.TimeoutError:
-        # 超时：可能 checkpoint 不存在，返回空状态
         return {
             "thread_id": thread_id,
+            "status": "unknown",
             "has_interrupt": False,
             "interrupts": [],
-            "state_values": {},
+            "state": {},
         }
 
-    # 获取中断信息
-    tasks = getattr(state, 'tasks', []) or []
-    pending_interrupts = []
-    for task in tasks:
-        for interrupt in (task.interrupts or []):
-            pending_interrupts.append({
-                "value": interrupt.value,
-                "resumable": getattr(interrupt, 'resumable', True),
-            })
 
-    return {
-        "thread_id": thread_id,
-        "has_interrupt": len(pending_interrupts) > 0,
-        "interrupts": pending_interrupts,
-        "state_values": getattr(state, 'values', {}),
-    }
+async def _stream_response(
+    thread_id: str,
+    request: WorkflowInvokeRequest,
+    context: TenantContext,
+    orchestrator: NovelOrchestrator,
+    repository: PostgresNovelRepository,
+    quota: QuotaService,
+) -> StreamingResponse:
+    await _authorize_thread(context, thread_id, repository)
+    await _acquire(orchestrator, context, thread_id)
+    try:
+        input_data, resume_value, is_resume = await _prepare_request(
+            request, context, thread_id, orchestrator, quota
+        )
+    except Exception:
+        orchestrator.finish(context, thread_id)
+        raise
+
+    async def generate() -> AsyncIterator[str]:
+        queue: asyncio.Queue[WorkflowEvent | Exception | None] = asyncio.Queue()
+
+        async def produce() -> None:
+            try:
+                async for event in orchestrator.stream_events(
+                    context,
+                    thread_id,
+                    input_data=input_data,
+                    resume_value=resume_value,
+                    is_resume=is_resume,
+                ):
+                    await queue.put(event)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                await queue.put(exc)
+            finally:
+                await queue.put(None)
+
+        producer = asyncio.create_task(
+            produce(), name=f"workflow:{context.tenant_id}:{thread_id}"
+        )
+        orchestrator.register_task(context, thread_id, producer)
+        heartbeat_id = 1_000_000
+        try:
+            while True:
+                try:
+                    item = await asyncio.wait_for(
+                        queue.get(), timeout=settings.SSE_HEARTBEAT_SECONDS
+                    )
+                except asyncio.TimeoutError:
+                    heartbeat_id += 1
+                    yield WorkflowEvent(
+                        id=heartbeat_id,
+                        type="heartbeat",
+                        thread_id=thread_id,
+                        data={"status": "running"},
+                    ).to_sse()
+                    continue
+                if item is None:
+                    break
+                if isinstance(item, Exception):
+                    logger.exception(
+                        "Workflow stream failed for %s", thread_id, exc_info=item
+                    )
+                    yield WorkflowEvent(
+                        id=heartbeat_id + 1,
+                        type="error",
+                        thread_id=thread_id,
+                        data={"message": _public_error(item)},
+                    ).to_sse()
+                    break
+                yield item.to_sse()
+        finally:
+            if not producer.done():
+                producer.cancel()
+            await asyncio.gather(producer, return_exceptions=True)
+            orchestrator.finish(context, thread_id)
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 @router.post("/{thread_id}/stream")
 async def stream_workflow_post(
     thread_id: str,
     request: WorkflowInvokeRequest,
+    context: TenantContext = Depends(get_tenant_context),
     orchestrator: NovelOrchestrator = Depends(get_orchestrator),
-):
-    """SSE 流式获取工作流执行过程（POST 版本，支持恢复）"""
-    # 提取自动模式开关
-    if request.command and "_auto_mode" in request.command:
-        orchestrator.set_auto_mode(thread_id, request.command.pop("_auto_mode"))
-    if request.input and "_auto_mode" in request.input:
-        orchestrator.set_auto_mode(thread_id, request.input.pop("_auto_mode"))
-
-    # 检查是否正在执行中（防重复）
-    if orchestrator.is_executing(thread_id):
-        logger.info(f"【工作流API·SSE】thread_id={thread_id} 正在执行中, 拒绝并发请求")
-        raise HTTPException(status_code=409, detail="该工作流正在执行中，请等待完成后再试")
-    orchestrator.mark_executing(thread_id, True)
-
-    from fastapi.responses import StreamingResponse
-    from fastapi.encoders import jsonable_encoder
-
-    async def generate() -> AsyncGenerator[str, None]:
-        try:
-            if request.command is not None:
-                # Resume path: use ainvoke (via orchestrator.resume) which properly
-                # handles Command(resume=...) — astream does NOT in langgraph 1.1.x.
-                resume_value = request.command.get("resume")
-                result = await orchestrator.resume(thread_id, resume_value)
-                data = json.dumps(jsonable_encoder(result), ensure_ascii=False)
-                yield f"data: {data}\n\n"
-            else:
-                # New invocation path: use astream for real-time streaming
-                input_data = request.input or {"novel_id": thread_id}
-                input_data.setdefault("novel_id", thread_id)
-                async for chunk in orchestrator.stream(thread_id, input_data):
-                    if isinstance(chunk, dict):
-                        data = json.dumps(jsonable_encoder(chunk), ensure_ascii=False)
-                    else:
-                        data = str(chunk)
-                    yield f"data: {data}\n\n"
-            yield "data: [DONE]\n\n"
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            error_data = json.dumps({"error": str(e)}, ensure_ascii=False)
-            yield f"data: {error_data}\n\n"
-        finally:
-            orchestrator.mark_executing(thread_id, False)
-
-    return StreamingResponse(
-        generate(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    repository: PostgresNovelRepository = Depends(get_repository),
+    quota: QuotaService = Depends(get_quota_service),
+) -> StreamingResponse:
+    return await _stream_response(
+        thread_id, request, context, orchestrator, repository, quota
     )
 
 
-@router.get("/{thread_id}/stream")
-async def stream_workflow(
+@router.get("/{thread_id}/stream", deprecated=True)
+async def stream_workflow_get(
     thread_id: str,
+    context: TenantContext = Depends(get_tenant_context),
     orchestrator: NovelOrchestrator = Depends(get_orchestrator),
-):
-    """SSE 流式获取工作流执行过程"""
-    # 检查是否正在执行中（防重复）
-    if orchestrator.is_executing(thread_id):
-        logger.info(f"【工作流API·SSE-GET】thread_id={thread_id} 正在执行中, 拒绝并发请求")
-        raise HTTPException(status_code=409, detail="该工作流正在执行中，请等待完成后再试")
-    orchestrator.mark_executing(thread_id, True)
-
-    from fastapi.responses import StreamingResponse
-    from fastapi.encoders import jsonable_encoder
-
-    async def generate() -> AsyncGenerator[str, None]:
-        try:
-            async for chunk in orchestrator.stream(thread_id, {"novel_id": thread_id}):
-                if isinstance(chunk, dict):
-                    data = json.dumps(jsonable_encoder(chunk), ensure_ascii=False)
-                else:
-                    data = str(chunk)
-                yield f"data: {data}\n\n"
-            yield "data: [DONE]\n\n"
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            error_data = json.dumps({"error": str(e)}, ensure_ascii=False)
-            yield f"data: {error_data}\n\n"
-        finally:
-            orchestrator.mark_executing(thread_id, False)
-
-    return StreamingResponse(
-        generate(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    repository: PostgresNovelRepository = Depends(get_repository),
+    quota: QuotaService = Depends(get_quota_service),
+) -> StreamingResponse:
+    return await _stream_response(
+        thread_id,
+        WorkflowInvokeRequest(input={"novel_id": thread_id}),
+        context,
+        orchestrator,
+        repository,
+        quota,
     )
+
+
+@router.post("/{thread_id}/cancel")
+async def cancel_workflow(
+    thread_id: str,
+    context: TenantContext = Depends(get_tenant_context),
+    orchestrator: NovelOrchestrator = Depends(get_orchestrator),
+    repository: PostgresNovelRepository = Depends(get_repository),
+) -> dict[str, str]:
+    await _authorize_thread(context, thread_id, repository)
+    cancelled = await orchestrator.cancel(context, thread_id)
+    return {
+        "thread_id": thread_id,
+        "status": "cancelling" if cancelled else "idle",
+    }

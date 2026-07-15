@@ -5,7 +5,6 @@ from datetime import datetime
 from typing import List, Optional
 
 from .chapter import Chapter
-from ..value_objects.novel_type import NovelType
 from ..value_objects.outline import Outline
 from ..value_objects.progress import Progress
 
@@ -14,6 +13,7 @@ from ..value_objects.progress import Progress
 class Novel:
     """小说聚合根 - 整个系统的核心实体"""
     id: UUID = field(default_factory=uuid4)
+    tenant_id: Optional[UUID] = None
     user_id: Optional[UUID] = None
     novel_type: str = ""                     # 小说类型（必选）
     title: Optional[str] = None               # 书名
