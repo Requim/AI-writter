@@ -36,7 +36,7 @@ export function WorkflowPanel({ className = '', state, autoMode, onResume }: Wor
           <h2>执行记录</h2>
         </div>
         <Tag color={state.status === 'running' ? 'processing' : state.status === 'error' ? 'error' : 'default'}>
-          {state.status === 'running' ? '执行中' : state.status === 'paused' ? '待确认' : '空闲'}
+          {state.status === 'running' ? '执行中' : state.status === 'paused' ? '待确认' : state.status === 'error' ? '失败' : '空闲'}
         </Tag>
       </div>
 
@@ -97,7 +97,12 @@ export function WorkflowPanel({ className = '', state, autoMode, onResume }: Wor
         </section>
       )}
 
-      {state.error && <div className="error-note">{state.error}</div>}
+      {state.error && (
+        <div className="error-note">
+          {state.error}
+          {state.retryable && <small>当前 checkpoint 已保留，可直接重试当前步骤。</small>}
+        </div>
+      )}
     </aside>
   )
 }

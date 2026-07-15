@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     DEEPSEEK_API_KEY: str | None = None
     DEEPSEEK_MODEL: str = "deepseek-chat"
     LLM_TIMEOUT_SECONDS: float = 180.0
+    LLM_MAX_RETRIES: int = 2
     WORKFLOW_TIMEOUT_SECONDS: float = 600.0
     SSE_HEARTBEAT_SECONDS: float = 15.0
 
@@ -74,6 +75,8 @@ class Settings(BaseSettings):
     def validate_limits(self) -> "Settings":
         if self.LLM_TIMEOUT_SECONDS <= 0 or self.WORKFLOW_TIMEOUT_SECONDS <= 0:
             raise ValueError("Timeout values must be positive")
+        if not 0 <= self.LLM_MAX_RETRIES <= 5:
+            raise ValueError("LLM_MAX_RETRIES must be between 0 and 5")
         if self.ACCESS_TOKEN_MINUTES <= 0 or self.REFRESH_TOKEN_DAYS <= 0:
             raise ValueError("Token lifetime values must be positive")
         if self.ENVIRONMENT == "production" and len(self.JWT_SECRET) < 32:

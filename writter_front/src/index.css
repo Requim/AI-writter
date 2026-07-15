@@ -162,6 +162,7 @@ h1, h2, h3 { color: var(--ink); }
 .interrupt-actions { display: flex; gap: 6px; margin-bottom: 8px; }
 .interrupt-block .ant-input { margin: 8px 0; }
 .error-note { margin-top: 16px; padding: 10px; color: #8c1f2e; background: #fff1f0; border: 1px solid #eab7bc; font-size: 11px; }
+.error-note small { display: block; margin-top: 5px; color: #6f454b; }
 .studio-loading { max-width: 900px; margin: 0 auto; padding: 80px 30px; }
 
 .auth-page { min-height: 100vh; display: grid; grid-template-columns: minmax(380px, 0.9fr) minmax(460px, 1.1fr); background: var(--paper); }

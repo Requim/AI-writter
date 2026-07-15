@@ -7,9 +7,19 @@ from .base import BaseLLMAdapter, safe_json_parse
 class AnthropicAdapter(BaseLLMAdapter):
     """Anthropic适配器"""
 
-    def __init__(self, api_key: str, model: str = "claude-sonnet-4-20250514", timeout: float = 180.0):
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "claude-sonnet-4-20250514",
+        timeout: float = 180.0,
+        max_retries: int = 2,
+    ):
         super().__init__(api_key=api_key, model=model, timeout=timeout)
-        self.client = anthropic.AsyncAnthropic(api_key=api_key, timeout=timeout, max_retries=0)
+        self.client = anthropic.AsyncAnthropic(
+            api_key=api_key,
+            timeout=timeout,
+            max_retries=max_retries,
+        )
 
     async def generate(self, prompt: str, system_prompt: Optional[str] = None,
                       temperature: float = 0.7, top_p: float = 1.0) -> str:
