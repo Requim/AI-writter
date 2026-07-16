@@ -1,8 +1,11 @@
 """小说仓储实现"""
+
+import json
+import uuid
+
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy import delete, select, text, update
 from typing import Optional, List
-import uuid
 
 from service.entities.novel import Novel
 from service.entities.chapter import Chapter
@@ -55,12 +58,14 @@ class PostgresNovelRepository(NovelRepository):
                 novel_type=novel.novel_type,
                 title=novel.title,
                 summary=novel.summary,
-                total_outline=novel.total_outline.__dict__ if novel.total_outline else None,
+                total_outline=novel.total_outline.__dict__
+                if novel.total_outline
+                else None,
                 progress=novel.progress.to_dict() if novel.progress else None,
                 status=novel.progress.status if novel.progress else "draft",
                 thread_id=novel.thread_id,
                 created_at=novel.created_at,
-                updated_at=novel.updated_at
+                updated_at=novel.updated_at,
             )
             session.add(novel_model)
             await session.commit()
@@ -79,8 +84,14 @@ class PostgresNovelRepository(NovelRepository):
             if not novel_model:
                 return None
 
-            outline = Outline(**novel_model.total_outline) if novel_model.total_outline else None
-            progress = Progress(**novel_model.progress) if novel_model.progress else Progress()
+            outline = (
+                Outline(**novel_model.total_outline)
+                if novel_model.total_outline
+                else None
+            )
+            progress = (
+                Progress(**novel_model.progress) if novel_model.progress else Progress()
+            )
 
             return Novel(
                 id=novel_model.id,
@@ -93,10 +104,12 @@ class PostgresNovelRepository(NovelRepository):
                 progress=progress,
                 thread_id=novel_model.thread_id,
                 created_at=novel_model.created_at,
-                updated_at=novel_model.updated_at
+                updated_at=novel_model.updated_at,
             )
 
-    async def find_by_id_with_chapters(self, tenant_id: str, novel_id: str) -> Optional[Novel]:
+    async def find_by_id_with_chapters(
+        self, tenant_id: str, novel_id: str
+    ) -> Optional[Novel]:
         """根据ID查找小说及其所有章节"""
         async with self.async_session() as session:
             tenant_uuid = uuid.UUID(tenant_id)
@@ -110,8 +123,14 @@ class PostgresNovelRepository(NovelRepository):
             if not novel_model:
                 return None
 
-            outline = Outline(**novel_model.total_outline) if novel_model.total_outline else None
-            progress = Progress(**novel_model.progress) if novel_model.progress else Progress()
+            outline = (
+                Outline(**novel_model.total_outline)
+                if novel_model.total_outline
+                else None
+            )
+            progress = (
+                Progress(**novel_model.progress) if novel_model.progress else Progress()
+            )
 
             novel = Novel(
                 id=novel_model.id,
@@ -124,14 +143,18 @@ class PostgresNovelRepository(NovelRepository):
                 progress=progress,
                 thread_id=novel_model.thread_id,
                 created_at=novel_model.created_at,
-                updated_at=novel_model.updated_at
+                updated_at=novel_model.updated_at,
             )
 
             # 加载章节
-            chapters_stmt = select(ChapterModel).where(
-                ChapterModel.tenant_id == tenant_uuid,
-                ChapterModel.novel_id == uuid.UUID(novel_id)
-            ).order_by(ChapterModel.chapter_index)
+            chapters_stmt = (
+                select(ChapterModel)
+                .where(
+                    ChapterModel.tenant_id == tenant_uuid,
+                    ChapterModel.novel_id == uuid.UUID(novel_id),
+                )
+                .order_by(ChapterModel.chapter_index)
+            )
             chapters_result = await session.execute(chapters_stmt)
             chapter_models = chapters_result.scalars().all()
 
@@ -150,7 +173,7 @@ class PostgresNovelRepository(NovelRepository):
                     revision_history=cm.revision_history or [],
                     status=cm.status,
                     created_at=cm.created_at,
-                    updated_at=cm.updated_at
+                    updated_at=cm.updated_at,
                 )
                 novel.add_chapter(chapter)
 
@@ -174,7 +197,9 @@ class PostgresNovelRepository(NovelRepository):
                     novel_type=n.novel_type,
                     title=n.title,
                     summary=n.summary,
-                    total_outline=Outline(**n.total_outline) if n.total_outline else None,
+                    total_outline=Outline(**n.total_outline)
+                    if n.total_outline
+                    else None,
                     progress=Progress(**n.progress) if n.progress else Progress(),
                     thread_id=n.thread_id,
                     created_at=n.created_at,
@@ -195,10 +220,12 @@ class PostgresNovelRepository(NovelRepository):
                 .values(
                     title=novel.title,
                     summary=novel.summary,
-                    total_outline=novel.total_outline.__dict__ if novel.total_outline else None,
+                    total_outline=novel.total_outline.__dict__
+                    if novel.total_outline
+                    else None,
                     progress=novel.progress.to_dict() if novel.progress else None,
                     status=novel.progress.status if novel.progress else "draft",
-                    updated_at=novel.updated_at
+                    updated_at=novel.updated_at,
                 )
             )
             await session.execute(stmt)
@@ -218,6 +245,7 @@ class PostgresNovelRepository(NovelRepository):
     async def delete_chapter(self, tenant_id: str, chapter_id: str) -> None:
         """删除单个章节"""
         from .models import ChapterModel
+
         async with self.async_session() as session:
             stmt = delete(ChapterModel).where(
                 ChapterModel.tenant_id == uuid.UUID(tenant_id),
@@ -231,6 +259,7 @@ class PostgresNovelRepository(NovelRepository):
     ) -> None:
         """删除指定小说和章节索引的所有旧版本章节（upsert 用）"""
         from .models import ChapterModel
+
         async with self.async_session() as session:
             stmt = (
                 delete(ChapterModel)
@@ -263,7 +292,7 @@ class PostgresNovelRepository(NovelRepository):
                 revision_history=chapter.revision_history or None,
                 status=chapter.status,
                 created_at=chapter.created_at,
-                updated_at=chapter.updated_at
+                updated_at=chapter.updated_at,
             )
             session.add(chapter_model)
             await session.commit()
@@ -277,8 +306,12 @@ class PostgresNovelRepository(NovelRepository):
         memory_content: str,
         memory_metadata: dict,
         progress: Progress,
+        *,
+        chapter_summary: str | None = None,
+        story_state: str | None = None,
+        rolling_plan: str | None = None,
     ) -> Chapter:
-        """Atomically replace a chapter, its M-layer memory and novel progress."""
+        """Atomically replace a chapter and every continuity artifact derived from it."""
         tenant_uuid = uuid.UUID(tenant_id)
         novel_uuid = uuid.UUID(novel_id)
         async with self.async_session() as session, session.begin():
@@ -289,19 +322,27 @@ class PostgresNovelRepository(NovelRepository):
                     ChapterModel.chapter_index == chapter.chapter_index,
                 )
             )
-            await session.execute(
-                text(
-                    "DELETE FROM novel_memories "
-                    "WHERE tenant_id = :tenant_id AND novel_id = :novel_id "
-                    "AND metadata @> CAST(:metadata AS jsonb)"
-                ),
-                {
-                    "novel_id": novel_uuid,
-                    "tenant_id": tenant_uuid,
-                    "metadata": '{"type":"chapter","chapter_index":%d}'
-                    % chapter.chapter_index,
-                },
-            )
+            memory_filters = [
+                {"type": "chapter", "chapter_index": chapter.chapter_index},
+                {"type": "chapter_summary", "chapter_index": chapter.chapter_index},
+            ]
+            if story_state is not None:
+                memory_filters.append({"type": "story_state"})
+            if rolling_plan is not None:
+                memory_filters.append({"type": "rolling_plan"})
+            for memory_filter in memory_filters:
+                await session.execute(
+                    text(
+                        "DELETE FROM novel_memories "
+                        "WHERE tenant_id = :tenant_id AND novel_id = :novel_id "
+                        "AND metadata @> CAST(:metadata AS jsonb)"
+                    ),
+                    {
+                        "novel_id": novel_uuid,
+                        "tenant_id": tenant_uuid,
+                        "metadata": json.dumps(memory_filter),
+                    },
+                )
             session.add(
                 ChapterModel(
                     id=chapter.id,
@@ -329,6 +370,42 @@ class PostgresNovelRepository(NovelRepository):
                     meta_data=memory_metadata,
                 )
             )
+            if chapter_summary is not None:
+                session.add(
+                    MemoryModel(
+                        tenant_id=tenant_uuid,
+                        novel_id=novel_uuid,
+                        content=chapter_summary,
+                        meta_data={
+                            "type": "chapter_summary",
+                            "chapter_index": chapter.chapter_index,
+                        },
+                    )
+                )
+            if story_state is not None:
+                session.add(
+                    MemoryModel(
+                        tenant_id=tenant_uuid,
+                        novel_id=novel_uuid,
+                        content=story_state,
+                        meta_data={
+                            "type": "story_state",
+                            "chapter_index": chapter.chapter_index,
+                        },
+                    )
+                )
+            if rolling_plan is not None:
+                session.add(
+                    MemoryModel(
+                        tenant_id=tenant_uuid,
+                        novel_id=novel_uuid,
+                        content=rolling_plan,
+                        meta_data={
+                            "type": "rolling_plan",
+                            "chapter_index": chapter.chapter_index,
+                        },
+                    )
+                )
             await session.execute(
                 update(NovelModel)
                 .where(
@@ -394,7 +471,9 @@ class PostgresNovelRepository(NovelRepository):
             if novel is not None:
                 progress_data = dict(novel.progress or {})
                 total = int(progress_data.get("total_chapters", 0) or 0)
-                current = min(int(progress_data.get("current_chapter", 0) or 0), min_index)
+                current = min(
+                    int(progress_data.get("current_chapter", 0) or 0), min_index
+                )
                 progress_data.update(
                     {
                         "current_chapter": current,
@@ -435,7 +514,7 @@ class PostgresNovelRepository(NovelRepository):
                 revision_history=cm.revision_history or [],
                 status=cm.status,
                 created_at=cm.created_at,
-                updated_at=cm.updated_at
+                updated_at=cm.updated_at,
             )
 
     async def update_chapter(self, tenant_id: str, chapter: Chapter) -> Chapter:
@@ -457,7 +536,7 @@ class PostgresNovelRepository(NovelRepository):
                     revision_count=chapter.revision_count,
                     revision_history=chapter.revision_history or None,
                     status=chapter.status,
-                    updated_at=chapter.updated_at
+                    updated_at=chapter.updated_at,
                 )
             )
             await session.execute(stmt)

@@ -11,6 +11,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from api.dependencies import get_tenant_context
+from application.errors import RetryableWorkflowError
 from application.events import WorkflowEvent
 from application.orchestrator import NovelOrchestrator
 from application.quota_service import QuotaService
@@ -62,15 +63,20 @@ async def _prepare_request(
     thread_id: str,
     orchestrator: NovelOrchestrator,
     quota: QuotaService,
-) -> tuple[dict[str, Any] | None, Any, bool]:
+) -> tuple[dict[str, Any] | None, Any, bool, bool]:
     input_data = dict(request.input or {})
     command = dict(request.command or {})
     input_data.pop("tenant_id", None)
     command.pop("tenant_id", None)
-    is_resume = request.command is not None
+    is_retry = command.pop("retry", False) is True
+    is_resume = "resume" in command
+    if is_retry and is_resume:
+        raise HTTPException(status_code=422, detail="retry 与 resume 不能同时提交")
+    if request.command is not None and not is_retry and not is_resume:
+        raise HTTPException(status_code=422, detail="工作流 command 无效")
     auto_mode = command.pop("_auto_mode", input_data.pop("_auto_mode", False))
     orchestrator.set_auto_mode(context, thread_id, bool(auto_mode))
-    if not is_resume:
+    if not is_resume and not is_retry:
         existing_run_id = await orchestrator.get_workflow_run_id(context, thread_id)
         run_id = str(input_data.get("workflow_run_id") or existing_run_id or uuid4())
         input_data["workflow_run_id"] = run_id
@@ -79,7 +85,12 @@ async def _prepare_request(
             await quota.reserve(context, run_id, "outline", -1)
         except (QuotaExceededError, AIUnavailableError) as exc:
             raise HTTPException(status_code=429, detail={"code": "quota_exceeded", "message": str(exc)}) from exc
-    return input_data if not is_resume else None, command.get("resume"), is_resume
+    return (
+        input_data if not is_resume and not is_retry else None,
+        command.get("resume"),
+        is_resume,
+        is_retry,
+    )
 
 
 def _public_error(exc: Exception) -> str:
@@ -87,6 +98,12 @@ def _public_error(exc: Exception) -> str:
 
 
 def _public_error_data(exc: Exception) -> dict[str, Any]:
+    if isinstance(exc, RetryableWorkflowError):
+        return {
+            "code": "structured_output_invalid",
+            "message": "模型返回的审读结果格式不完整，请重试当前步骤",
+            "retryable": True,
+        }
     if settings.DEBUG:
         return {"code": "workflow_failed", "message": str(exc), "retryable": False}
 
@@ -155,14 +172,16 @@ async def invoke_workflow(
     await _authorize_thread(context, thread_id, repository)
     await _acquire(orchestrator, context, thread_id)
     try:
-        input_data, resume_value, is_resume = await _prepare_request(
+        input_data, resume_value, is_resume, is_retry = await _prepare_request(
             request, context, thread_id, orchestrator, quota
         )
         current = asyncio.current_task()
         if current:
             orchestrator.register_task(context, thread_id, current)
         operation = (
-            orchestrator.resume(context, thread_id, resume_value)
+            orchestrator.retry(context, thread_id)
+            if is_retry
+            else orchestrator.resume(context, thread_id, resume_value)
             if is_resume
             else orchestrator.invoke(context, thread_id, input_data or {})
         )
@@ -215,7 +234,7 @@ async def _stream_response(
     await _authorize_thread(context, thread_id, repository)
     await _acquire(orchestrator, context, thread_id)
     try:
-        input_data, resume_value, is_resume = await _prepare_request(
+        input_data, resume_value, is_resume, is_retry = await _prepare_request(
             request, context, thread_id, orchestrator, quota
         )
     except Exception:
@@ -233,6 +252,7 @@ async def _stream_response(
                     input_data=input_data,
                     resume_value=resume_value,
                     is_resume=is_resume,
+                    is_retry=is_retry,
                 ):
                     await queue.put(event)
             except asyncio.CancelledError:

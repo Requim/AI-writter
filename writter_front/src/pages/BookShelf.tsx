@@ -1,5 +1,5 @@
-import { App, Button, Checkbox, Empty, Progress, Segmented, Skeleton } from 'antd'
-import { DeleteOutlined, EditOutlined, PlusOutlined, SelectOutlined } from '@ant-design/icons'
+import { App, Button, Empty, Progress, Segmented, Skeleton } from 'antd'
+import { CheckOutlined, DeleteOutlined, EditOutlined, PlusOutlined, SelectOutlined } from '@ant-design/icons'
 import { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { AppShell } from '@/components/AppShell'
@@ -111,12 +111,24 @@ export default function BookShelf() {
                 <article
                   className={`book-item cover-${index % 5} ${checked ? 'selected' : ''}`}
                   key={novel.id}
+                  role={organizing ? 'checkbox' : undefined}
+                  aria-checked={organizing ? checked : undefined}
+                  tabIndex={organizing ? 0 : undefined}
                   onClick={() => organizing
                     ? setSelected((ids) => checked ? ids.filter((id) => id !== novel.id) : [...ids, novel.id])
                     : navigate(`/novels/${novel.id}`)}
+                  onKeyDown={(event) => {
+                    if (!organizing || !['Enter', ' '].includes(event.key)) return
+                    event.preventDefault()
+                    setSelected((ids) => checked ? ids.filter((id) => id !== novel.id) : [...ids, novel.id])
+                  }}
                 >
                   <div className="book-cover" aria-hidden="true">
-                    {organizing && <Checkbox checked={checked} />}
+                    {organizing && (
+                      <span className={`selection-mark ${checked ? 'checked' : ''}`}>
+                        {checked && <CheckOutlined />}
+                      </span>
+                    )}
                     <span>{typeLabels[novel.novel_type] || novel.novel_type}</span>
                     <strong>{novel.title || '未命名作品'}</strong>
                     <small>墨间 · 创作稿</small>

@@ -18,6 +18,7 @@ from api.routers.workflow_router import (
 )
 from application.agents.router_agent import _route
 from application.agents.router_agent import router_agent
+from application.errors import RetryableWorkflowError
 from application.orchestrator import NovelOrchestrator
 from application.prompts.chapter_outline_prompts import CHAPTER_OUTLINE_SCHEMA
 from application.prompts.chapter_outline_prompts import build_chapter_outline_prompt
@@ -69,7 +70,31 @@ class FakeWorkflowLLM:
                 "title": "第一章 回声",
                 "chapter_goal": "建立核心悬念",
                 "core_conflict": "主角收到不可能存在的来信",
-                "scenes": [],
+                "key_events": ["收到来信", "确认寄信人已死亡"],
+                "entry_state": {"time": "清晨", "location": "出租屋"},
+                "causal_chain": ["收到来信", "核对笔迹", "决定调查"],
+                "state_changes": [
+                    {"subject": "主角", "before": "不知情", "after": "开始调查"}
+                ],
+                "knowledge_boundaries": [],
+                "continuity_constraints": ["寄信人已经死亡"],
+                "exit_state": {"location": "出租屋", "last_action": "打开信封"},
+                "logic_hooks": {"callback": "无", "setup": "信封中的照片"},
+                "rolling_plan": [
+                    {
+                        "chapter_number": 1,
+                        "goal": "建立核心悬念",
+                        "required_event": "收到来信",
+                        "state_delta": "主角决定调查",
+                        "callback_ids": [],
+                        "exit_hook": "照片出现",
+                    }
+                ],
+                "scenes": [
+                    {"events": {"result": "发现信件"}},
+                    {"events": {"result": "确认笔迹"}},
+                    {"events": {"result": "打开信封"}},
+                ],
                 "estimated_word_count": 3200,
             }
         if schema is CHUNK_REFLECTION_SCHEMA:
@@ -91,7 +116,31 @@ class FakeWorkflowLLM:
 
     async def stream_text(self, *_args, **_kwargs):
         self.stream_calls += 1
-        yield "正文" * 1600
+        yield "正文" * 600
+
+
+class FakeRoutingWorkflow:
+    async def astream(self, *_args, **_kwargs):
+        yield (
+            "custom",
+            {
+                "type": "reasoning",
+                "node": "router_agent",
+                "data": {
+                    "text": "第1章尚无细纲，先生成细纲",
+                    "next_node": "chapter_outline_node",
+                },
+            },
+        )
+        yield (
+            "updates",
+            {
+                "router_agent": {
+                    "next_tool": "chapter_outline_node",
+                    "router_reasoning": "第1章尚无细纲，先生成细纲",
+                }
+            },
+        )
 
 
 def test_registered_nodes_use_langgraph_supported_signatures():
@@ -113,7 +162,9 @@ def test_all_literal_command_targets_are_registered_nodes():
                 continue
             if not isinstance(node.func, ast.Name) or node.func.id != "Command":
                 continue
-            goto = next((item.value for item in node.keywords if item.arg == "goto"), None)
+            goto = next(
+                (item.value for item in node.keywords if item.arg == "goto"), None
+            )
             if isinstance(goto, ast.Constant) and isinstance(goto.value, str):
                 targets.append((path.name, node.lineno, goto.value))
     invalid = [item for item in targets if item[2] not in registered]
@@ -194,7 +245,7 @@ async def test_fake_llm_completes_one_chapter_through_real_graph():
     assert result["current_chapter_index"] == 1
     assert len(result["completed_chapters"]) == 1
     assert llm.chapter_outline_calls == 1
-    assert llm.stream_calls == 1
+    assert llm.stream_calls == 3
 
 
 def test_macro_outline_prompt_does_not_request_all_chapters():
@@ -308,7 +359,7 @@ async def test_failed_run_reuses_checkpoint_quota_key():
     )
     quota = SimpleNamespace(reserve=AsyncMock())
 
-    input_data, _, is_resume = await _prepare_request(
+    input_data, _, is_resume, is_retry = await _prepare_request(
         WorkflowInvokeRequest(input={}),
         context,
         str(uuid4()),
@@ -317,8 +368,54 @@ async def test_failed_run_reuses_checkpoint_quota_key():
     )
 
     assert is_resume is False
+    assert is_retry is False
     assert input_data["workflow_run_id"] == str(run_id)
     assert quota.reserve.await_args.args[1] == str(run_id)
+
+
+@pytest.mark.asyncio
+async def test_retry_request_does_not_reserve_quota():
+    context = tenant_context()
+    service = SimpleNamespace(set_auto_mode=lambda *_args: None)
+    quota = SimpleNamespace(reserve=AsyncMock())
+
+    input_data, resume_value, is_resume, is_retry = await _prepare_request(
+        WorkflowInvokeRequest(command={"retry": True, "_auto_mode": True}),
+        context,
+        str(uuid4()),
+        service,
+        quota,
+    )
+
+    assert input_data is None
+    assert resume_value is None
+    assert is_resume is False
+    assert is_retry is True
+    quota.reserve.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_retry_checkpoint_routes_existing_draft_to_reflection():
+    service = orchestrator()
+    workflow = SimpleNamespace(
+        aget_state=AsyncMock(return_value=SimpleNamespace(
+            values={
+                "total_outline": {"total_chapters": 10},
+                "current_chapter_index": 1,
+                "current_chapter_content": "第二章草稿",
+            },
+            next=("persist_node",),
+        )),
+        aupdate_state=AsyncMock(),
+    )
+    service._workflow = workflow
+    context = tenant_context()
+
+    next_node = await service.prepare_retry_checkpoint(context, str(uuid4()))
+
+    assert next_node == "reflection_node"
+    assert workflow.aupdate_state.await_args.args[1]["next_tool"] == "reflection_node"
+    assert workflow.aupdate_state.await_args.kwargs["as_node"] == "router_agent"
 
 
 @pytest.mark.asyncio
@@ -360,6 +457,34 @@ async def test_cancel_does_not_release_lock_during_registration_grace():
     service.finish(context, thread_id)
 
 
+@pytest.mark.asyncio
+async def test_router_completion_keeps_next_business_node_active():
+    service = orchestrator()
+    service._workflow = FakeRoutingWorkflow()
+    service._llm_instance = SimpleNamespace()
+    context = tenant_context()
+    thread_id = str(uuid4())
+
+    events = [
+        event
+        async for event in service.stream_events(
+            context,
+            thread_id,
+            input_data={"novel_id": thread_id},
+        )
+    ]
+
+    router_status = next(
+        event
+        for event in events
+        if event.type == "status" and event.node == "router_agent"
+    )
+    assert router_status.data["next_node"] == "chapter_outline_node"
+    snapshot = service._execution_snapshots[service.execution_key(context, thread_id)]
+    assert snapshot["active_node"] == "chapter_outline_node"
+    assert snapshot["message"] == "本轮工作流已结束"
+
+
 def test_provider_524_is_safe_and_retryable():
     error = RuntimeError("private upstream details")
     error.status_code = 524
@@ -370,5 +495,18 @@ def test_provider_524_is_safe_and_retryable():
         "message": "模型服务生成超时，请重试当前步骤",
         "retryable": True,
         "retry_after": 120,
+    }
+    assert "private" not in payload["message"]
+
+
+def test_invalid_structured_output_is_safe_and_retryable():
+    payload = _public_error_data(
+        RetryableWorkflowError("private malformed reflection payload")
+    )
+
+    assert payload == {
+        "code": "structured_output_invalid",
+        "message": "模型返回的审读结果格式不完整，请重试当前步骤",
+        "retryable": True,
     }
     assert "private" not in payload["message"]

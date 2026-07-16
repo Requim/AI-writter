@@ -7,6 +7,10 @@
 4. 场景队列生成：逐个场景生成（用于 node 侧调度）
 """
 
+import json
+
+from application.continuity import build_budgeted_context, compact_text
+
 
 def _fmt_events(events) -> str:
     """兼容 events: array（旧）或 dict（新"""
@@ -56,12 +60,12 @@ def _fmt_dialogue(dialogue) -> str:
 
 def _build_scene_block(scene_num: int, scene: dict) -> str:
     """构建单个场景的描述块"""
-    loc = scene.get('location', '未指定')
-    chars = '、'.join(scene.get('characters', [])) or '未指定'
-    events = _fmt_events(scene.get('events'))
-    sensory = _fmt_sensory(scene.get('sensory_details'))
-    dialogue = _fmt_dialogue(scene.get('dialogue_targets'))
-    purpose = scene.get('purpose', '未指定')
+    loc = scene.get("location", "未指定")
+    chars = "、".join(scene.get("characters", [])) or "未指定"
+    events = _fmt_events(scene.get("events"))
+    sensory = _fmt_sensory(scene.get("sensory_details"))
+    dialogue = _fmt_dialogue(scene.get("dialogue_targets"))
+    purpose = scene.get("purpose", "未指定")
     return (
         f"  【场景{scene_num}】{loc}\n"
         f"    人物与状态：{chars}\n"
@@ -70,6 +74,20 @@ def _build_scene_block(scene_num: int, scene: dict) -> str:
         f"    对话设计：\n{dialogue}\n"
         f"    场景必要性：{purpose}"
     )
+
+
+def _build_contract_block(chapter_outline: dict) -> str:
+    """Format the continuity-critical subset of the chapter contract."""
+    contract = {
+        "chapter_goal": chapter_outline.get("chapter_goal", ""),
+        "entry_state": chapter_outline.get("entry_state", {}),
+        "causal_chain": chapter_outline.get("causal_chain", []),
+        "state_changes": chapter_outline.get("state_changes", []),
+        "knowledge_boundaries": chapter_outline.get("knowledge_boundaries", []),
+        "continuity_constraints": chapter_outline.get("continuity_constraints", []),
+        "exit_state": chapter_outline.get("exit_state", {}),
+    }
+    return json.dumps(contract, ensure_ascii=False, indent=2)
 
 
 # ─────────────────────────────────────────────
@@ -146,6 +164,7 @@ _SYSTEM_PROMPT_EXTRA = (
 #  场景队列生成：逐个场景生成
 # ─────────────────────────────────────────────
 
+
 def build_first_scene_prompt(
     scene: dict,
     chapter_outline: dict,
@@ -159,15 +178,19 @@ def build_first_scene_prompt(
     logic_hooks: dict,
     internal_monologue: str,
     prev_chapter_tail: str = "",
+    story_bible: str = "",
 ) -> str:
     """生成章节第一个场景的提示词——全量上下文"""
     scene_block = _build_scene_block(1, scene)
-    # memory_context 格式: <S层故事状态> + <M层近期章节> + <L层历史章节摘录>
-    # S层在最前，[:2000] 确保 S层 和部分 M层 被保留
-    ctx = memory_context[:2000] if memory_context else "无"
-    callback_str = logic_hooks.get('callback', '无')
-    setup_str = logic_hooks.get('setup', '无')
-    prev_tail_block = f"\n【上一章结尾（衔接参考）】\n{prev_chapter_tail}" if prev_chapter_tail else ""
+    ctx = build_budgeted_context(memory_context, max_chars=3800)
+    contract = _build_contract_block(chapter_outline)
+    callback_str = logic_hooks.get("callback", "无")
+    setup_str = logic_hooks.get("setup", "无")
+    prev_tail_block = (
+        f"\n【上一章结尾（衔接参考）】\n{prev_chapter_tail}"
+        if prev_chapter_tail
+        else ""
+    )
 
     return f"""请根据以下细纲，撰写第{chapter_num}章的第一个场景（共{total_scenes}个场景）。
 
@@ -181,8 +204,14 @@ def build_first_scene_prompt(
 【本场景细纲】
 {scene_block}
 
+【静态故事圣经（不可违背）】
+{compact_text(story_bible, 2600) if story_bible else "无"}
+
+【本章状态契约】
+{contract}
+
 【本章主角心理轨迹】
-{internal_monologue or '无特殊要求'}
+{internal_monologue or "无特殊要求"}
 
 【本章伏笔与悬念】
 - 需回收的伏笔（Callback——须在本章前10%体现）：{callback_str}
@@ -215,21 +244,21 @@ def build_next_scene_prompt(
     ch_title: str,
     scene_index: int,
     total_scenes: int,
-    prev_scene_digest: str,    # 上一场景的 events.result + 结尾氛围
+    prev_scene_digest: str,  # 上一场景的 events.result + 结尾氛围
     prev_word_count: int,
-    correction_note: str,      # 动态校准提示（字数补偿或精炼要求）
+    correction_note: str,  # 动态校准提示（字数补偿或精炼要求）
     target_words: int,
     logic_hooks: dict,
     internal_monologue: str,
     memory_context: str,
+    story_bible: str = "",
 ) -> str:
     """生成后续场景的提示词（带前文摘要和动态校准）"""
     scene_block = _build_scene_block(scene_index, scene)
-    # memory_context 格式: <S层故事状态> + <M层近期章节> + <L层历史章节摘录>
-    # S层在最前，[:2000] 确保 S层 和部分 M层 被保留
-    ctx = memory_context[:2000] if memory_context else "无"
-    callback_str = logic_hooks.get('callback', '无')
-    setup_str = logic_hooks.get('setup', '无')
+    ctx = build_budgeted_context(memory_context, max_chars=3200)
+    contract = _build_contract_block(chapter_outline)
+    callback_str = logic_hooks.get("callback", "无")
+    setup_str = logic_hooks.get("setup", "无")
     correction = f"\n【动态校准】{correction_note}" if correction_note else ""
 
     return f"""请接续上文，撰写第{chapter_num}章的下一个场景（场景{scene_index}/{total_scenes}）。
@@ -244,11 +273,17 @@ def build_next_scene_prompt(
 ↑ 上一场景核心脉要（Events.Result + 落点氛围）↓
 {prev_scene_digest}
 
+【静态故事圣经（不可违背）】
+{compact_text(story_bible, 2200) if story_bible else "无"}
+
+【本章状态契约与剩余义务】
+{contract}
+
 【本场景细纲】
 {scene_block}
 
 【本章主角心理轨迹】
-{internal_monologue or '无特殊要求'}
+{internal_monologue or "无特殊要求"}
 
 【本章伏笔与悬念】
 - 需回收的伏笔（Callback）：{callback_str}
@@ -272,6 +307,7 @@ def build_next_scene_prompt(
 # ─────────────────────────────────────────────
 #  场景续写（当单场景字数不足时）
 # ─────────────────────────────────────────────
+
 
 def build_scene_continue_prompt(
     word_count: int,
@@ -298,23 +334,25 @@ def build_scene_continue_prompt(
 #  保守模式（单次生成整章，用于降级)
 # ─────────────────────────────────────────────
 
+
 def build_chapter_writer_prompt(
     chapter_outline: dict,
     novel_type: str,
     title: str,
     memory_context: str,
     prev_chapter_tail: str = "",
+    story_bible: str = "",
 ) -> str:
     """生成章节内容的提示词——保守模式：单次生成整章
 
     当场景数 < 3 或场景数据异常时降级使用此模式。
     同样包含全部新约束。
     """
-    ch_num = chapter_outline.get('chapter_number', '?')
-    ch_title = chapter_outline.get('title', '')
-    word_dist = chapter_outline.get('word_count_distribution', '')
-    internal_monologue = chapter_outline.get('internal_monologue', '')
-    logic_hooks = chapter_outline.get('logic_hooks', {})
+    ch_num = chapter_outline.get("chapter_number", "?")
+    ch_title = chapter_outline.get("title", "")
+    word_dist = chapter_outline.get("word_count_distribution", "")
+    internal_monologue = chapter_outline.get("internal_monologue", "")
+    logic_hooks = chapter_outline.get("logic_hooks", {})
 
     # 构建场景列表（兼容新旧格式）
     scenes = chapter_outline.get("scenes", [])
@@ -323,10 +361,13 @@ def build_chapter_writer_prompt(
         scene_blocks.append(_build_scene_block(i + 1, s))
     scenes_text = "\n\n".join(scene_blocks)
 
-    # memory_context 格式: <S层故事状态> + <M层近期章节> + <L层历史章节摘录>
-    # S层在最前，[:2000] 确保 S层 和部分 M层 被保留
-    ctx = memory_context[:2000] if memory_context else "无"
-    prev_tail_block = f"\n【上一章结尾（衔接参考）】\n{prev_chapter_tail}" if prev_chapter_tail else ""
+    ctx = build_budgeted_context(memory_context, max_chars=3800)
+    contract = _build_contract_block(chapter_outline)
+    prev_tail_block = (
+        f"\n【上一章结尾（衔接参考）】\n{prev_chapter_tail}"
+        if prev_chapter_tail
+        else ""
+    )
 
     return f"""请根据以下深度细纲，撰写第{ch_num}章正文内容。
 
@@ -334,18 +375,24 @@ def build_chapter_writer_prompt(
 小说类型：{novel_type}
 书名：{title}
 章节标题：{ch_title}
-    字数分配参考：{word_dist or '3000-7000字'}
+    字数分配参考：{word_dist or "3000-7000字"}
     目标字数：不少于3000字，尽量不超过7000字，禁止注水。
 
 【细纲数据】
 {scenes_text}
 
+【静态故事圣经（不可违背）】
+{compact_text(story_bible, 2600) if story_bible else "无"}
+
+【本章状态契约】
+{contract}
+
 【主角心理轨迹】
-{internal_monologue or '无特殊要求'}
+{internal_monologue or "无特殊要求"}
 
 【伏笔与悬念】
-- 本章需回收的伏笔（Callback——须在前10%体现）：{logic_hooks.get('callback', '无')}
-- 为后文埋下的新矛盾（Setup——须在后10%聚焦）：{logic_hooks.get('setup', '无')}
+- 本章需回收的伏笔（Callback——须在前10%体现）：{logic_hooks.get("callback", "无")}
+- 为后文埋下的新矛盾（Setup——须在后10%聚焦）：{logic_hooks.get("setup", "无")}
 
 【前文衔接】
 （前文记忆分层：<S层故事状态> | <M层近期章节> | <L层历史章节摘录>）

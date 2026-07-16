@@ -54,11 +54,27 @@ function formatTime(value?: string): string {
   }).format(date)
 }
 
+function chapterNumberFromState(state: WorkflowViewState): number | undefined {
+  const interruptChapter = state.interrupt?.chapter_number
+  if (typeof interruptChapter === 'number') return interruptChapter
+  const match = state.reasoning?.match(/第\s*(\d+)\s*章/)
+  return match ? Number(match[1]) : undefined
+}
+
+function primaryResumeLabel(action?: string): string {
+  if (action === 'review_or_provide_chapter_outline') return '使用细纲，生成正文'
+  if (action === 'review_reflection_issues') return '接受本章'
+  if (action === 'ready_for_next_chapter') return '生成下一章'
+  if (action === 'confirm_revision') return '接受修订'
+  return '接受并继续'
+}
+
 interface WorkflowPanelProps {
   className?: string
   state: WorkflowViewState
   autoMode: boolean
   onResume: (value: unknown) => void
+  onRetry: () => void
   onCancel: () => void
   onRefresh: () => void
 }
@@ -68,13 +84,42 @@ export function WorkflowPanel({
   state,
   autoMode,
   onResume,
+  onRetry,
   onCancel,
   onRefresh,
 }: WorkflowPanelProps) {
   const [instruction, setInstruction] = useState('')
   const interrupt = state.interrupt
-  const stageLabel = nodeLabels[state.activeNode ?? ''] ?? '等待工作流响应'
-  const stageDescription = nodeDescriptions[state.activeNode ?? ''] ?? state.reasoning ?? '尚未开始本轮创作。'
+  const chapterNumber = chapterNumberFromState(state)
+  const chapterPrefix = chapterNumber ? `第 ${chapterNumber} 章` : '本章'
+  const stageLabel = state.activeNode === 'chapter_outline_node'
+    ? state.status === 'paused'
+      ? `${chapterPrefix}细纲待审阅`
+      : `正在生成${chapterPrefix}细纲`
+    : nodeLabels[state.activeNode ?? ''] ?? '等待工作流响应'
+  const stageDescription = state.status === 'paused' && interrupt
+    ? interrupt.message || '当前结果已生成，请审阅后继续。'
+    : nodeDescriptions[state.activeNode ?? ''] ?? '尚未开始本轮创作。'
+  const completedTimeline = state.events
+    .filter((event) => event.type === 'status' && event.data.status === 'completed' && event.node && event.node !== 'router_agent')
+    .map((event) => event.node as string)
+    .filter((node, index, nodes) => index === 0 || node !== nodes[index - 1])
+    .slice(-7)
+  const activeTimelineNode = state.activeNode && state.activeNode !== 'router_agent'
+    && ['running', 'paused', 'stalled', 'cancelling'].includes(state.status)
+    ? state.activeNode
+    : undefined
+  const timelineNodes = activeTimelineNode && completedTimeline.at(-1) !== activeTimelineNode
+    ? [...completedTimeline, activeTimelineNode]
+    : completedTimeline
+  const aiOutline = interrupt?.ai_generated_outline
+  const outlineTitle = typeof aiOutline?.title === 'string' ? aiOutline.title : undefined
+  const outlineGoal = typeof aiOutline?.chapter_goal === 'string' ? aiOutline.chapter_goal : undefined
+  const outlineEvents = Array.isArray(aiOutline?.key_events)
+    ? aiOutline.key_events.filter((item): item is string => typeof item === 'string').slice(0, 4)
+    : []
+  const canRegenerate = interrupt?.action !== 'ready_for_next_chapter'
+  const canProvideInstruction = !['ready_for_next_chapter', 'require_novel_type'].includes(interrupt?.action ?? '')
   const statusMeta = {
     running: { label: '执行中', color: 'processing' as const, icon: <LoadingOutlined /> },
     paused: { label: '待确认', color: 'warning' as const, icon: <PauseCircleOutlined /> },
@@ -108,7 +153,7 @@ export function WorkflowPanel({
             <strong>{stageLabel}</strong>
           </div>
         </div>
-        <p>{state.reasoning || stageDescription}</p>
+        <p>{stageDescription}</p>
         {(state.startedAt || state.lastActivityAt) && (
           <dl className="execution-times">
             <div><dt><ClockCircleOutlined /> 开始</dt><dd>{formatTime(state.startedAt)}</dd></div>
@@ -142,21 +187,26 @@ export function WorkflowPanel({
         )}
       </section>
 
-      <div className="reasoning-block">
-        <span>流程判断</span>
-        <p>{state.reasoning || '等待工作流给出下一步判断。'}</p>
-      </div>
+      {state.status === 'running' && state.reasoning && state.reasoning !== stageDescription && (
+        <div className="reasoning-block">
+          <span>流程判断</span>
+          <p>{state.reasoning}</p>
+        </div>
+      )}
 
       <ol className="event-list">
-        {state.events.filter((event) => event.type === 'status').slice(-8).map((event) => (
-          <li key={`${event.id}-${event.node}`}>
-            {state.activeNode === event.node && state.status === 'running'
-              ? <LoadingOutlined />
+        {timelineNodes.map((node, index) => {
+          const isActive = node === activeTimelineNode && index === timelineNodes.length - 1
+          return (
+          <li key={`${node}-${index}`} data-active={isActive || undefined}>
+            {isActive
+              ? state.status === 'paused' ? <PauseCircleOutlined /> : <LoadingOutlined />
               : <CheckCircleOutlined />}
-            <span>{nodeLabels[event.node ?? ''] ?? event.node ?? '工作流'}</span>
+            <span>{node === 'chapter_outline_node' && isActive ? stageLabel : nodeLabels[node] ?? node}</span>
           </li>
-        ))}
-        {state.events.length === 0 && <li className="muted">尚未开始执行</li>}
+          )
+        })}
+        {timelineNodes.length === 0 && <li className="muted">尚未开始执行</li>}
       </ol>
 
       {typeof state.qualityScore === 'number' && (
@@ -173,25 +223,39 @@ export function WorkflowPanel({
         <section className="interrupt-block">
           <div className="interrupt-title"><PauseCircleOutlined /> 需要你的决定</div>
           <p>{interrupt.message || '请审阅当前结果后继续。'}</p>
+          {aiOutline && (
+            <div className="outline-review">
+              <span>{chapterPrefix}细纲</span>
+              {outlineTitle && <strong>{outlineTitle}</strong>}
+              {outlineGoal && <p>{outlineGoal}</p>}
+              {outlineEvents.length > 0 && (
+                <ol>{outlineEvents.map((item, index) => <li key={`${index}-${item}`}>{item}</li>)}</ol>
+              )}
+            </div>
+          )}
           <div className="interrupt-actions">
-            <Button type="primary" onClick={() => onResume('accept')}>接受并继续</Button>
-            <Button onClick={() => onResume('regenerate')}>重新生成</Button>
+            <Button type="primary" onClick={() => onResume('accept')}>{primaryResumeLabel(interrupt.action)}</Button>
+            {canRegenerate && <Button onClick={() => onResume('regenerate')}>重新生成</Button>}
           </div>
-          <Input.TextArea
-            value={instruction}
-            onChange={(event) => setInstruction(event.target.value)}
-            placeholder="输入具体修改要求"
-            autoSize={{ minRows: 2, maxRows: 5 }}
-          />
-          <Button
-            disabled={!instruction.trim()}
-            onClick={() => {
-              onResume(instruction.trim())
-              setInstruction('')
-            }}
-          >
-            按要求修订
-          </Button>
+          {canProvideInstruction && (
+            <>
+              <Input.TextArea
+                value={instruction}
+                onChange={(event) => setInstruction(event.target.value)}
+                placeholder="输入具体修改要求"
+                autoSize={{ minRows: 2, maxRows: 5 }}
+              />
+              <Button
+                disabled={!instruction.trim()}
+                onClick={() => {
+                  onResume(instruction.trim())
+                  setInstruction('')
+                }}
+              >
+                按要求修订
+              </Button>
+            </>
+          )}
         </section>
       )}
 
@@ -199,6 +263,9 @@ export function WorkflowPanel({
         <div className="error-note">
           {state.error}
           {state.retryable && <small>当前 checkpoint 已保留，可直接重试当前步骤。</small>}
+          {state.retryable && (
+            <Button size="small" icon={<ReloadOutlined />} onClick={onRetry}>重试当前步骤</Button>
+          )}
         </div>
       )}
     </aside>

@@ -13,6 +13,8 @@ from psycopg_pool import AsyncConnectionPool
 
 from application.events import WorkflowEvent
 from application.quota_service import QuotaService
+from application.errors import RetryableWorkflowError
+from application.agents.router_agent import _route
 from application.workflow_builder import create_novel_workflow
 from config import settings
 from infrastructure.database.repository import PostgresNovelRepository
@@ -268,6 +270,46 @@ class NovelOrchestrator(AgentOrchestrator):
             self._make_config(context, thread_id),
         )
 
+    async def prepare_retry_checkpoint(
+        self, context: TenantContext, thread_id: str
+    ) -> str:
+        """Route a failed draft from trusted checkpoint state without replaying setup."""
+        await self._ensure_workflow()
+        config = self._make_config(context, thread_id, include_llm=False)
+        state = await self._workflow.aget_state(config)
+        values = getattr(state, "values", {}) or {}
+        next_nodes = tuple(getattr(state, "next", ()) or ())
+
+        if values.get("current_chapter_content"):
+            next_node, reasoning = _route(values)
+            await self._workflow.aupdate_state(
+                config,
+                {"next_tool": next_node, "router_reasoning": reasoning},
+                as_node="router_agent",
+            )
+        elif next_nodes:
+            next_node = str(next_nodes[0])
+            reasoning = f"从 checkpoint 重试 {next_node}"
+        else:
+            raise RetryableWorkflowError("当前没有可重试的工作流 checkpoint")
+
+        self.record_activity(
+            context,
+            thread_id,
+            active_node=next_node,
+            message=reasoning,
+        )
+        return next_node
+
+    async def retry(
+        self, context: TenantContext, thread_id: str
+    ) -> dict[str, Any]:
+        await self.prepare_retry_checkpoint(context, thread_id)
+        return await self._workflow.ainvoke(
+            None,
+            self._make_config(context, thread_id),
+        )
+
     @staticmethod
     def _interrupt_values(value: Any) -> list[Any]:
         if not value:
@@ -282,15 +324,26 @@ class NovelOrchestrator(AgentOrchestrator):
         input_data: dict[str, Any] | None = None,
         resume_value: Any = None,
         is_resume: bool = False,
+        is_retry: bool = False,
     ) -> AsyncIterator[WorkflowEvent]:
         await self._ensure_workflow()
+        if is_retry:
+            await self.prepare_retry_checkpoint(context, thread_id)
         self.record_activity(
             context,
             thread_id,
-            message="正在恢复创作现场" if is_resume else "正在启动创作流程",
+            message=(
+                "正在重试失败步骤"
+                if is_retry
+                else "正在恢复创作现场"
+                if is_resume
+                else "正在启动创作流程"
+            ),
         )
         payload: Any = (
-            Command(resume=resume_value)
+            None
+            if is_retry
+            else Command(resume=resume_value)
             if is_resume
             else (input_data or {"novel_id": thread_id})
         )
@@ -345,19 +398,36 @@ class NovelOrchestrator(AgentOrchestrator):
             for node, update in chunk.items():
                 if node.startswith("__"):
                     continue
+                next_node = None
+                activity_message = f"{node} 已完成"
+                if isinstance(update, dict):
+                    configured_next = update.get("next_tool")
+                    if isinstance(configured_next, str) and configured_next:
+                        next_node = configured_next
+                    router_reasoning = update.get("router_reasoning")
+                    if isinstance(router_reasoning, str) and router_reasoning:
+                        activity_message = router_reasoning
                 self.record_activity(
                     context,
                     thread_id,
-                    active_node=node,
-                    message=f"{node} 已完成",
+                    active_node=next_node,
+                    message=activity_message,
                 )
+                if not next_node:
+                    key = self.execution_key(context, thread_id)
+                    snapshot = self._execution_snapshots.get(key, {})
+                    if snapshot.get("active_node") == node:
+                        snapshot["active_node"] = None
                 sequence += 1
                 yield WorkflowEvent(
                     id=sequence,
                     type="status",
                     thread_id=thread_id,
                     node=node,
-                    data={"status": "completed"},
+                    data={
+                        "status": "completed",
+                        **({"next_node": next_node} if next_node else {}),
+                    },
                 )
                 if isinstance(update, dict) and "router_reasoning" in update:
                     sequence += 1
@@ -413,6 +483,9 @@ class NovelOrchestrator(AgentOrchestrator):
         safe_values = {
             key: value for key, value in values.items() if key not in LARGE_STATE_FIELDS
         }
+        safe_values["has_current_chapter_content"] = bool(
+            values.get("current_chapter_content")
+        )
         interrupts = []
         for task in getattr(state, "tasks", []) or []:
             interrupts.extend(

@@ -4,6 +4,9 @@ logger = logging.getLogger("uvicorn")
 import json
 import re
 from typing import Any, AsyncIterator, Dict, List, Optional
+
+from json_repair import repair_json
+
 from service.ports.llm_service import LLMService
 
 
@@ -33,16 +36,35 @@ def _repair_json(raw: str) -> str:
 
 
 def safe_json_parse(content: str) -> Dict[str, Any]:
-    """安全解析 JSON，失败则返回空字典"""
+    """Parse structured output, repairing common model truncation when possible."""
     if not content:
         return {}
     try:
-        return json.loads(content)
-    except json.JSONDecodeError:
+        parsed = json.loads(content)
+        return parsed if isinstance(parsed, dict) else {}
+    except json.JSONDecodeError as initial_error:
         try:
-            return json.loads(_repair_json(content))
-        except json.JSONDecodeError:
-            logger.info(f"【JSON解析】修复后仍失败，返回空字典。内容前200字符: {content[:200]}")
+            repaired = repair_json(content, return_objects=True)
+            if isinstance(repaired, dict):
+                logger.info(
+                    "【JSON解析】已修复模型输出 | 原始长度=%s, 初始错误=%s",
+                    len(content),
+                    initial_error.msg,
+                )
+                return repaired
+        except (ValueError, TypeError, json.JSONDecodeError):
+            pass
+
+        # Keep the small local repair as a final fallback for fenced responses.
+        try:
+            parsed = json.loads(_repair_json(content))
+            return parsed if isinstance(parsed, dict) else {}
+        except json.JSONDecodeError as repair_error:
+            logger.warning(
+                "【JSON解析】修复失败 | 原始长度=%s, 错误位置=%s",
+                len(content),
+                repair_error.pos,
+            )
             return {}
 
 

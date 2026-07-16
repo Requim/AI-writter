@@ -2,12 +2,16 @@
 
 import json
 
+from application.continuity import build_budgeted_context, compact_text
+
 
 CHUNK_SIZE = 2000
 CHUNK_OVERLAP = 200
 
 
-def split_into_chunks(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> list[dict]:
+def split_into_chunks(
+    text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP
+) -> list[dict]:
     """将文本按固定大小分块，带重叠区域
 
     Returns:
@@ -21,7 +25,9 @@ def split_into_chunks(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CH
     while pos < len(text):
         end = min(pos + chunk_size, len(text))
         chunk_text = text[pos:end]
-        chunks.append({"start": pos, "end": end, "text": chunk_text, "chunk_index": idx})
+        chunks.append(
+            {"start": pos, "end": end, "text": chunk_text, "chunk_index": idx}
+        )
         idx += 1
         pos += chunk_size - overlap
         if pos >= len(text):
@@ -38,6 +44,7 @@ def build_chunk_reflection_prompt(
     chapter_outline: dict,
     main_characters: list,
     memory_context: str,
+    story_bible: str = "",
 ) -> str:
     """分块检查提示词 — 只检查该块内的局部问题"""
     return f"""
@@ -71,7 +78,10 @@ def build_chunk_reflection_prompt(
 {json.dumps(main_characters, ensure_ascii=False)}
 
 前文上下文：
-{memory_context[:600] if memory_context else '无'}
+{build_budgeted_context(memory_context, max_chars=1800)}
+
+静态故事圣经：
+{compact_text(story_bible, 1400) if story_bible else "无"}
 
 输出JSON格式：
 {{{{
@@ -93,21 +103,23 @@ def build_chunk_reflection_prompt(
 
 def build_aggregation_prompt(
     chunk_results: list[dict],
+    chapter_content: str,
     chapter_outline: dict,
     main_characters: list,
     memory_context: str,
     content_length: int,
+    story_bible: str = "",
 ) -> str:
     """聚合 prompt — 综合所有分块的局部检查结果 + 做全局检查（逻辑链、伏笔、总体评分）"""
     chunks_summary = ""
     for i, cr in enumerate(chunk_results):
         issues = cr.get("issues", [])
         if issues:
-            chunks_summary += f"第{i+1}块（{cr.get('start',0)}-{cr.get('end',0)}字符）发现 {len(issues)} 个问题：\n"
+            chunks_summary += f"第{i + 1}块（{cr.get('start', 0)}-{cr.get('end', 0)}字符）发现 {len(issues)} 个问题：\n"
             for iss in issues:
-                chunks_summary += f"  - [{iss.get('type','?')}]({iss.get('severity','?')}) {iss.get('description','')}\n"
+                chunks_summary += f"  - [{iss.get('type', '?')}]({iss.get('severity', '?')}) {iss.get('description', '')}\n"
         else:
-            chunks_summary += f"第{i+1}块：无问题\n"
+            chunks_summary += f"第{i + 1}块：无问题\n"
 
     return f"""
 你现在是一名资深文学编辑，负责对整章内容进行最终审核。
@@ -124,6 +136,9 @@ def build_aggregation_prompt(
 5. 综合质量评分 0-1：综合考虑全文质量（不只看局部）。
 
 【输入数据】
+完整章节正文（全局审核必须逐段核对，不得只依赖分块结论）：
+{compact_text(chapter_content, 9000, tail_ratio=0.45)}
+
 章节细纲：
 {json.dumps(chapter_outline, ensure_ascii=False)}
 
@@ -131,7 +146,10 @@ def build_aggregation_prompt(
 {json.dumps(main_characters, ensure_ascii=False)}
 
 前文上下文：
-{memory_context[:800] if memory_context else '无'}
+{build_budgeted_context(memory_context, max_chars=2600)}
+
+静态故事圣经：
+{compact_text(story_bible, 2200) if story_bible else "无"}
 
 输出JSON格式：
 {{{{
@@ -155,6 +173,7 @@ def build_reflection_prompt(
     main_characters: list,
     memory_context: str,
     content_length: int,
+    story_bible: str = "",
 ) -> str:
     """反思检查的提示词（地摊式逻辑审核）"""
     return f"""
@@ -212,8 +231,8 @@ def build_reflection_prompt(
 - suggested_fix_text：针对 must_fix 问题，请提供具体的修改示例或模板，供修正节点直接使用
 
 【输入数据】
-章节内容（前2500字摘要）：
-{chapter_content[:2500]}...
+章节完整内容：
+{compact_text(chapter_content, 9000, tail_ratio=0.45)}
 
 章节细纲：
 {json.dumps(chapter_outline, ensure_ascii=False)}
@@ -222,7 +241,10 @@ def build_reflection_prompt(
 {json.dumps(main_characters, ensure_ascii=False)}
 
 前文上下文（<S层故事状态> | <M层近期章节> | <L层历史章节摘录>）：
-{memory_context[:800] if memory_context else '无'}
+{build_budgeted_context(memory_context, max_chars=2600)}
+
+静态故事圣经：
+{compact_text(story_bible, 2200) if story_bible else "无"}
 
 输出JSON格式：
 {{
@@ -286,17 +308,7 @@ REFLECTION_SCHEMA = {
         "effective_density": "number",
         "is_valid_word_count": "boolean",
     },
-    "issues": {
-        "type": "string",
-        "severity": "string",
-        "priority_action": "string",
-        "issue_resolved": "boolean",
-        "suggested_fix_text": "string",
-        "location": "string",
-        "description": "string",
-        "evidence": "string",
-        "suggestion": "string",
-    },
+    "issues": "array",
     "logic_chain_status": "string",
     "foreshadowing_check": "string",
 }

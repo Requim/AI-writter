@@ -15,6 +15,7 @@ import {
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import { AppShell } from '@/components/AppShell'
+import { MarkdownManuscript } from '@/components/MarkdownManuscript'
 import { WorkflowPanel } from '@/components/WorkflowPanel'
 import { novelApi, workflowApi } from '@/api/novel'
 import { useWorkflowStream } from '@/hooks/useWorkflowStream'
@@ -50,6 +51,7 @@ export default function NovelStudio() {
   const [selectedChapter, setSelectedChapter] = useState<ChapterDetail>()
   const [editorTitle, setEditorTitle] = useState('')
   const [editorContent, setEditorContent] = useState('')
+  const [editorMode, setEditorMode] = useState<'read' | 'edit'>('read')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [mobilePanel, setMobilePanel] = useState<'chapters' | 'editor' | 'workflow'>('editor')
@@ -58,7 +60,7 @@ export default function NovelStudio() {
   const selectedChapterRef = useRef<ChapterDetail | undefined>(undefined)
   const threadId = novel?.thread_id || novelId
   const workflow = useWorkflowStream(threadId)
-  const { state: workflowState, run, resume, cancel, sync, hydrateSnapshot } = workflow
+  const { state: workflowState, run, retry, resume, cancel, sync, hydrateSnapshot } = workflow
 
   const refresh = useCallback(async () => {
     if (!novelId) return
@@ -75,6 +77,7 @@ export default function NovelStudio() {
         setSelectedChapter(latest)
         setEditorTitle(latest.title)
         setEditorContent(latest.content)
+        setEditorMode('read')
       }
       const snapshot = await workflowApi.state(novelData.thread_id || novelId)
       hydrateSnapshot(snapshot)
@@ -119,6 +122,7 @@ export default function NovelStudio() {
     setSelectedChapter(detail)
     setEditorTitle(detail.title)
     setEditorContent(detail.content)
+    setEditorMode('read')
     setMobilePanel('editor')
   }
 
@@ -132,6 +136,7 @@ export default function NovelStudio() {
       })
       selectedChapterRef.current = updated
       setSelectedChapter(updated)
+      setEditorMode('read')
       message.success('章节已保存')
       await refresh()
     } finally {
@@ -155,9 +160,12 @@ export default function NovelStudio() {
     })
   }
 
-  const startWriting = () => run({
-    input: { novel_id: novelId, novel_type: novel?.novel_type || 'suspense', _auto_mode: autoMode },
-  })
+  const hasRecoverableDraft = Boolean(workflowState.draft || workflowState.hasCheckpointDraft)
+  const startWriting = () => workflowState.status === 'error' || hasRecoverableDraft
+    ? retry(autoMode)
+    : run({
+      input: { novel_id: novelId, novel_type: novel?.novel_type || 'suspense', _auto_mode: autoMode },
+    })
 
   const stopWriting = async () => {
     await cancel()
@@ -170,6 +178,7 @@ export default function NovelStudio() {
   const displayedContent = workflowState.draft || editorContent
   const isLiveDraft = Boolean(workflowState.draft)
   const isBusy = ['running', 'stalled', 'cancelling'].includes(workflowState.status)
+  const isEditing = !isLiveDraft && editorMode === 'edit'
 
   return (
     <AppShell>
@@ -192,6 +201,8 @@ export default function NovelStudio() {
               <Button icon={<PauseCircleOutlined />} onClick={() => setMobilePanel('workflow')}>等待确认</Button>
             ) : workflowState.status === 'error' && workflowState.retryable ? (
               <Button type="primary" icon={<ReloadOutlined />} onClick={() => void startWriting()}>重试当前步骤</Button>
+            ) : hasRecoverableDraft ? (
+              <Button type="primary" icon={<ReloadOutlined />} onClick={() => void startWriting()}>恢复质量审读</Button>
             ) : (
               <Button type="primary" icon={<PlayCircleOutlined />} onClick={() => void startWriting()}>继续创作</Button>
             )}
@@ -240,25 +251,37 @@ export default function NovelStudio() {
                 <span className="eyebrow">{isLiveDraft ? 'Live Draft' : 'Chapter Editor'}</span>
                 {isLiveDraft ? (
                   <h2>AI 正在撰写第 {progress?.current_chapter ? progress.current_chapter + 1 : 1} 章</h2>
-                ) : (
+                ) : isEditing ? (
                   <Input value={editorTitle} onChange={(event) => setEditorTitle(event.target.value)} variant="borderless" />
+                ) : (
+                  <h2>{editorTitle || '未命名章节'}</h2>
                 )}
               </div>
               {!isLiveDraft && selectedChapter && (
-                <div>
+                <div className="editor-actions">
+                  <Segmented
+                    size="small"
+                    value={editorMode}
+                    onChange={(value) => setEditorMode(value as 'read' | 'edit')}
+                    options={[{ label: '阅读', value: 'read' }, { label: '编辑', value: 'edit' }]}
+                    aria-label="章节查看模式"
+                  />
                   {canDelete && <Tooltip title="删除章节"><Button danger type="text" icon={<DeleteOutlined />} onClick={deleteChapter} /></Tooltip>}
-                  <Button icon={<SaveOutlined />} loading={saving} onClick={() => void saveChapter()}>保存</Button>
+                  {isEditing && <Button icon={<SaveOutlined />} loading={saving} onClick={() => void saveChapter()}>保存</Button>}
                 </div>
               )}
             </div>
             {displayedContent ? (
-              <Input.TextArea
-                className="manuscript-editor"
-                value={displayedContent}
-                readOnly={isLiveDraft}
-                onChange={(event) => setEditorContent(event.target.value)}
-                autoSize={false}
-              />
+              isEditing ? (
+                <Input.TextArea
+                  className="manuscript-editor"
+                  value={editorContent}
+                  onChange={(event) => setEditorContent(event.target.value)}
+                  autoSize={false}
+                />
+              ) : (
+                <MarkdownManuscript content={displayedContent} live={isLiveDraft} />
+              )
             ) : (
               <div className="blank-page">
                 <EditOutlined />
@@ -273,6 +296,7 @@ export default function NovelStudio() {
             state={workflowState}
             autoMode={autoMode}
             onResume={(value) => void resume(value, autoMode)}
+            onRetry={() => void retry(autoMode)}
             onCancel={() => void stopWriting()}
             onRefresh={() => void sync().catch(() => message.error('暂时无法同步任务状态'))}
           />

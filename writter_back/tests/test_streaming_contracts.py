@@ -9,6 +9,7 @@ from application.agents.chapter_outline_node import chapter_outline_node
 from application.events import WorkflowEvent
 from application.orchestrator import NovelOrchestrator
 from infrastructure.llm.anthropic_adapter import AnthropicAdapter
+from infrastructure.llm.base import safe_json_parse
 from infrastructure.llm.deepseek_adapter import DeepSeekAdapter
 from infrastructure.llm.openai_adapter import OpenAIAdapter
 from service.entities.identity import TenantContext
@@ -39,6 +40,37 @@ class OpenAICompletions:
         ])
 
 
+class OpenAIStructuredCompletions:
+    async def create(self, **kwargs):
+        assert kwargs["stream"] is True
+        assert kwargs["response_format"] == {"type": "json_object"}
+        return AsyncChunks([
+            SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content='{"title":"第'))]),
+            SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content='一章"}'))]),
+        ])
+
+
+class OpenAIRetryStructuredCompletions:
+    def __init__(self):
+        self.calls = 0
+
+    async def create(self, **kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            return AsyncChunks([
+                SimpleNamespace(choices=[SimpleNamespace(
+                    delta=SimpleNamespace(content='{\"unexpected\":true}'),
+                    finish_reason="stop",
+                )]),
+            ])
+        return AsyncChunks([
+            SimpleNamespace(choices=[SimpleNamespace(
+                delta=SimpleNamespace(content='{\"title\":\"第一章\"}'),
+                finish_reason="stop",
+            )]),
+        ])
+
+
 class AnthropicStream:
     text_stream = AsyncChunks(["第一", "章"])
 
@@ -66,6 +98,41 @@ def test_openai_adapter_accepts_compatible_base_url():
         base_url="https://example.com/v1",
     )
     assert str(adapter.client.base_url) == "https://example.com/v1/"
+
+
+@pytest.mark.asyncio
+async def test_openai_structured_generation_streams_json():
+    adapter = OpenAIAdapter("test-key", "test-model", 1.0)
+    adapter.client = SimpleNamespace(
+        chat=SimpleNamespace(completions=OpenAIStructuredCompletions())
+    )
+    result = await adapter.structured_generate("prompt", {"title": "string"})
+    assert result == {"title": "第一章"}
+
+
+@pytest.mark.asyncio
+async def test_openai_structured_generation_retries_missing_schema_keys():
+    completions = OpenAIRetryStructuredCompletions()
+    adapter = OpenAIAdapter("test-key", "test-model", 1.0)
+    adapter.client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+
+    result = await adapter.structured_generate("prompt", {"title": "string"})
+
+    assert result == {"title": "第一章"}
+    assert completions.calls == 2
+
+
+def test_safe_json_parse_repairs_truncated_reflection_output():
+    result = safe_json_parse(
+        '{"passed":false,"overall_quality_score":0.74,'
+        '"word_count_analysis":{"total_count":6030,"effective_density":78,'
+        '"is_valid_word_count":true},"issues":[{"type":"pacing",'
+        '"severity":"medium","description":"节奏略慢'
+    )
+
+    assert result["passed"] is False
+    assert result["overall_quality_score"] == 0.74
+    assert result["issues"][0]["type"] == "pacing"
 
 
 @pytest.mark.asyncio

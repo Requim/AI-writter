@@ -1,15 +1,9 @@
-"""章节细纲生成提示词（深度优化版）
-
-优化维度：
-1. 场景三阶段化（Tri-Phase Scenes）：入场-拉锯-结果
-2. 感官结构细化（Sensory Details）：视觉/听觉/嗅觉触觉
-3. 对话明暗线拆解（Dialogue Mapping）：明线/暗线潜台词
-4. 逻辑钩子具体化（Logic Hooks）：指定影响的具体章节
-"""
+"""Compact per-chapter continuity contract prompts."""
 
 import json
 import random
 
+from application.continuity import build_budgeted_context, build_story_bible
 from application.prompts.outline_prompts import volume_for_chapter
 
 
@@ -19,108 +13,85 @@ def build_chapter_outline_prompt(
     title: str,
     total_outline: dict,
     memory_context: str,
+    validation_issues: list[str] | None = None,
 ) -> str:
-    """Generate one chapter outline from macro constraints and prior memory."""
-    ctx = memory_context[:1200] if memory_context else "无"
-    word_target = random.randint(3500, 5500)
+    """Generate a compact causal contract that can be returned before proxy timeout."""
+    context = build_budgeted_context(memory_context, max_chars=2800)
+    story_bible = build_story_bible(total_outline, max_chars=2400)
     volume = volume_for_chapter(total_outline, chapter_index)
-    volume_json = json.dumps(volume, ensure_ascii=False, indent=2) if volume else "{}"
-    main_plot = json.dumps(total_outline.get("main_plot", {}), ensure_ascii=False)
-    characters = json.dumps(
-        total_outline.get("main_characters", [])[:10], ensure_ascii=False
-    )
-    background = str(total_outline.get("story_background", ""))[:1000]
-    writing_style = str(total_outline.get("writing_style", ""))[:500]
+    volume_json = json.dumps(volume, ensure_ascii=False)
+    word_target = random.randint(3500, 5000)
+    retry_block = ""
+    if validation_issues:
+        retry_block = (
+            "\n【上一版未通过校验，必须修复】\n- "
+            + "\n- ".join(validation_issues)
+        )
 
-    return f"""请为第 {chapter_index} 章生成深度细纲。本细纲必须具备极高的内容密度，足以支撑 3000-7000 字的正文创作。
+    return f"""请为《{title}》生成第 {chapter_index} 章的紧凑剧情契约，类型为 {novel_type}。
+只输出一个 JSON 对象，不要解释、Markdown 或思考过程。
 
-【本章上下文】
-书名/类型：{title} / {novel_type}
-当前章节：第 {chapter_index} / {total_outline.get('total_chapters', '?')} 章
-所属卷规划：{volume_json}
-全书主线：{main_plot}
-核心角色：{characters}
-世界与规则：{background}
-写作风格：{writing_style}
-前文提要（<S层故事状态> | <M层近期章节> | <L层历史章节摘录>）：
-{ctx}
+【本卷目标】
+{volume_json}
 
-请先根据当前章节在所属卷中的位置，自主确定本章主题和关键事件。事件必须推进本卷
-core_conflict 或 main_character_arc，并与前文状态连续；不得提前完成卷末 climax_event。
+【静态故事圣经，不可违背】
+{story_bible}
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-【核心生成约束——必须逐条遵守】
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+【前文连续性记忆】
+{context}
+{retry_block}
 
-① 场景三阶段化（Tri-Phase Scenes）
-本章必须拆解为 3-5 个具体场景。每个场景的 events 必须按「入场—拉锯—结果」三阶段组织：
-- 入场（Entry）：环境描写 + 角色登场 + 初始氛围渲染
-- 拉锯（Struggle）：心理博弈 + 冲突升级 + 信息交锋
-- 结果（Result）：关系位移 + 场景落点 + 情感余波
+【硬性规则】
+1. 本章必须推进本卷 core_conflict 或 main_character_arc，不得提前完成 climax_event。
+2. 固定输出 3 个场景。每个文本字段控制在 80 个汉字以内，避免空泛描写。
+3. causal_chain 至少 3 步，必须形成“因为 A → 所以 B → 导致 C”的因果关系。
+4. entry_state 必须继承前文；exit_state、state_changes 必须能在正文中验证。
+5. knowledge_boundaries 明确角色已知和未知，禁止角色获得作者视角信息。
+6. callback 回收已有伏笔；setup 新建伏笔时给出稳定 ID 和预计回收章节。
+7. rolling_plan 输出从当前章开始、最多 5 章的轻量节拍，不得超过全书第
+   {total_outline.get('total_chapters', '?')} 章；已有 P 层规划没有冲突时应继续沿用。
+8. 正文字数目标约 {word_target} 字，三个场景承担不同事件，禁止重复同一信息。
 
-即使是一个简单的谈话场景，也要包含环境渲染（入场）、心理博弈（拉锯）和关系变化（结果）。
-
-② 感官三位一体（Sensory Trinity）
-每个场景的 sensory_details 必须包含三类感官（非视觉不可缺）：
-- visual：视觉描写（光影/色彩/人物神态/环境布局）
-- auditory：听觉描写（环境音/对话语气/停顿与沉默/脚步声等）
-- olfactory_tactile：嗅觉/触觉（气味/温度/纹理/触感/空气湿度等）
-❌ 禁止只写视觉。三种感官齐备才能让正文有沉浸感。
-
-③ 对话明暗线拆解（Dialogue Mapping）
-每个场景的 dialogue_targets 必须拆分为明线和暗线：
-- explicit（明线）：表面要达成的对话目标（如：说服对方交出钥匙）
-- implicit（暗线/潜台词）：角色真正想表达的或隐藏的信息（如：其实在试探对方是否可信）
-❌ 禁止只写直线条的目的。"高级感"来自明暗线之间的张力。
-
-④ 逻辑钩子具体化（Hooks Targeting）
-logic_hooks 必须指定对后文具体哪一章的影响：
-- callback：回收前文哪一章的伏笔 + 具体是什么
-- setup：为后文具体哪一章埋下新矛盾 + 矛盾的具体描述
-❌ 禁止写"为后文埋下伏笔"这种模糊表述，必须指定章节号和具体内容。
-
-⑤ 字数分配清晰化
-word_count_distribution 必须按场景阶段给出具体字数，而非笼统配比。
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-【输出 JSON 格式】
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+【JSON 结构】
 {{
-    "chapter_number": {chapter_index},
-    "title": "富有感染力的章节标题",
-    "chapter_goal": "本章对当前卷核心冲突的具体推进目标",
-    "key_events": ["至少2个可执行、可验证的具体事件"],
-    "word_count_distribution": "场景1入场(400字)/拉锯(700字)/结果(400字), 场景2入场(300字)...",
-    "scenes": [
-        {{
-            "location": "场景地点",
-            "characters": ["涉及人物及当前情感状态"],
-            "events": {{
-                "entry": "入场：环境描写与角色登场",
-                "struggle": "拉锯：心理博弈与冲突升级",
-                "result": "结果：关系位移与场景落点"
-            }},
-            "sensory_details": {{
-                "visual": "视觉描写（光影/色彩/人物神态）",
-                "auditory": "听觉描写（环境音/语气/停顿）",
-                "olfactory_tactile": "嗅觉/触觉描写（气味/温度/质感）"
-            }},
-            "dialogue_targets": {{
-                "explicit": "明线：表面要达成的对话目标",
-                "implicit": "暗线/潜台词：角色真正想说的或隐藏的信息"
-            }},
-            "purpose": "该场景在全书逻辑中的必要性"
-        }}
-    ],
-    "internal_monologue": "主角在本章的核心心理演变轨迹",
-    "logic_hooks": {{
-        "callback": "回收前文第X章的伏笔：具体伏笔内容",
-        "setup": "为后文第Y章埋下新矛盾：具体矛盾描述"
-    }},
-    "estimated_word_count": {word_target}
+  "chapter_number": {chapter_index},
+  "title": "章节标题",
+  "chapter_goal": "本章唯一推进目标",
+  "key_events": ["事件1", "事件2", "事件3"],
+  "entry_state": {{"time": "", "location": "", "characters": [], "open_conflicts": []}},
+  "causal_chain": ["因为...", "所以...", "导致..."],
+  "state_changes": [{{"subject": "", "before": "", "after": "", "evidence_event": ""}}],
+  "knowledge_boundaries": [{{"character": "", "known": [], "unknown": []}}],
+  "continuity_constraints": ["不可违反事实1", "不可违反事实2", "不可违反事实3"],
+  "scenes": [
+    {{
+      "location": "",
+      "characters": ["人物及进入场景时的状态"],
+      "events": {{"entry": "", "struggle": "", "result": ""}},
+      "sensory_details": {{"visual": "", "auditory": "", "olfactory_tactile": ""}},
+      "dialogue_targets": {{"explicit": "", "implicit": ""}},
+      "purpose": "该场景产生的不可逆变化"
+    }}
+  ],
+  "internal_monologue": "主角心理变化：起点 → 转折 → 终点",
+  "logic_hooks": {{
+    "callback": "伏笔ID/来源章节/本章如何回收；没有则写无",
+    "setup": "新伏笔ID/内容/预计回收章节；没有则写无"
+  }},
+  "exit_state": {{
+    "time": "", "location": "", "characters": [],
+    "last_action": "", "next_pressure": ""
+  }},
+  "rolling_plan": [
+    {{
+      "chapter_number": {chapter_index}, "goal": "", "required_event": "",
+      "state_delta": "", "callback_ids": [], "exit_hook": ""
+    }}
+  ],
+  "estimated_word_count": {word_target}
 }}
 
-确保 JSON 格式正确，所有字段完整。遇到对话场景务必填写 dialogue_targets。"""
+scenes 数组必须恰好包含 3 个完整对象；rolling_plan 每章只写一个核心事件。"""
 
 
 CHAPTER_OUTLINE_SCHEMA = {
@@ -128,9 +99,15 @@ CHAPTER_OUTLINE_SCHEMA = {
     "title": "string",
     "chapter_goal": "string",
     "key_events": "array",
-    "word_count_distribution": "string",
-    "scenes": "array",          # scenes[].events -> dict, scenes[].sensory_details -> dict, scenes[].dialogue_targets -> dict
+    "entry_state": "object",
+    "causal_chain": "array",
+    "state_changes": "array",
+    "knowledge_boundaries": "array",
+    "continuity_constraints": "array",
+    "scenes": "array",
     "internal_monologue": "string",
-    "logic_hooks": "object",    # callback/setup now include target chapter
+    "logic_hooks": "object",
+    "exit_state": "object",
+    "rolling_plan": "array",
     "estimated_word_count": "integer",
 }

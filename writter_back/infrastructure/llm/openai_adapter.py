@@ -1,7 +1,12 @@
 """OpenAI适配器"""
+import logging
+
 import openai
 from typing import Any, AsyncIterator, Dict, List, Optional
 from .base import BaseLLMAdapter, safe_json_parse
+
+
+logger = logging.getLogger("uvicorn")
 
 
 class OpenAIAdapter(BaseLLMAdapter):
@@ -66,22 +71,62 @@ class OpenAIAdapter(BaseLLMAdapter):
                                  system_prompt: Optional[str] = None,
                                  temperature: float = 0.3,
                                  top_p: float = 1.0) -> Dict[str, Any]:
-        """结构化生成"""
+        """Stream JSON and retry once when the compatible gateway returns invalid output."""
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
-        response = await self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            response_format={"type": "json_object"},
-            temperature=temperature,
-            top_p=top_p,
-        )
-
-        content = response.choices[0].message.content
-        return safe_json_parse(content)
+        best_result: Dict[str, Any] = {}
+        expected_keys = set(schema)
+        for attempt in range(2):
+            request_messages = list(messages)
+            if attempt:
+                request_messages.append({
+                    "role": "user",
+                    "content": (
+                        "上一次输出不是完整的JSON。请重新输出且只输出JSON；"
+                        "必须包含schema全部顶层字段，压缩说明文字并确保数组和对象完整闭合。"
+                    ),
+                })
+            try:
+                stream = await self.client.chat.completions.create(
+                    model=self.model,
+                    messages=request_messages,
+                    response_format={"type": "json_object"},
+                    temperature=temperature,
+                    top_p=top_p,
+                    stream=True,
+                )
+                parts: list[str] = []
+                finish_reason: str | None = None
+                async for chunk in stream:
+                    if not chunk.choices:
+                        continue
+                    choice = chunk.choices[0]
+                    finish_reason = getattr(choice, "finish_reason", None) or finish_reason
+                    content = choice.delta.content
+                    if content:
+                        parts.append(content)
+                raw = "".join(parts)
+                result = safe_json_parse(raw)
+                if result:
+                    best_result = result
+                if result and expected_keys.issubset(result):
+                    return result
+                logger.warning(
+                    "【OpenAI结构化输出】结果不完整 | 尝试=%s/2, 长度=%s, finish_reason=%s, 缺少字段=%s",
+                    attempt + 1,
+                    len(raw),
+                    finish_reason or "unknown",
+                    sorted(expected_keys - set(result)),
+                )
+            except Exception:
+                if best_result and attempt:
+                    logger.exception("【OpenAI结构化输出】重试请求失败，使用首次可修复结果")
+                    return best_result
+                raise
+        return best_result
 
     async def chat(self, messages: List[Dict[str, str]], temperature: float = 0.7, top_p: float = 1.0) -> str:
         """对话生成"""

@@ -1,4 +1,5 @@
 """PostgreSQL + pgvector 长期记忆实现"""
+
 import json
 import logging
 import uuid
@@ -22,7 +23,11 @@ class PostgresMemoryAdapter(MemoryService):
     def build_chapter_memory(chapter: Dict[str, Any]) -> tuple[str, Dict[str, Any]]:
         full_content = chapter.get("content", "")
         head = full_content[:800]
-        tail = f"\n...（上文结尾）...\n{full_content[-500:]}" if len(full_content) > 1300 else ""
+        tail = (
+            f"\n...（上文结尾）...\n{full_content[-500:]}"
+            if len(full_content) > 1300
+            else ""
+        )
         content = (
             f"第{chapter.get('chapter_index', 0) + 1}章：{chapter.get('title', '')}"
             f"\n\n{head}{tail}"
@@ -48,13 +53,16 @@ class PostgresMemoryAdapter(MemoryService):
                 VALUES (:id, :tenant_id, :novel_id, :content, :metadata, NOW())
                 RETURNING id
             """)
-            await session.execute(stmt, {
-                "id": uuid.UUID(memory_id),
-                "tenant_id": uuid.UUID(tenant_id),
-                "novel_id": uuid.UUID(novel_id),
-                "content": content,
-                "metadata": json.dumps(metadata)
-            })
+            await session.execute(
+                stmt,
+                {
+                    "id": uuid.UUID(memory_id),
+                    "tenant_id": uuid.UUID(tenant_id),
+                    "novel_id": uuid.UUID(novel_id),
+                    "content": content,
+                    "metadata": json.dumps(metadata),
+                },
+            )
             await session.commit()
             return memory_id
 
@@ -70,17 +78,22 @@ class PostgresMemoryAdapter(MemoryService):
                 ORDER BY created_at DESC
                 LIMIT :top_k
             """)
-            result = await session.execute(stmt, {
-                "tenant_id": uuid.UUID(tenant_id),
-                "novel_id": uuid.UUID(novel_id),
-                "top_k": top_k
-            })
+            result = await session.execute(
+                stmt,
+                {
+                    "tenant_id": uuid.UUID(tenant_id),
+                    "novel_id": uuid.UUID(novel_id),
+                    "top_k": top_k,
+                },
+            )
             rows = result.fetchall()
             return [
                 {
                     "id": str(row[0]),
                     "content": row[1],
-                    "metadata": row[2] if isinstance(row[2], dict) else (json.loads(row[2]) if row[2] else {})
+                    "metadata": row[2]
+                    if isinstance(row[2], dict)
+                    else (json.loads(row[2]) if row[2] else {}),
                 }
                 for row in rows
             ]
@@ -110,11 +123,16 @@ class PostgresMemoryAdapter(MemoryService):
                 WHERE tenant_id = :tenant_id AND novel_id = :novel_id
                   AND metadata @> CAST(:meta_filter AS jsonb)
             """)
-            await session.execute(stmt, {
-                "tenant_id": uuid.UUID(tenant_id),
-                "novel_id": uuid.UUID(novel_id),
-                "meta_filter": json.dumps({"type": "chapter", "chapter_index": chapter_index})
-            })
+            await session.execute(
+                stmt,
+                {
+                    "tenant_id": uuid.UUID(tenant_id),
+                    "novel_id": uuid.UUID(novel_id),
+                    "meta_filter": json.dumps(
+                        {"type": "chapter", "chapter_index": chapter_index}
+                    ),
+                },
+            )
             await session.commit()
 
     async def search_similar(
@@ -140,11 +158,10 @@ class PostgresMemoryAdapter(MemoryService):
         summary_content: str,
     ) -> str:
         """Store L-layer chapter summary"""
-        logger.info("Storing chapter summary for novel %s, chapter %d", novel_id, chapter_index)
-        metadata = {
-            "type": "chapter_summary",
-            "chapter_index": chapter_index
-        }
+        logger.info(
+            "Storing chapter summary for novel %s, chapter %d", novel_id, chapter_index
+        )
+        metadata = {"type": "chapter_summary", "chapter_index": chapter_index}
         return await self.store(tenant_id, novel_id, summary_content, metadata)
 
     async def update_story_state(
@@ -159,11 +176,14 @@ class PostgresMemoryAdapter(MemoryService):
                 WHERE tenant_id = :tenant_id AND novel_id = :novel_id
                   AND metadata @> CAST(:meta_filter AS jsonb)
             """)
-            await session.execute(stmt, {
-                "tenant_id": uuid.UUID(tenant_id),
-                "novel_id": uuid.UUID(novel_id),
-                "meta_filter": json.dumps({"type": "story_state"})
-            })
+            await session.execute(
+                stmt,
+                {
+                    "tenant_id": uuid.UUID(tenant_id),
+                    "novel_id": uuid.UUID(novel_id),
+                    "meta_filter": json.dumps({"type": "story_state"}),
+                },
+            )
 
             # Insert new story state
             new_id = str(uuid.uuid4())
@@ -171,13 +191,16 @@ class PostgresMemoryAdapter(MemoryService):
                 INSERT INTO novel_memories (id, tenant_id, novel_id, content, metadata, created_at)
                 VALUES (:id, :tenant_id, :novel_id, :content, :metadata, NOW())
             """)
-            await session.execute(stmt, {
-                "id": uuid.UUID(new_id),
-                "tenant_id": uuid.UUID(tenant_id),
-                "novel_id": uuid.UUID(novel_id),
-                "content": state_content,
-                "metadata": json.dumps({"type": "story_state"})
-            })
+            await session.execute(
+                stmt,
+                {
+                    "id": uuid.UUID(new_id),
+                    "tenant_id": uuid.UUID(tenant_id),
+                    "novel_id": uuid.UUID(novel_id),
+                    "content": state_content,
+                    "metadata": json.dumps({"type": "story_state"}),
+                },
+            )
             await session.commit()
 
     async def get_hierarchical_context(
@@ -187,9 +210,13 @@ class PostgresMemoryAdapter(MemoryService):
         current_index: int,
         m_count: int = 3,
     ) -> str:
-        """Get S+M+L hierarchical context as formatted string"""
-        logger.info("Building hierarchical context for novel %s, current_index=%d, m_count=%d",
-                    novel_id, current_index, m_count)
+        """Get S+P+M+L hierarchical context as a formatted string."""
+        logger.info(
+            "Building hierarchical context for novel %s, current_index=%d, m_count=%d",
+            novel_id,
+            current_index,
+            m_count,
+        )
         novel_uuid = uuid.UUID(novel_id)
 
         async with self.async_session() as session:
@@ -201,13 +228,35 @@ class PostgresMemoryAdapter(MemoryService):
                 ORDER BY created_at DESC
                 LIMIT 1
             """)
-            s_result = await session.execute(s_stmt, {
-                "tenant_id": uuid.UUID(tenant_id),
-                "novel_id": novel_uuid,
-                "meta_filter": json.dumps({"type": "story_state"})
-            })
+            s_result = await session.execute(
+                s_stmt,
+                {
+                    "tenant_id": uuid.UUID(tenant_id),
+                    "novel_id": novel_uuid,
+                    "meta_filter": json.dumps({"type": "story_state"}),
+                },
+            )
             s_row = s_result.fetchone()
             story_state = s_row[0] if s_row else None
+
+            # P-layer: latest rolling five-chapter beat plan
+            p_stmt = text("""
+                SELECT content FROM novel_memories
+                WHERE tenant_id = :tenant_id AND novel_id = :novel_id
+                  AND metadata @> CAST(:meta_filter AS jsonb)
+                ORDER BY created_at DESC
+                LIMIT 1
+            """)
+            p_result = await session.execute(
+                p_stmt,
+                {
+                    "tenant_id": uuid.UUID(tenant_id),
+                    "novel_id": novel_uuid,
+                    "meta_filter": json.dumps({"type": "rolling_plan"}),
+                },
+            )
+            p_row = p_result.fetchone()
+            rolling_plan = p_row[0] if p_row else None
 
             # M-layer: recent chapters (exclude current chapter)
             m_stmt = text("""
@@ -218,13 +267,16 @@ class PostgresMemoryAdapter(MemoryService):
                   AND (metadata->>'chapter_index')::int < :current_index
                 ORDER BY (metadata->>'chapter_index')::int ASC
             """)
-            m_result = await session.execute(m_stmt, {
-                "tenant_id": uuid.UUID(tenant_id),
-                "novel_id": novel_uuid,
-                "type_filter": json.dumps({"type": "chapter"}),
-                "min_index": current_index - m_count,
-                "current_index": current_index
-            })
+            m_result = await session.execute(
+                m_stmt,
+                {
+                    "tenant_id": uuid.UUID(tenant_id),
+                    "novel_id": novel_uuid,
+                    "type_filter": json.dumps({"type": "chapter"}),
+                    "min_index": current_index - m_count,
+                    "current_index": current_index,
+                },
+            )
             m_rows = m_result.fetchall()
 
             # L-layer: historical chapter summaries
@@ -235,16 +287,19 @@ class PostgresMemoryAdapter(MemoryService):
                   AND (metadata->>'chapter_index')::int < :max_index
                 ORDER BY (metadata->>'chapter_index')::int ASC
             """)
-            l_result = await session.execute(l_stmt, {
-                "tenant_id": uuid.UUID(tenant_id),
-                "novel_id": novel_uuid,
-                "type_filter": json.dumps({"type": "chapter_summary"}),
-                "max_index": current_index - m_count
-            })
+            l_result = await session.execute(
+                l_stmt,
+                {
+                    "tenant_id": uuid.UUID(tenant_id),
+                    "novel_id": novel_uuid,
+                    "type_filter": json.dumps({"type": "chapter_summary"}),
+                    "max_index": current_index - m_count,
+                },
+            )
             l_rows = l_result.fetchall()
 
         # Return empty string if no data at all
-        if not story_state and not m_rows and not l_rows:
+        if not story_state and not rolling_plan and not m_rows and not l_rows:
             return ""
 
         parts = []
@@ -252,6 +307,10 @@ class PostgresMemoryAdapter(MemoryService):
         # S-layer
         if story_state:
             parts.append(f"<S层故事状态>\n{story_state}")
+
+        # P-layer
+        if rolling_plan:
+            parts.append(f"<P层滚动规划>\n{rolling_plan}")
 
         # M-layer（store_chapter_memory 已含"第N章：Title"前缀，此处直接用原始内容）
         if m_rows:
@@ -266,7 +325,11 @@ class PostgresMemoryAdapter(MemoryService):
             l_parts = []
             for row in l_rows:
                 content = row[0]
-                meta = row[1] if isinstance(row[1], dict) else (json.loads(row[1]) if row[1] else {})
+                meta = (
+                    row[1]
+                    if isinstance(row[1], dict)
+                    else (json.loads(row[1]) if row[1] else {})
+                )
                 idx = meta.get("chapter_index", 0)
                 l_parts.append(f"第{idx + 1}章摘要：{content}")
             parts.append("<L层历史章节摘录>\n" + "\n".join(l_parts))

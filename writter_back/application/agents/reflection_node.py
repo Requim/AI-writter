@@ -1,10 +1,14 @@
 """反思检查节点 - 检查逻辑问题，报告给用户，由用户决策"""
+
 import logging
+
 logger = logging.getLogger("uvicorn")
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import interrupt, Command
 from typing import Literal
 from application.schemas.agent_state import NovelAgentState
+from application.continuity import build_story_bible
+from application.errors import RetryableWorkflowError
 from application.streaming import emit_workflow_event
 from application.prompts.reflection_prompts import (
     build_reflection_prompt,
@@ -17,6 +21,14 @@ from application.prompts.reflection_prompts import (
 )
 
 
+def _normalize_issues(value: object) -> list[dict]:
+    if isinstance(value, dict):
+        return [value]
+    if isinstance(value, list):
+        return [issue for issue in value if isinstance(issue, dict)]
+    return []
+
+
 async def reflection_node(
     state: NovelAgentState, config: RunnableConfig
 ) -> Command[Literal["persist_node", "revision_node"]]:
@@ -24,21 +36,27 @@ async def reflection_node(
     反思检查节点 - 检查逻辑问题，报告给用户，由用户决策如何修正
     """
     current_chapter_content = state.get("current_chapter_content", "")
-    chapter_outline = state.get("chapter_outlines", [{}])[-1] if state.get("chapter_outlines") else {}
+    chapter_outline = (
+        state.get("chapter_outlines", [{}])[-1] if state.get("chapter_outlines") else {}
+    )
     total_outline_raw = state.get("total_outline", {})
     if isinstance(total_outline_raw, str):
         import json
+
         try:
             total_outline_raw = json.loads(total_outline_raw)
         except Exception:
             total_outline_raw = {}
     total_outline = total_outline_raw if isinstance(total_outline_raw, dict) else {}
     memory_context = state.get("memory_context", "")
+    story_bible = build_story_bible(total_outline)
 
-    chapter_title = chapter_outline.get('title', '未知')
+    chapter_title = chapter_outline.get("title", "未知")
     content_len = len(current_chapter_content)
-    logger.info(f"{'='*60}")
-    logger.info(f"【反思检查节点】进入 | 章节标题={chapter_title}, 内容长度={content_len}字")
+    logger.info(f"{'=' * 60}")
+    logger.info(
+        f"【反思检查节点】进入 | 章节标题={chapter_title}, 内容长度={content_len}字"
+    )
 
     # 从 config.configurable 获取 LLM 实例
     llm_config = config["configurable"].get("llm_config", {})
@@ -46,17 +64,20 @@ async def reflection_node(
 
     if not llm:
         logger.info("【反思检查节点】LLM不可用，跳过检查 -> 持久化节点")
-        logger.info(f"{'='*60}")
+        logger.info(f"{'=' * 60}")
         return Command(goto="persist_node")
 
     # AI 进行反思检查（分块 + 聚合）
     content_len = len(current_chapter_content)
-    main_chars = total_outline.get('main_characters', [])
+    main_chars = total_outline.get("main_characters", [])
 
-    if content_len > 2500:
+    # 正常章节一次性全章审读。只有异常超长稿才分块，避免 5-6 个模型请求串行等待。
+    if content_len > 12000:
         # ----- 分块检查 -----
         chunks = split_into_chunks(current_chapter_content)
-        logger.info(f"【反思检查节点】分块检查 | {len(chunks)}块, 每块{2000}字, 重叠{200}字")
+        logger.info(
+            f"【反思检查节点】分块检查 | {len(chunks)}块, 每块{2000}字, 重叠{200}字"
+        )
 
         chunk_results = []
         for chunk in chunks:
@@ -69,32 +90,41 @@ async def reflection_node(
                 chapter_outline=chapter_outline,
                 main_characters=main_chars,
                 memory_context=memory_context,
+                story_bible=story_bible,
             )
             chunk_result = await llm.structured_generate(
                 prompt=chunk_prompt,
                 schema=CHUNK_REFLECTION_SCHEMA,
                 temperature=0.1,
             )
-            chunk_issues = chunk_result.get("issues", []) if chunk_result else []
+            chunk_issues = _normalize_issues(
+                chunk_result.get("issues") if chunk_result else None
+            )
             # 标记每个 issue 出自哪一块
             for iss in chunk_issues:
                 iss["_chunk"] = chunk["chunk_index"]
                 iss["_chunk_range"] = f"{chunk['start']}-{chunk['end']}"
-            chunk_results.append({
-                "start": chunk["start"],
-                "end": chunk["end"],
-                "chunk_index": chunk["chunk_index"],
-                "issues": chunk_issues,
-            })
-            logger.info(f"【反思检查节点】块{chunk['chunk_index']+1}/{len(chunks)} 检查完成 | 发现{len(chunk_issues)}个问题")
+            chunk_results.append(
+                {
+                    "start": chunk["start"],
+                    "end": chunk["end"],
+                    "chunk_index": chunk["chunk_index"],
+                    "issues": chunk_issues,
+                }
+            )
+            logger.info(
+                f"【反思检查节点】块{chunk['chunk_index'] + 1}/{len(chunks)} 检查完成 | 发现{len(chunk_issues)}个问题"
+            )
 
         # ----- 聚合检查 -----
         agg_prompt = build_aggregation_prompt(
             chunk_results=chunk_results,
+            chapter_content=current_chapter_content,
             chapter_outline=chapter_outline,
             main_characters=main_chars,
             memory_context=memory_context,
             content_length=content_len,
+            story_bible=story_bible,
         )
         reflection_result = await llm.structured_generate(
             prompt=agg_prompt,
@@ -102,10 +132,12 @@ async def reflection_node(
             temperature=0.1,
         )
         if not isinstance(reflection_result, dict) or not reflection_result:
-            raise RuntimeError("章节质量审读失败：模型未返回有效结果")
+            raise RetryableWorkflowError("章节质量审读失败：模型未返回有效结果")
 
         # 合并：聚合结果中的 issues + 所有分块中的 issues
-        all_issues = reflection_result.get("issues", []) if reflection_result else []
+        all_issues = _normalize_issues(
+            reflection_result.get("issues") if reflection_result else None
+        )
         seen_locations = set()
         for iss in all_issues:
             loc = iss.get("location", "")
@@ -127,6 +159,7 @@ async def reflection_node(
             main_characters=main_chars,
             memory_context=memory_context,
             content_length=content_len,
+            story_bible=story_bible,
         )
         reflection_result = await llm.structured_generate(
             prompt=reflection_prompt,
@@ -134,9 +167,10 @@ async def reflection_node(
             temperature=0.1,
         )
         if not isinstance(reflection_result, dict) or not reflection_result:
-            raise RuntimeError("章节质量审读失败：模型未返回有效结果")
+            raise RetryableWorkflowError("章节质量审读失败：模型未返回有效结果")
 
     # 解析结构化输出
+    reflection_result["issues"] = _normalize_issues(reflection_result.get("issues"))
     quality_score = reflection_result.get("overall_quality_score", 0)
     word_analysis = reflection_result.get("word_count_analysis", {})
     effective_density = word_analysis.get("effective_density", 100)
@@ -160,9 +194,11 @@ async def reflection_node(
     )
 
     if passed and quality_ok and is_valid_words and density_ok:
-        logger.info(f"【反思检查节点】检查通过! 质量评分={quality_score}, "
-                    f"有效密度={effective_density}%, 字数合格={is_valid_words} -> 持久化节点")
-        logger.info(f"{'='*60}")
+        logger.info(
+            f"【反思检查节点】检查通过! 质量评分={quality_score}, "
+            f"有效密度={effective_density}%, 字数合格={is_valid_words} -> 持久化节点"
+        )
+        logger.info(f"{'=' * 60}")
         return Command(goto="persist_node")
 
     # 检查未通过，向用户报告问题
@@ -171,7 +207,11 @@ async def reflection_node(
     for issue in issues:
         if "priority_action" not in issue:
             sev = issue.get("severity", "low")
-            issue["priority_action"] = {"high": "must_fix", "medium": "optional", "low": "can_ignore"}.get(sev, "optional")
+            issue["priority_action"] = {
+                "high": "must_fix",
+                "medium": "optional",
+                "low": "can_ignore",
+            }.get(sev, "optional")
         if "issue_resolved" not in issue:
             issue["issue_resolved"] = False
     fail_reasons = []
@@ -183,8 +223,10 @@ async def reflection_node(
         fail_reasons.append("字数不合规")
     if not passed:
         fail_reasons.append("LLM判定未通过")
-    logger.info(f"【反思检查节点】检查未通过! {'; '.join(fail_reasons)}, "
-                f"问题数={len(issues)} -> 修正节点")
+    logger.info(
+        f"【反思检查节点】检查未通过! {'; '.join(fail_reasons)}, "
+        f"问题数={len(issues)} -> 修正节点"
+    )
 
     # 自动模式：发现问题时自动走 AI 修正（动态收敛循环）
     auto_mode = config["configurable"].get("auto_mode", False)
@@ -194,44 +236,53 @@ async def reflection_node(
 
         # 提前收敛条件：高优问题全部解决且质量分 > 0.85
         has_high_unresolved = any(
-            issue.get("priority_action") == "must_fix" and not issue.get("issue_resolved", False)
+            issue.get("priority_action") == "must_fix"
+            and not issue.get("issue_resolved", False)
             for issue in issues
         )
         if not has_high_unresolved and quality_score > 0.85:
-            logger.info(f"【反思检查节点】自动模式 | 高优问题已全部解决且质量分>{quality_score}>0.85，提前通过 -> 持久化节点")
+            logger.info(
+                f"【反思检查节点】自动模式 | 高优问题已全部解决且质量分>{quality_score}>0.85，提前通过 -> 持久化节点"
+            )
             return Command(goto="persist_node")
 
         if attempts >= MAX_REVISION_ATTEMPTS:
-            logger.info(f"【反思检查节点】自动模式 | 已修正{attempts}次仍未通过，降级放行 -> 持久化节点")
+            logger.info(
+                f"【反思检查节点】自动模式 | 已修正{attempts}次仍未通过，降级放行 -> 持久化节点"
+            )
             return Command(goto="persist_node")
-        logger.info(f"【反思检查节点】自动模式 | 走AI自动修正 (第{attempts + 1}次, 上限{MAX_REVISION_ATTEMPTS}次)")
+        logger.info(
+            f"【反思检查节点】自动模式 | 走AI自动修正 (第{attempts + 1}次, 上限{MAX_REVISION_ATTEMPTS}次)"
+        )
         return Command(
             goto="revision_node",
             update={
                 "reflection_issues": issues,
                 "user_decision": {
                     "action": "revise",
-                    "instructions": None  # AI 根据问题列表自动修正
-                }
-            }
+                    "instructions": None,  # AI 根据问题列表自动修正
+                },
+            },
         )
 
-    user_decision = interrupt({
-        "action": "review_reflection_issues",
-        "message": "章节内容检查发现问题，请审阅并决定修正方式",
-        "chapter_number": state.get("current_chapter_index", 0) + 1,
-        "quality_score": quality_score,
-        "word_count_analysis": word_analysis,
-        "issues": issues,
-        "chapter_content_preview": current_chapter_content[:500] + "...",
-        "logic_chain_status": logic_chain_status,
-        "foreshadowing_check": foreshadowing_check,
-        "note": "请选择处理方式：\n"
-               "1) 'accept' - 忽略问题，直接使用\n"
-               "2) 'revise' - 根据问题列表自动修正\n"
-               "3) 提供具体修正指令（字符串）- 按您的指示修正\n"
-               "4) 'regenerate' - 重新生成本章内容"
-    })
+    user_decision = interrupt(
+        {
+            "action": "review_reflection_issues",
+            "message": "章节内容检查发现问题，请审阅并决定修正方式",
+            "chapter_number": state.get("current_chapter_index", 0) + 1,
+            "quality_score": quality_score,
+            "word_count_analysis": word_analysis,
+            "issues": issues,
+            "chapter_content_preview": current_chapter_content[:500] + "...",
+            "logic_chain_status": logic_chain_status,
+            "foreshadowing_check": foreshadowing_check,
+            "note": "请选择处理方式：\n"
+            "1) 'accept' - 忽略问题，直接使用\n"
+            "2) 'revise' - 根据问题列表自动修正\n"
+            "3) 提供具体修正指令（字符串）- 按您的指示修正\n"
+            "4) 'regenerate' - 重新生成本章内容",
+        }
+    )
 
     logger.info("【反思检查节点】准备前往 -> 修正节点 (等待用户决策)")
 
@@ -258,7 +309,7 @@ async def reflection_node(
             "reflection_issues": issues,
             "user_decision": {
                 "action": decision_action,
-                "instructions": decision_instructions
-            }
-        }
+                "instructions": decision_instructions,
+            },
+        },
     )

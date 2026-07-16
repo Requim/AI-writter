@@ -2,11 +2,28 @@
 
 import json
 
+from application.continuity import build_budgeted_context, compact_text
+
+
+def _continuity_block(continuity_context: str, story_bible: str) -> str:
+    return f"""
+【连续性硬约束】
+静态故事圣经：
+{compact_text(story_bible, 2400) if story_bible else "无"}
+
+前文累计状态与滚动规划：
+{build_budgeted_context(continuity_context, max_chars=3200)}
+
+修订不得改变未被问题列表点名的既有事实、人物知识边界、时间线和伏笔状态。
+"""
+
 
 def build_user_instruction_revision_prompt(
     instructions: str,
     current_content: str,
     chapter_outline: dict,
+    continuity_context: str = "",
+    story_bible: str = "",
 ) -> str:
     """用户指令修正的提示词 — 定向优化 + 全文同步"""
     return f"""
@@ -17,11 +34,13 @@ def build_user_instruction_revision_prompt(
 请将该指令转化为具体的：性格表现、对话基调、以及情节张力的变化。
 
 【原章节背景】
-标题：{chapter_outline.get('title', '')}
+标题：{chapter_outline.get("title", "")}
 章节细纲（必须遵循）：
 {json.dumps(chapter_outline, ensure_ascii=False)}
 正文：
 {current_content}
+
+{_continuity_block(continuity_context, story_bible)}
 
 【修正约束】
 1. 风格对齐：在执行指令的同时，保持原有的文笔水准和叙事视角。
@@ -38,12 +57,17 @@ def build_user_instruction_revision_prompt(
 # ============================================================
 # Patch 模式触发条件（小问题，局部修改）
 PATCH_TRIGGER_TYPES = {
-    "consistency", "character", "padding", "pacing",
-    "tension_gap", "plot_hole",
+    "consistency",
+    "character",
+    "padding",
+    "pacing",
+    "tension_gap",
+    "plot_hole",
 }
 # Refactor 模式触发条件（严重问题，需要全文重构）
 REFACTOR_TRIGGER_TYPES = {
-    "power_system", "logic",
+    "power_system",
+    "logic",
 }
 
 
@@ -69,9 +93,15 @@ def build_patch_revision_prompt(
     current_content: str,
     chapter_outline: dict,
     revision_history: str = "",
+    continuity_context: str = "",
+    story_bible: str = "",
 ) -> str:
     """Patch 模式修正提示词 — 局部修改 + 严格范围限制"""
-    history_block = f"\n【此前修改记录】\n{revision_history}\n请避免重复修改已解决的问题，也不要回退之前的修正成果。" if revision_history else ""
+    history_block = (
+        f"\n【此前修改记录】\n{revision_history}\n请避免重复修改已解决的问题，也不要回退之前的修正成果。"
+        if revision_history
+        else ""
+    )
 
     return f"""
 你现在是一名精益求精的资深编辑。请针对提供的【问题列表】，对章节内容进行精准局部修正。
@@ -101,6 +131,8 @@ def build_patch_revision_prompt(
 必须遵循的章节细纲：
 {json.dumps(chapter_outline, ensure_ascii=False)}
 
+{_continuity_block(continuity_context, story_bible)}
+
 【输出要求】
 - 直接输出修正后的全文（未修改部分原文保留）。
 - 只改问题段落及其前后衔接，其他内容一字不动。
@@ -113,9 +145,15 @@ def build_refactor_revision_prompt(
     current_content: str,
     chapter_outline: dict,
     revision_history: str = "",
+    continuity_context: str = "",
+    story_bible: str = "",
 ) -> str:
     """Refactor 模式修正提示词 — 全文重构 + 逻辑缝合"""
-    history_block = f"\n【此前修改记录】\n{revision_history}\n请避免重复修改已解决的问题，也不要回退之前的修正成果。" if revision_history else ""
+    history_block = (
+        f"\n【此前修改记录】\n{revision_history}\n请避免重复修改已解决的问题，也不要回退之前的修正成果。"
+        if revision_history
+        else ""
+    )
 
     return f"""
 你现在是一名顶级小说主编。本章存在严重的结构性问题（力量体系崩坏/主线逻辑断裂/大规模 OOC），需要进行全文重构。
@@ -141,10 +179,12 @@ def build_refactor_revision_prompt(
 必须遵循的章节细纲：
 {json.dumps(chapter_outline, ensure_ascii=False)}
 
+{_continuity_block(continuity_context, story_bible)}
+
 【输出要求】
 - 直接输出修正后的全文。
 - 确保字数维持在 3000-7000 字之间。
-- 对每处修改点，在内容中用 【已修正:问题类型】 标注。
+- 不得输出修改说明、批注或“已修正”标记。
 """
 
 
@@ -154,7 +194,11 @@ def format_issues_for_prompt(issues: list) -> str:
     for issue in issues:
         priority = issue.get("priority_action", "optional")
         severity = issue.get("severity", "low")
-        pa_tag = {"must_fix": "【必须修正】", "optional": "【次要】", "can_ignore": "【可忽略】"}
+        pa_tag = {
+            "must_fix": "【必须修正】",
+            "optional": "【次要】",
+            "can_ignore": "【可忽略】",
+        }
         tag = pa_tag.get(priority, "【次要】")
         fix_text = issue.get("suggested_fix_text", "")
         fix_block = f"\n    修改示例: {fix_text}" if fix_text else ""
@@ -178,6 +222,8 @@ def build_expansion_prompt(
     current_content: str,
     chapter_outline: dict,
     target_words: int,
+    continuity_context: str = "",
+    story_bible: str = "",
 ) -> str:
     """字数不足时的扩写提示词 — 感官填充 + 逻辑缝合"""
     return f"""
@@ -205,6 +251,8 @@ def build_expansion_prompt(
 
 章节细纲（必须遵循）：
 {json.dumps(chapter_outline, ensure_ascii=False)}
+
+{_continuity_block(continuity_context, story_bible)}
 
 【输出要求】
 - 直接输出扩写后的完整正文，不要加任何说明。

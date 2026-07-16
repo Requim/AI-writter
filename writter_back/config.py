@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     DEEPSEEK_API_KEY: str | None = None
     DEEPSEEK_MODEL: str = "deepseek-chat"
     LLM_TIMEOUT_SECONDS: float = 180.0
-    LLM_MAX_RETRIES: int = 2
+    LLM_MAX_RETRIES: int = 0
     WORKFLOW_TIMEOUT_SECONDS: float = 600.0
     SSE_HEARTBEAT_SECONDS: float = 15.0
 
