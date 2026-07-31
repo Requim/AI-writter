@@ -36,7 +36,7 @@ export default function Login() {
           <Form.Item name="password" label="密码" rules={[{ required: true }]}>
             <Input.Password size="large" prefix={<LockOutlined />} autoComplete="current-password" />
           </Form.Item>
-          <Button htmlType="submit" type="primary" size="large" block icon={<ArrowRightOutlined />} iconPosition="end">
+          <Button htmlType="submit" type="primary" size="large" block icon={<ArrowRightOutlined />} iconPlacement="end">
             登录
           </Button>
         </Form>

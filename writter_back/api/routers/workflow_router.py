@@ -137,7 +137,7 @@ def _public_error_data(exc: Exception) -> dict[str, Any]:
     if isinstance(exc, RetryableWorkflowError):
         return {
             "code": "structured_output_invalid",
-            "message": "模型返回的审读结果格式不完整，请重试当前步骤",
+            "message": "模型返回的审读结果格式不符合要求，请重试当前步骤",
             "retryable": True,
         }
     if settings.DEBUG:

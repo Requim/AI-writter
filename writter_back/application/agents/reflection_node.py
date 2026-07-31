@@ -1,11 +1,13 @@
 """反思检查节点 - 检查逻辑问题，报告给用户，由用户决策"""
 
 import logging
+from typing import Literal
 
 logger = logging.getLogger("uvicorn")
 from langchain_core.runnables import RunnableConfig
-from langgraph.types import interrupt, Command
-from typing import Literal
+from langgraph.types import Command, interrupt
+from pydantic import BaseModel, Field, ValidationError, field_validator
+
 from application.schemas.agent_state import NovelAgentState
 from application.continuity import build_story_bible
 from application.errors import RetryableWorkflowError
@@ -27,6 +29,70 @@ def _normalize_issues(value: object) -> list[dict]:
     if isinstance(value, list):
         return [issue for issue in value if isinstance(issue, dict)]
     return []
+
+
+def _parse_model_number(value: object, *, percentage_scale: bool = False) -> object:
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise ValueError("expected numeric value")
+    if not isinstance(value, str):
+        return value
+    normalized = value.strip().replace("％", "%")
+    is_percentage = normalized.endswith("%")
+    if is_percentage:
+        normalized = normalized[:-1].strip()
+    parsed = float(normalized)
+    return parsed / 100 if is_percentage and percentage_scale else parsed
+
+
+def _parse_model_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str) and value.strip().lower() in {"true", "false"}:
+        return value.strip().lower() == "true"
+    raise ValueError("expected boolean value")
+
+
+class _WordCountAnalysis(BaseModel):
+    total_count: int = Field(ge=0)
+    effective_density: float = Field(ge=0, le=100)
+    is_valid_word_count: bool
+
+    @field_validator("effective_density", mode="before")
+    @classmethod
+    def parse_effective_density(cls, value: object) -> object:
+        return _parse_model_number(value)
+
+    @field_validator("is_valid_word_count", mode="before")
+    @classmethod
+    def parse_is_valid_word_count(cls, value: object) -> bool:
+        return _parse_model_bool(value)
+
+
+class _ReflectionMetrics(BaseModel):
+    passed: bool
+    overall_quality_score: float = Field(ge=0, le=1)
+    word_count_analysis: _WordCountAnalysis
+
+    @field_validator("passed", mode="before")
+    @classmethod
+    def parse_passed(cls, value: object) -> bool:
+        return _parse_model_bool(value)
+
+    @field_validator("overall_quality_score", mode="before")
+    @classmethod
+    def parse_quality_score(cls, value: object) -> object:
+        return _parse_model_number(value, percentage_scale=True)
+
+
+def _validate_reflection_metrics(result: dict) -> _ReflectionMetrics:
+    try:
+        return _ReflectionMetrics.model_validate(result)
+    except ValidationError as exc:
+        fields = [".".join(str(part) for part in error["loc"]) for error in exc.errors()]
+        logger.warning("【反思检查节点】评分字段格式无效 | 字段=%s", ",".join(fields))
+        raise RetryableWorkflowError(
+            "章节质量审读失败：模型返回的评分字段格式无效"
+        ) from exc
 
 
 async def reflection_node(
@@ -171,15 +237,19 @@ async def reflection_node(
 
     # 解析结构化输出
     reflection_result["issues"] = _normalize_issues(reflection_result.get("issues"))
-    quality_score = reflection_result.get("overall_quality_score", 0)
-    word_analysis = reflection_result.get("word_count_analysis", {})
-    effective_density = word_analysis.get("effective_density", 100)
-    is_valid_words = word_analysis.get("is_valid_word_count", True)
+    metrics = _validate_reflection_metrics(reflection_result)
+    quality_score = metrics.overall_quality_score
+    word_analysis = metrics.word_count_analysis.model_dump()
+    effective_density = metrics.word_count_analysis.effective_density
+    is_valid_words = metrics.word_count_analysis.is_valid_word_count
+    reflection_result["overall_quality_score"] = quality_score
+    reflection_result["word_count_analysis"] = word_analysis
+    reflection_result["passed"] = metrics.passed
     logic_chain_status = reflection_result.get("logic_chain_status", "")
     foreshadowing_check = reflection_result.get("foreshadowing_check", "")
 
     # 检查通过条件：passed + 质量分>=0.8 + 字数合规 + 有效密度>=70%
-    passed = reflection_result.get("passed", False)
+    passed = metrics.passed
     density_ok = effective_density >= 70
     quality_ok = quality_score >= 0.8
     emit_workflow_event(

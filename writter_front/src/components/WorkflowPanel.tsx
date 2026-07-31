@@ -57,8 +57,41 @@ function formatTime(value?: string): string {
 function chapterNumberFromState(state: WorkflowViewState): number | undefined {
   const interruptChapter = state.interrupt?.chapter_number
   if (typeof interruptChapter === 'number') return interruptChapter
+  if (typeof state.checkpointChapterIndex === 'number') return state.checkpointChapterIndex + 1
   const match = state.reasoning?.match(/第\s*(\d+)\s*章/)
   return match ? Number(match[1]) : undefined
+}
+
+function stagePresentation(state: WorkflowViewState, chapterPrefix: string) {
+  const nodeLabel = nodeLabels[state.activeNode ?? ''] ?? '当前步骤'
+  const chapterLabel = ['chapter_outline_node', 'chapter_writer_node', 'reflection_node', 'revision_node', 'persist_node']
+    .includes(state.activeNode ?? '')
+    ? `${chapterPrefix}${nodeLabel}`
+    : nodeLabel
+  if (state.status === 'error') return {
+    label: `${chapterLabel}失败`,
+    description: state.error || '当前步骤未能完成，请查看错误信息后重试。',
+  }
+  if (state.status === 'recoverable') return {
+    label: `${chapterLabel}可继续`,
+    description: state.hasCheckpointDraft
+      ? '本章草稿和创作进度均已保留，继续后不会重写前文。'
+      : '创作进度已保留，可以从当前步骤继续。',
+  }
+  if (state.activeNode === 'chapter_outline_node') return {
+    label: state.status === 'paused' ? `${chapterPrefix}细纲待审阅` : `正在生成${chapterPrefix}细纲`,
+    description: nodeDescriptions.chapter_outline_node,
+  }
+  return {
+    label: nodeLabels[state.activeNode ?? ''] ?? '等待开始创作',
+    description: nodeDescriptions[state.activeNode ?? ''] ?? '尚未开始本轮创作。',
+  }
+}
+
+function emptyTimelineLabel(status: WorkflowViewState['status']): string {
+  if (status === 'recoverable') return '草稿已保留，等待继续'
+  if (status === 'error') return '当前步骤未完成'
+  return '尚未开始执行'
 }
 
 function primaryResumeLabel(action?: string): string {
@@ -92,14 +125,11 @@ export function WorkflowPanel({
   const interrupt = state.interrupt
   const chapterNumber = chapterNumberFromState(state)
   const chapterPrefix = chapterNumber ? `第 ${chapterNumber} 章` : '本章'
-  const stageLabel = state.activeNode === 'chapter_outline_node'
-    ? state.status === 'paused'
-      ? `${chapterPrefix}细纲待审阅`
-      : `正在生成${chapterPrefix}细纲`
-    : nodeLabels[state.activeNode ?? ''] ?? '等待工作流响应'
+  const stage = stagePresentation(state, chapterPrefix)
+  const stageLabel = stage.label
   const stageDescription = state.status === 'paused' && interrupt
     ? interrupt.message || '当前结果已生成，请审阅后继续。'
-    : nodeDescriptions[state.activeNode ?? ''] ?? '尚未开始本轮创作。'
+    : stage.description
   const completedTimeline = state.events
     .filter((event) => event.type === 'status' && event.data.status === 'completed' && event.node && event.node !== 'router_agent')
     .map((event) => event.node as string)
@@ -123,6 +153,7 @@ export function WorkflowPanel({
   const statusMeta = {
     running: { label: '执行中', color: 'processing' as const, icon: <LoadingOutlined /> },
     paused: { label: '待确认', color: 'warning' as const, icon: <PauseCircleOutlined /> },
+    recoverable: { label: '可继续', color: 'warning' as const, icon: <ReloadOutlined /> },
     stalled: { label: '状态异常', color: 'error' as const, icon: <WarningOutlined /> },
     cancelling: { label: '正在结束', color: 'processing' as const, icon: <LoadingOutlined /> },
     error: { label: '失败', color: 'error' as const, icon: <WarningOutlined /> },
@@ -166,7 +197,7 @@ export function WorkflowPanel({
         {state.status === 'stalled' && (
           <div className="stalled-note">
             <strong>任务长时间没有新进展</strong>
-            <span>可以先刷新状态；若仍无变化，结束异常任务后从 checkpoint 继续。</span>
+            <span>可以先刷新状态；若仍无变化，结束异常任务后从已保留的创作进度继续。</span>
           </div>
         )}
         {(isBusy || state.connection === 'detached') && (
@@ -206,7 +237,7 @@ export function WorkflowPanel({
           </li>
           )
         })}
-        {timelineNodes.length === 0 && <li className="muted">尚未开始执行</li>}
+        {timelineNodes.length === 0 && <li className="muted">{emptyTimelineLabel(state.status)}</li>}
       </ol>
 
       {typeof state.qualityScore === 'number' && (
@@ -262,9 +293,13 @@ export function WorkflowPanel({
       {state.error && state.status !== 'stalled' && (
         <div className="error-note">
           {state.error}
-          {state.retryable && <small>当前 checkpoint 已保留，可直接重试当前步骤。</small>}
+          {state.retryable && <small>本章草稿和创作进度已保留，可直接重试当前步骤。</small>}
           {state.retryable && (
-            <Button size="small" icon={<ReloadOutlined />} onClick={onRetry}>重试当前步骤</Button>
+            <Button size="small" icon={<ReloadOutlined />} onClick={onRetry}>
+              {state.activeNode === 'reflection_node' && chapterNumber
+                ? `重试第 ${chapterNumber} 章质量审读`
+                : '重试当前步骤'}
+            </Button>
           )}
         </div>
       )}

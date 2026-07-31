@@ -4,7 +4,7 @@ import { workflowApi } from '@/api/novel'
 import type { InterruptInfo, ReflectionIssue, WorkflowEvent, WorkflowSnapshot } from '@/types/novel'
 
 export interface WorkflowViewState {
-  status: 'idle' | 'running' | 'paused' | 'error' | 'stalled' | 'cancelling'
+  status: 'idle' | 'running' | 'paused' | 'recoverable' | 'error' | 'stalled' | 'cancelling'
   connection: 'idle' | 'streaming' | 'detached'
   draft: string
   activeNode?: string
@@ -98,13 +98,17 @@ export function workflowReducer(state: WorkflowViewState, action: Action): Workf
       || execution?.active_node
       || snapshot.next_nodes?.[0]
     const isStale = snapshot.status === 'running' && execution?.is_stale === true
+    const hasCheckpointDraft = snapshot.state?.has_current_chapter_content === true
+    const hasPendingCheckpoint = !interrupt && Boolean(snapshot.next_nodes?.length)
     const status: WorkflowViewState['status'] = interrupt
       ? 'paused'
       : isStale
         ? 'stalled'
         : snapshot.status === 'running'
           ? 'running'
-          : 'idle'
+          : hasCheckpointDraft || hasPendingCheckpoint
+            ? 'recoverable'
+            : 'idle'
     const checkpointReason = snapshot.state?.router_reasoning
     const interruptMessage = interrupt?.message
     const checkpointIndex = snapshot.state?.current_chapter_index
@@ -123,8 +127,8 @@ export function workflowReducer(state: WorkflowViewState, action: Action): Workf
       isStale,
       error: isStale ? '任务已长时间没有产生新进展，可能因页面断线或模型请求异常而停滞。' : undefined,
       retryable: isStale || state.retryable,
-      hasCheckpointDraft: snapshot.state?.has_current_chapter_content === true,
-      hasPendingCheckpoint: !interrupt && Boolean(snapshot.next_nodes?.length),
+      hasCheckpointDraft,
+      hasPendingCheckpoint,
       checkpointChapterIndex: typeof checkpointIndex === 'number' ? checkpointIndex : undefined,
       currentChapter: typeof checkpointIndex === 'number' ? checkpointIndex : undefined,
       progress: typeof checkpointProgress === 'number' ? checkpointProgress : undefined,

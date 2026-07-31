@@ -151,14 +151,14 @@ def build_aggregation_prompt(
 静态故事圣经：
 {compact_text(story_bible, 2200) if story_bible else "无"}
 
-输出JSON格式：
+输出JSON格式。数值和布尔字段必须使用 JSON 原生类型，不要加引号：
 {{{{
-    "passed": true或false,
-    "overall_quality_score": "0.0-1.0（0.8以下不通过）",
+    "passed": true,
+    "overall_quality_score": 0.85,
     "word_count_analysis": {{{{
         "total_count": {content_length},
-        "effective_density": "有效内容占比(0-100)",
-        "is_valid_word_count": true或false
+        "effective_density": 82,
+        "is_valid_word_count": true
     }}}},
     "issues": "array（合并所有分块的 issues，加上全局发现的问题）",
     "logic_chain_status": "本章与前文的衔接情况",
@@ -246,14 +246,14 @@ def build_reflection_prompt(
 静态故事圣经：
 {compact_text(story_bible, 2200) if story_bible else "无"}
 
-输出JSON格式：
+输出JSON格式。数值和布尔字段必须使用 JSON 原生类型，不要加引号：
 {{
-    "passed": true或false,
-    "overall_quality_score": 0.0-1.0之间的数字（0.8以下建议重写）,
+    "passed": true,
+    "overall_quality_score": 0.85,
     "word_count_analysis": {{
         "total_count": {content_length},
-        "effective_density": "有效内容占比(0-100的整数)",
-        "is_valid_word_count": true或false
+        "effective_density": 82,
+        "is_valid_word_count": true
     }},
     "issues": [
         {{

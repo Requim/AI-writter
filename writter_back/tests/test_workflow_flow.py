@@ -108,12 +108,12 @@ class FakeWorkflowLLM:
             return {"issues": []}
         if schema is AGGREGATION_SCHEMA or schema is REFLECTION_SCHEMA:
             return {
-                "passed": True,
-                "overall_quality_score": 0.92,
+                "passed": "true",
+                "overall_quality_score": "92%",
                 "word_count_analysis": {
-                    "total_count": 3200,
-                    "effective_density": 92,
-                    "is_valid_word_count": True,
+                    "total_count": "3200",
+                    "effective_density": "92%",
+                    "is_valid_word_count": "true",
                 },
                 "issues": [],
                 "logic_chain_status": "连贯",
@@ -698,7 +698,7 @@ def test_invalid_structured_output_is_safe_and_retryable():
 
     assert payload == {
         "code": "structured_output_invalid",
-        "message": "模型返回的审读结果格式不完整，请重试当前步骤",
+        "message": "模型返回的审读结果格式不符合要求，请重试当前步骤",
         "retryable": True,
     }
     assert "private" not in payload["message"]

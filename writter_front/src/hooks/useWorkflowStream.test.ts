@@ -111,6 +111,7 @@ describe('workflowReducer', () => {
     }
 
     const hydrated = workflowReducer(initialWorkflowState, { type: 'snapshot', snapshot })
+    expect(hydrated.status).toBe('recoverable')
     expect(hydrated.hasCheckpointDraft).toBe(true)
     expect(hydrated.draft).toBe('')
   })
@@ -130,6 +131,7 @@ describe('workflowReducer', () => {
       currentChapter: 5,
       progress: 50,
     }, { type: 'snapshot', snapshot })
+    expect(hydrated.status).toBe('recoverable')
     expect(hydrated.hasPendingCheckpoint).toBe(true)
     expect(hydrated.checkpointChapterIndex).toBe(2)
     expect(hydrated.currentChapter).toBe(2)

@@ -1,7 +1,6 @@
 import { App, Button, Input, Progress, Segmented, Skeleton, Tooltip } from 'antd'
 import axios from 'axios'
 import {
-  DeleteOutlined,
   EditOutlined,
   FileTextOutlined,
   HistoryOutlined,
@@ -20,22 +19,20 @@ import { MarkdownManuscript } from '@/components/MarkdownManuscript'
 import { WorkflowPanel } from '@/components/WorkflowPanel'
 import { novelApi, workflowApi } from '@/api/novel'
 import { useWorkflowStream } from '@/hooks/useWorkflowStream'
+import { useUnsavedChangesGuard, type DiscardConfirmation } from '@/hooks/useUnsavedChangesGuard'
 import { useNovelStore } from '@/stores/novelStore'
-import type { ChapterDetail, ChapterSummary, InterruptInfo, NovelResponse, ProgressResponse } from '@/types/novel'
+import type { ChapterDetail, ChapterSummary, NovelResponse, ProgressResponse } from '@/types/novel'
 import { currentTenant } from '@/stores/authStore'
+import {
+  autoResumeValue,
+  hasChapterChanges,
+  interruptKey,
+  rewindImpactText,
+  shouldAutoResume,
+} from './novelStudioUtils'
 
 interface StudioLocationState {
   startInput?: Record<string, unknown>
-}
-
-function autoResumeValue(interrupt: InterruptInfo, novelType: string): unknown {
-  switch (interrupt.action) {
-    case 'require_novel_type': return novelType
-    case 'confirm_or_provide_title': return interrupt.ai_suggestions?.[0] || '未命名小说'
-    case 'ready_for_next_chapter': return 'next'
-    case 'review_reflection_issues': return 'revise'
-    default: return 'accept'
-  }
 }
 
 function apiErrorCode(error: unknown): string | undefined {
@@ -61,13 +58,30 @@ export default function NovelStudio() {
   const [editorMode, setEditorMode] = useState<'read' | 'edit'>('read')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [autoRunActive, setAutoRunActive] = useState(false)
   const [mobilePanel, setMobilePanel] = useState<'chapters' | 'editor' | 'workflow'>('editor')
   const startedRef = useRef(false)
   const autoInterruptRef = useRef<string | undefined>(undefined)
+  const handledPersistedChapterRef = useRef<string | undefined>(undefined)
   const selectedChapterRef = useRef<ChapterDetail | undefined>(undefined)
   const threadId = novel?.thread_id || novelId
   const workflow = useWorkflowStream(threadId)
   const { state: workflowState, run, retry, resume, cancel, sync, hydrateSnapshot } = workflow
+  const previousWorkflowStatusRef = useRef(workflowState.status)
+  const hasUnsavedChanges = hasChapterChanges(selectedChapter, editorTitle, editorContent)
+
+  const requestDiscardConfirmation = useCallback<DiscardConfirmation>((onConfirm, onCancel) => {
+    modal.confirm({
+      title: '有未保存的修改',
+      content: '离开后，本次修改将无法恢复。',
+      okText: '放弃修改并离开',
+      cancelText: '继续编辑',
+      okButtonProps: { danger: true },
+      onOk: onConfirm,
+      onCancel,
+    })
+  }, [modal])
+  const confirmDiscardChanges = useUnsavedChangesGuard(hasUnsavedChanges, requestDiscardConfirmation)
 
   const refresh = useCallback(async () => {
     if (!novelId) return
@@ -103,18 +117,26 @@ export default function NovelStudio() {
     const state = location.state as StudioLocationState | null
     if (!novel || !state?.startInput || startedRef.current) return
     startedRef.current = true
+    setAutoRunActive(autoMode)
     void run({ input: { ...state.startInput, _auto_mode: autoMode } })
-    window.history.replaceState({}, document.title)
-  }, [autoMode, location.state, novel, run])
+    void navigate(location.pathname, { replace: true, state: null })
+  }, [autoMode, location.pathname, location.state, navigate, novel, run])
 
   useEffect(() => {
     const interrupt = workflowState.interrupt
-    if (!autoMode || !interrupt) return
-    const key = `${interrupt.action}-${interrupt.chapter_number ?? ''}`
-    if (autoInterruptRef.current === key) return
+    if (!interrupt || !shouldAutoResume(autoMode, autoRunActive, interrupt, autoInterruptRef.current)) return
+    const key = interruptKey(interrupt)
     autoInterruptRef.current = key
     void resume(autoResumeValue(interrupt, novel?.novel_type || 'suspense'), true)
-  }, [autoMode, novel?.novel_type, resume, workflowState.interrupt])
+  }, [autoMode, autoRunActive, novel?.novel_type, resume, workflowState.interrupt])
+
+  useEffect(() => {
+    const previousStatus = previousWorkflowStatusRef.current
+    previousWorkflowStatusRef.current = workflowState.status
+    if (!['running', 'paused', 'stalled', 'cancelling'].includes(previousStatus)) return
+    if (!['idle', 'recoverable', 'error'].includes(workflowState.status)) return
+    queueMicrotask(() => setAutoRunActive(false))
+  }, [workflowState.status])
 
   useEffect(() => {
     if (workflowState.connection !== 'detached' || !['running', 'stalled'].includes(workflowState.status)) return
@@ -125,7 +147,7 @@ export default function NovelStudio() {
 
   useEffect(() => {
     const chapterId = workflowState.lastPersistedChapterId
-    if (!chapterId || !novelId) return
+    if (!chapterId || !novelId || handledPersistedChapterRef.current === chapterId) return
     let active = true
     const syncPersistedChapter = async () => {
       try {
@@ -136,9 +158,14 @@ export default function NovelStudio() {
           novelApi.chapter(novelId, chapterId),
         ])
         if (!active) return
+        handledPersistedChapterRef.current = chapterId
         setNovel(novelData)
         setProgress(progressData)
         setChapters(chapterData)
+        if (hasUnsavedChanges) {
+          message.warning('新章节已归档，当前未保存修改仍保留在编辑器中')
+          return
+        }
         selectedChapterRef.current = detail
         setSelectedChapter(detail)
         setEditorTitle(detail.title)
@@ -150,9 +177,9 @@ export default function NovelStudio() {
     }
     void syncPersistedChapter()
     return () => { active = false }
-  }, [message, novelId, workflowState.lastPersistedChapterId])
+  }, [hasUnsavedChanges, message, novelId, workflowState.lastPersistedChapterId])
 
-  const openChapter = async (chapter: ChapterSummary) => {
+  const loadChapter = async (chapter: ChapterSummary) => {
     const detail = await novelApi.chapter(novelId, chapter.id)
     selectedChapterRef.current = detail
     setSelectedChapter(detail)
@@ -162,8 +189,16 @@ export default function NovelStudio() {
     setMobilePanel('editor')
   }
 
+  const openChapter = (chapter: ChapterSummary) => {
+    if (chapter.id === selectedChapter?.id) {
+      setMobilePanel('editor')
+      return
+    }
+    confirmDiscardChanges(() => loadChapter(chapter))
+  }
+
   const saveChapter = async () => {
-    if (!selectedChapter) return
+    if (!selectedChapter) return false
     setSaving(true)
     try {
       const updated = await novelApi.updateChapter(novelId, selectedChapter.id, {
@@ -179,19 +214,21 @@ export default function NovelStudio() {
         message.warning('正文已保存，创作现场将在服务恢复后重新同步')
       }
       await refresh()
+      return true
     } catch (error) {
       const errorCode = apiErrorCode(error)
       if (errorCode !== 'chapter_version_conflict') {
         message.error(errorCode === 'novel_busy' ? '作品正在生成，请结束任务后再编辑' : '章节保存失败，请稍后重试')
-        return
+        return false
       }
       modal.confirm({
         title: '章节已在其他窗口更新',
         content: '当前编辑内容仍会保留。载入最新版后，本地未保存内容将被替换。',
         okText: '载入最新版',
         cancelText: '保留本地内容',
-        onOk: () => openChapter(selectedChapter),
+        onOk: () => void loadChapter(selectedChapter),
       })
+      return false
     } finally {
       setSaving(false)
     }
@@ -199,10 +236,13 @@ export default function NovelStudio() {
 
   const deleteChapter = () => {
     if (!selectedChapter) return
+    const rewindCount = chapters.filter(
+      (chapter) => chapter.chapter_index >= selectedChapter.chapter_index,
+    ).length || 1
     modal.confirm({
-      title: `从《${selectedChapter.title}》开始回退？`,
-      content: `第 ${selectedChapter.chapter_index + 1} 章及之后的所有章节都会删除，创作进度和连续性记忆将同步回退。`,
-      okText: '确认回退',
+      title: `从第 ${selectedChapter.chapter_index + 1} 章重新创作？`,
+      content: rewindImpactText(selectedChapter, chapters),
+      okText: `删除 ${rewindCount} 章并回退`,
       okButtonProps: { danger: true },
       onOk: async () => {
         try {
@@ -210,7 +250,7 @@ export default function NovelStudio() {
           selectedChapterRef.current = undefined
           setSelectedChapter(undefined)
           await refresh()
-          message.success(`已回退到第 ${result.rewind_to! + 1} 章，共删除 ${result.count} 章`)
+          message.success(`已删除 ${result.count} 章，下次将从第 ${selectedChapter.chapter_index + 1} 章重新创作`)
           if (result.checkpoint_status === 'deferred') {
             message.warning('正文已回退，创作现场将在服务恢复后重新同步')
           }
@@ -225,13 +265,61 @@ export default function NovelStudio() {
   const hasRecoverableCheckpoint = Boolean(
     workflowState.hasCheckpointDraft || workflowState.hasPendingCheckpoint,
   )
-  const startWriting = () => workflowState.retryable || hasRecoverableCheckpoint
-    ? retry(autoMode)
-    : run({
-      input: { novel_id: novelId, novel_type: novel?.novel_type || 'suspense', _auto_mode: autoMode },
+  const recoveryChapterNumber = (
+    workflowState.checkpointChapterIndex
+    ?? workflowState.currentChapter
+    ?? progress?.current_chapter
+    ?? 0
+  ) + 1
+  const isReflectionRecovery = workflowState.hasCheckpointDraft
+    || workflowState.activeNode === 'reflection_node'
+  const recoveryLabel = isReflectionRecovery
+    ? `${workflowState.status === 'error' ? '重试' : '继续'}第 ${recoveryChapterNumber} 章质量审读`
+    : workflowState.status === 'error'
+      ? '重试当前步骤'
+      : `从第 ${recoveryChapterNumber} 章继续`
+  const startWriting = () => {
+    autoInterruptRef.current = undefined
+    setAutoRunActive(autoMode)
+    return workflowState.retryable || hasRecoverableCheckpoint
+      ? retry(autoMode)
+      : run({
+        input: { novel_id: novelId, novel_type: novel?.novel_type || 'suspense', _auto_mode: autoMode },
+      })
+  }
+
+  const resumeWriting = (value: unknown) => {
+    if (workflowState.interrupt) autoInterruptRef.current = interruptKey(workflowState.interrupt)
+    setAutoRunActive(autoMode)
+    return resume(value, autoMode)
+  }
+
+  const continueAutoWriting = () => {
+    const interrupt = workflowState.interrupt
+    if (!interrupt) return startWriting()
+    autoInterruptRef.current = interruptKey(interrupt)
+    setAutoRunActive(true)
+    return resume(autoResumeValue(interrupt, novel?.novel_type || 'suspense'), true)
+  }
+
+  const runAfterSaving = (action: () => void | Promise<void>) => {
+    if (!hasUnsavedChanges) {
+      void action()
+      return
+    }
+    modal.confirm({
+      title: '先保存当前修改？',
+      content: '继续创作后，AI 可能生成并打开新章节。请先保存当前修改，避免内容丢失。',
+      okText: '保存并继续',
+      cancelText: '继续编辑',
+      onOk: async () => {
+        if (await saveChapter()) return action()
+      },
     })
+  }
 
   const stopWriting = async () => {
+    setAutoRunActive(false)
     await cancel()
     await refresh()
   }
@@ -245,10 +333,10 @@ export default function NovelStudio() {
   const isEditing = !isLiveDraft && editorMode === 'edit'
 
   return (
-    <AppShell>
+    <AppShell onBeforeNavigate={confirmDiscardChanges}>
       <div className="studio-page page-enter">
         <header className="studio-header">
-          <Button type="text" icon={<LeftOutlined />} onClick={() => navigate('/')}>书架</Button>
+          <Button type="text" icon={<LeftOutlined />} onClick={() => confirmDiscardChanges(() => navigate('/'))}>书架</Button>
           <div className="studio-title">
             <span>{novel.status === 'completed' ? '已完稿' : '创作中'}</span>
             <h1>{novel.title || '未命名作品'}</h1>
@@ -256,23 +344,29 @@ export default function NovelStudio() {
           <div className="studio-actions">
             <Segmented
               value={autoMode ? 'auto' : 'manual'}
-              onChange={(value) => setAutoMode(value === 'auto')}
+              onChange={(value) => {
+                const nextAutoMode = value === 'auto'
+                setAutoMode(nextAutoMode)
+                setAutoRunActive(nextAutoMode && workflowState.status === 'running')
+              }}
               options={[{ label: '手动', value: 'manual' }, { label: '自动', value: 'auto' }]}
             />
             {isBusy ? (
               <Button danger icon={<StopOutlined />} loading={workflowState.status === 'cancelling'} onClick={() => void stopWriting()}>停止</Button>
+            ) : workflowState.status === 'paused' && autoMode && !autoRunActive ? (
+              <Button type="primary" icon={<PlayCircleOutlined />} onClick={() => runAfterSaving(() => continueAutoWriting())}>
+                继续自动创作
+              </Button>
             ) : workflowState.status === 'paused' ? (
               <Button icon={<PauseCircleOutlined />} onClick={() => setMobilePanel('workflow')}>等待确认</Button>
             ) : workflowState.status === 'error' && workflowState.retryable ? (
-              <Button type="primary" icon={<ReloadOutlined />} onClick={() => void startWriting()}>重试当前步骤</Button>
+              <Button type="primary" icon={<ReloadOutlined />} onClick={() => runAfterSaving(() => startWriting())}>{recoveryLabel}</Button>
             ) : hasRecoverableCheckpoint ? (
-              <Button type="primary" icon={<ReloadOutlined />} onClick={() => void startWriting()}>
-                {workflowState.hasCheckpointDraft
-                  ? '恢复质量审读'
-                  : `从第 ${(workflowState.checkpointChapterIndex ?? 0) + 1} 章继续`}
+              <Button type="primary" icon={<ReloadOutlined />} onClick={() => runAfterSaving(() => startWriting())}>
+                {recoveryLabel}
               </Button>
             ) : (
-              <Button type="primary" icon={<PlayCircleOutlined />} onClick={() => void startWriting()}>继续创作</Button>
+              <Button type="primary" icon={<PlayCircleOutlined />} onClick={() => runAfterSaving(() => startWriting())}>继续创作</Button>
             )}
           </div>
         </header>
@@ -303,7 +397,7 @@ export default function NovelStudio() {
             <ol className="chapter-list">
               {chapters.map((chapter) => (
                 <li key={chapter.id} className={selectedChapter?.id === chapter.id ? 'active' : ''}>
-                  <button onClick={() => void openChapter(chapter)}>
+                  <button onClick={() => openChapter(chapter)}>
                     <span>{String(chapter.chapter_index + 1).padStart(2, '0')}</span>
                     <div><strong>{chapter.title}</strong><small>{chapter.word_count.toLocaleString()} 字</small></div>
                   </button>
@@ -329,13 +423,15 @@ export default function NovelStudio() {
                 <div className="editor-actions">
                   <Segmented
                     size="small"
+                    disabled={isBusy}
                     value={editorMode}
                     onChange={(value) => setEditorMode(value as 'read' | 'edit')}
                     options={[{ label: '阅读', value: 'read' }, { label: '编辑', value: 'edit' }]}
                     aria-label="章节查看模式"
                   />
-                  {canDelete && <Tooltip title="删除章节"><Button danger type="text" icon={<DeleteOutlined />} onClick={deleteChapter} /></Tooltip>}
-                  {isEditing && <Button icon={<SaveOutlined />} loading={saving} onClick={() => void saveChapter()}>保存</Button>}
+                  {hasUnsavedChanges && <span className="editor-dirty-indicator">未保存</span>}
+                  {canDelete && <Tooltip title="从本章重新创作"><Button danger type="text" aria-label="从本章重新创作" icon={<HistoryOutlined />} onClick={deleteChapter} /></Tooltip>}
+                  {isEditing && <Button icon={<SaveOutlined />} loading={saving} disabled={!hasUnsavedChanges} onClick={() => void saveChapter()}>保存</Button>}
                 </div>
               )}
             </div>
@@ -345,6 +441,11 @@ export default function NovelStudio() {
                   className="manuscript-editor"
                   value={editorContent}
                   onChange={(event) => setEditorContent(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 's') return
+                    event.preventDefault()
+                    if (hasUnsavedChanges) void saveChapter()
+                  }}
                   autoSize={false}
                 />
               ) : (
@@ -362,9 +463,9 @@ export default function NovelStudio() {
           <WorkflowPanel
             className={`studio-pane ${mobilePanel === 'workflow' ? 'mobile-active' : ''}`}
             state={workflowState}
-            autoMode={autoMode}
-            onResume={(value) => void resume(value, autoMode)}
-            onRetry={() => void retry(autoMode)}
+            autoMode={autoMode && autoRunActive}
+            onResume={(value) => runAfterSaving(() => resumeWriting(value))}
+            onRetry={() => runAfterSaving(() => startWriting())}
             onCancel={() => void stopWriting()}
             onRefresh={() => void sync().catch(() => message.error('暂时无法同步任务状态'))}
           />

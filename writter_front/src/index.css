@@ -65,9 +65,10 @@ h1, h2, h3 { color: var(--ink); }
 .shelf-intro p { max-width: 620px; margin: 0; color: var(--muted); }
 .shelf-controls { display: grid; gap: 8px; min-width: 220px; }
 .shelf-controls label { color: var(--muted); font-size: 12px; }
-.shelf-toolbar { min-height: 66px; display: flex; align-items: center; justify-content: space-between; }
-.shelf-toolbar > span { color: var(--muted); font-size: 13px; }
-.shelf-toolbar > div { display: flex; gap: 8px; }
+.shelf-toolbar { min-height: 74px; display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+.shelf-filters, .shelf-toolbar-actions { display: flex; align-items: center; gap: 8px; }
+.shelf-filters .ant-input-affix-wrapper { width: 240px; }
+.shelf-result-count { color: var(--muted); font-size: 12px; white-space: nowrap; }
 
 .book-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 28px; }
 .book-item { min-width: 0; display: grid; grid-template-columns: 128px minmax(0, 1fr); min-height: 226px; background: var(--paper); border: 1px solid var(--line); border-radius: 6px; cursor: pointer; overflow: hidden; transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease; }
@@ -87,11 +88,13 @@ h1, h2, h3 { color: var(--ink); }
 .cover-3 .book-cover { background: #83662f; }
 .cover-4 .book-cover { background: #4b3f51; }
 .book-meta { padding: 20px 18px; min-width: 0; display: flex; flex-direction: column; }
-.book-meta > div:first-child span { padding: 2px 7px; color: var(--green); border: 1px solid #9fc0b8; border-radius: 3px; font-size: 10px; }
+.book-status-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.book-status-row > span { padding: 2px 7px; color: var(--green); border: 1px solid #9fc0b8; border-radius: 3px; font-size: 10px; }
+.book-status-row > small { color: var(--muted); font: 500 10px/1 monospace; }
 .book-meta h2 { margin: 14px 0 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 600 17px/1.4 "Noto Serif SC", serif; }
 .book-meta p { color: var(--muted); font-size: 12px; line-height: 1.7; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 .book-meta .ant-progress { margin-top: auto; }
-.book-meta .ant-btn { align-self: flex-start; padding-left: 0; color: var(--wine); }
+.book-open-action { align-self: flex-start; margin-top: 8px; color: var(--wine); font-size: 13px; }
 .empty-shelf { padding: 90px 0; background: rgba(255,255,255,0.45); border: 1px dashed var(--line); }
 
 .creation-page { max-width: 1180px; margin: 0 auto; padding: 30px 40px 80px; }
@@ -144,6 +147,7 @@ h1, h2, h3 { color: var(--ink); }
 .editor-toolbar h2 { margin: 4px 0 14px; font: 600 18px/1.4 "Noto Serif SC", serif; }
 .editor-toolbar .ant-input { padding: 0 0 12px; font: 600 20px/1.4 "Noto Serif SC", serif; }
 .editor-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; }
+.editor-dirty-indicator { color: var(--wine); font-size: 11px; white-space: nowrap; }
 .manuscript-editor.ant-input { flex: 1; min-height: 640px; padding: 28px 0; color: #282321; background: transparent; border: 0; box-shadow: none; resize: none; font: 400 16px/2.05 "Noto Serif SC", serif; }
 .manuscript-renderer { flex: 1; min-width: 0; min-height: 640px; max-height: calc(100vh - 266px); padding: 28px 2px 80px; color: #282321; overflow: auto; overscroll-behavior: contain; overflow-wrap: anywhere; scrollbar-gutter: stable; font: 400 16px/2.05 "Noto Serif SC", serif; }
 .manuscript-renderer > :first-child { margin-top: 0; }
@@ -286,19 +290,24 @@ h1, h2, h3 { color: var(--ink); }
   .shelf-intro { align-items: flex-start; flex-direction: column; gap: 24px; }
   .shelf-intro h1 { font-size: 36px; }
   .shelf-controls { width: 100%; }
-  .shelf-toolbar { align-items: flex-start; gap: 12px; flex-direction: column; padding: 18px 0; }
-  .shelf-toolbar > div { width: 100%; flex-wrap: wrap; }
+  .shelf-toolbar { align-items: stretch; gap: 12px; flex-direction: column; padding: 18px 0; }
+  .shelf-filters, .shelf-toolbar-actions { width: 100%; flex-wrap: wrap; }
+  .shelf-filters .ant-input-affix-wrapper { width: 100%; }
+  .shelf-filters .ant-segmented { flex: 1; min-width: 260px; }
+  .shelf-toolbar-actions .ant-btn:last-child { margin-left: auto; }
   .book-grid { grid-template-columns: 1fr; gap: 16px; }
   .book-item { grid-template-columns: 106px minmax(0, 1fr); min-height: 196px; }
   .book-cover { padding: 16px 12px; }
   .creation-layout { grid-template-columns: 1fr; gap: 32px; }
   .creation-form h1 { font-size: 32px; }
-  .creation-preview { min-height: 420px; position: static; }
-  .creation-preview > .anticon { margin-top: 50px; }
+  .creation-preview { min-height: 300px; position: static; }
+  .creation-preview > .anticon { margin-top: 24px; }
+  .creation-form .ant-segmented { width: 100%; }
   .form-row { grid-template-columns: 1fr; gap: 0; }
   .studio-header { padding: 10px 12px; grid-template-columns: auto 1fr; }
   .studio-header > .ant-btn { padding-inline: 4px; }
   .studio-actions { grid-column: 1 / -1; margin-top: 8px; justify-content: space-between; }
+  .studio-actions .ant-btn { min-width: 0; height: auto; min-height: 32px; white-space: normal; }
   .studio-progress { padding: 0 14px; }
   .studio-mobile-tabs { height: 44px; padding: 5px 14px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; background: var(--paper-deep); border-bottom: 1px solid var(--line); }
   .studio-mobile-tabs button { display: flex; align-items: center; justify-content: center; gap: 6px; color: var(--muted); background: transparent; border: 0; border-bottom: 2px solid transparent; font-size: 12px; cursor: pointer; }
@@ -312,7 +321,8 @@ h1, h2, h3 { color: var(--ink); }
   .chapter-list li { min-width: 160px; border-top: 0; border-right: 1px solid var(--line); }
   .editor-panel { min-height: 620px; padding: 22px 18px; }
   .editor-toolbar { align-items: flex-start; flex-wrap: wrap; }
-  .editor-actions { width: 100%; justify-content: space-between; }
+  .editor-actions { width: 100%; justify-content: flex-end; flex-wrap: wrap; }
+  .editor-actions .ant-segmented { margin-right: auto; }
   .manuscript-editor.ant-input { min-height: 540px; font-size: 15px; }
   .manuscript-renderer { min-height: 540px; max-height: none; padding: 24px 0 64px; font-size: 15px; }
   .studio-grid > .workflow-panel.mobile-active { min-height: 500px; display: block; border-left: 0; }
@@ -333,6 +343,20 @@ h1, h2, h3 { color: var(--ink); }
   .admin-metrics > div { min-height: 92px; padding: 18px; }
   .admin-metrics > div:nth-child(2) { border-right: 0; }
   .admin-metrics > div:last-child { grid-column: 1 / -1; border-top: 1px solid var(--line); }
+}
+
+@media (max-width: 480px) {
+  .brand { gap: 6px; }
+  .brand-mark { width: 32px; height: 32px; }
+  .brand small { display: none; }
+  .tenant-console { margin-right: 4px; }
+  .tenant-console .ant-select { min-width: 92px; max-width: 102px; }
+  .header-nav { gap: 4px; }
+  .header-nav > .ant-btn:last-child { width: 36px; padding-inline: 0; }
+  .header-nav > .ant-btn:last-child > span:not(.ant-btn-icon) { display: none; }
+  .studio-actions { gap: 6px; }
+  .studio-actions .ant-segmented { flex: 0 0 auto; }
+  .studio-actions .ant-btn { padding-inline: 9px; font-size: 12px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

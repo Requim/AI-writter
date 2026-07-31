@@ -45,7 +45,7 @@ export default function Register() {
           <Form.Item name="password" label="密码" rules={[{ required: true, min: 10, message: '至少 10 个字符' }]}>
             <Input.Password size="large" prefix={<LockOutlined />} autoComplete="new-password" />
           </Form.Item>
-          <Button htmlType="submit" type="primary" size="large" block icon={<ArrowRightOutlined />} iconPosition="end">
+          <Button htmlType="submit" type="primary" size="large" block icon={<ArrowRightOutlined />} iconPlacement="end">
             注册并进入书架
           </Button>
         </Form>

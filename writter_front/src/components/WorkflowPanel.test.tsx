@@ -61,9 +61,11 @@ describe('WorkflowPanel', () => {
           status: 'error',
           connection: 'idle',
           draft: '第二章草稿',
+          activeNode: 'reflection_node',
+          checkpointChapterIndex: 2,
           issues: [],
           events: [],
-          error: '模型返回的审读结果格式不完整，请重试当前步骤',
+          error: '模型返回的审读结果格式不符合要求，请重试当前步骤',
           retryable: true,
         }}
         autoMode
@@ -74,6 +76,36 @@ describe('WorkflowPanel', () => {
       />,
     )
 
-    expect(screen.getByRole('button', { name: /重试当前步骤/ })).toBeInTheDocument()
+    expect(screen.getByText('第 3 章质量审读失败')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /重试第 3 章质量审读/ })).toBeInTheDocument()
+  })
+
+  it('shows preserved draft work as recoverable instead of idle', () => {
+    render(
+      <WorkflowPanel
+        state={{
+          status: 'recoverable',
+          connection: 'idle',
+          draft: '',
+          activeNode: 'reflection_node',
+          checkpointChapterIndex: 2,
+          hasCheckpointDraft: true,
+          hasPendingCheckpoint: true,
+          issues: [],
+          events: [],
+        }}
+        autoMode
+        onResume={vi.fn()}
+        onRetry={vi.fn()}
+        onCancel={vi.fn()}
+        onRefresh={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('可继续')).toBeInTheDocument()
+    expect(screen.getByText('第 3 章质量审读可继续')).toBeInTheDocument()
+    expect(screen.getByText('草稿已保留，等待继续')).toBeInTheDocument()
+    expect(screen.queryByText('尚未开始执行')).not.toBeInTheDocument()
+    expect(screen.queryByText('空闲')).not.toBeInTheDocument()
   })
 })

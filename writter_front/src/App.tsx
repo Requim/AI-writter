@@ -1,6 +1,12 @@
 import { App as AntApp, ConfigProvider } from 'antd'
 import zhCN from 'antd/locale/zh_CN'
-import { BrowserRouter, Navigate, Route, Routes, useParams } from 'react-router-dom'
+import {
+  createBrowserRouter,
+  Navigate,
+  Outlet,
+  RouterProvider,
+  useParams,
+} from 'react-router-dom'
 import { lazy, Suspense } from 'react'
 import { PlatformAdminRoute, ProtectedRoute } from '@/components/ProtectedRoute'
 
@@ -20,6 +26,28 @@ function LegacyStudioRedirect() {
 
 const protect = (element: React.ReactNode) => <ProtectedRoute>{element}</ProtectedRoute>
 
+const router = createBrowserRouter([{
+  element: (
+    <Suspense fallback={<div className="route-loading">正在铺开稿纸...</div>}>
+      <Outlet />
+    </Suspense>
+  ),
+  children: [
+    { path: '/login', element: <Login /> },
+    { path: '/register', element: <Register /> },
+    { path: '/invite/:token', element: <AcceptInvite /> },
+    { path: '/', element: protect(<BookShelf />) },
+    { path: '/novels/new', element: protect(<CreateNovel />) },
+    { path: '/novels/:novelId', element: protect(<NovelStudio />) },
+    { path: '/settings/members', element: protect(<TenantSettings />) },
+    { path: '/admin', element: protect(<PlatformAdminRoute><PlatformAdmin /></PlatformAdminRoute>) },
+    { path: '/novel/new', element: <Navigate to="/novels/new" replace /> },
+    { path: '/novel/:novelId', element: protect(<LegacyStudioRedirect />) },
+    { path: '/progress/:novelId', element: protect(<LegacyStudioRedirect />) },
+    { path: '*', element: <Navigate to="/" replace /> },
+  ],
+}])
+
 export default function App() {
   return (
     <ConfigProvider
@@ -31,24 +59,7 @@ export default function App() {
       } }}
     >
       <AntApp>
-        <BrowserRouter>
-          <Suspense fallback={<div className="route-loading">正在铺开稿纸...</div>}>
-            <Routes>
-              <Route path="/login" element={<Login />} />
-              <Route path="/register" element={<Register />} />
-              <Route path="/invite/:token" element={<AcceptInvite />} />
-              <Route path="/" element={protect(<BookShelf />)} />
-              <Route path="/novels/new" element={protect(<CreateNovel />)} />
-              <Route path="/novels/:novelId" element={protect(<NovelStudio />)} />
-              <Route path="/settings/members" element={protect(<TenantSettings />)} />
-              <Route path="/admin" element={protect(<PlatformAdminRoute><PlatformAdmin /></PlatformAdminRoute>)} />
-              <Route path="/novel/new" element={<Navigate to="/novels/new" replace />} />
-              <Route path="/novel/:novelId" element={protect(<LegacyStudioRedirect />)} />
-              <Route path="/progress/:novelId" element={protect(<LegacyStudioRedirect />)} />
-              <Route path="*" element={<Navigate to="/" replace />} />
-            </Routes>
-          </Suspense>
-        </BrowserRouter>
+        <RouterProvider router={router} />
       </AntApp>
     </ConfigProvider>
   )
