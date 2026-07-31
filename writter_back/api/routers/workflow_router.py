@@ -133,6 +133,17 @@ def _public_error(exc: Exception) -> str:
     return _public_error_data(exc)["message"]
 
 
+def _is_provider_connection_error(exc: Exception) -> bool:
+    if exc.__class__.__name__ in {"APITimeoutError", "APIConnectionError"}:
+        return True
+    message = str(exc).lower()
+    return (
+        exc.__class__.__name__ == "APIError"
+        and "stream" in message
+        and "interrupt" in message
+    )
+
+
 def _public_error_data(exc: Exception) -> dict[str, Any]:
     if isinstance(exc, RetryableWorkflowError):
         return {
@@ -168,7 +179,7 @@ def _public_error_data(exc: Exception) -> dict[str, Any]:
             "retryable": True,
             "retry_after": retry_after,
         }
-    if exc.__class__.__name__ in {"APITimeoutError", "APIConnectionError"}:
+    if _is_provider_connection_error(exc):
         return {
             "code": "provider_connection_failed",
             "message": "无法稳定连接模型服务，请重试当前步骤",

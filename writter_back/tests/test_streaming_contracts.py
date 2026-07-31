@@ -3,6 +3,8 @@ import asyncio
 import json
 from types import SimpleNamespace
 
+import httpx
+import openai
 import pytest
 
 from application.agents.chapter_outline_node import chapter_outline_node
@@ -71,6 +73,65 @@ class OpenAIRetryStructuredCompletions:
         ])
 
 
+class InterruptedChunks:
+    def __init__(self):
+        self.sent_partial = False
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if not self.sent_partial:
+            self.sent_partial = True
+            return SimpleNamespace(choices=[SimpleNamespace(
+                delta=SimpleNamespace(content='{\"title\":'),
+                finish_reason=None,
+            )])
+        raise openai.APIError(
+            "Upstream response stream was interrupted",
+            request=httpx.Request("POST", "https://example.com/v1/chat/completions"),
+            body=None,
+        )
+
+
+class OpenAIInterruptedStructuredCompletions:
+    def __init__(self):
+        self.calls = 0
+
+    async def create(self, **_kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            return InterruptedChunks()
+        return AsyncChunks([
+            SimpleNamespace(choices=[SimpleNamespace(
+                delta=SimpleNamespace(content='{\"title\":\"第一章\"}'),
+                finish_reason="stop",
+            )]),
+        ])
+
+
+class OpenAIAlwaysInterruptedStructuredCompletions:
+    def __init__(self):
+        self.calls = 0
+
+    async def create(self, **_kwargs):
+        self.calls += 1
+        return InterruptedChunks()
+
+
+class OpenAINonRetryableStructuredCompletions:
+    def __init__(self):
+        self.calls = 0
+
+    async def create(self, **_kwargs):
+        self.calls += 1
+        raise openai.APIError(
+            "Invalid compatible gateway response",
+            request=httpx.Request("POST", "https://example.com/v1/chat/completions"),
+            body=None,
+        )
+
+
 class AnthropicStream:
     text_stream = AsyncChunks(["第一", "章"])
 
@@ -120,6 +181,42 @@ async def test_openai_structured_generation_retries_missing_schema_keys():
 
     assert result == {"title": "第一章"}
     assert completions.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_openai_structured_generation_retries_interrupted_stream():
+    completions = OpenAIInterruptedStructuredCompletions()
+    adapter = OpenAIAdapter("test-key", "test-model", 1.0)
+    adapter.client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+
+    result = await adapter.structured_generate("prompt", {"title": "string"})
+
+    assert result == {"title": "第一章"}
+    assert completions.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_openai_structured_generation_stops_after_second_interruption():
+    completions = OpenAIAlwaysInterruptedStructuredCompletions()
+    adapter = OpenAIAdapter("test-key", "test-model", 1.0)
+    adapter.client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+
+    with pytest.raises(openai.APIError, match="stream was interrupted"):
+        await adapter.structured_generate("prompt", {"title": "string"})
+
+    assert completions.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_openai_structured_generation_does_not_retry_other_api_errors():
+    completions = OpenAINonRetryableStructuredCompletions()
+    adapter = OpenAIAdapter("test-key", "test-model", 1.0)
+    adapter.client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+
+    with pytest.raises(openai.APIError, match="Invalid compatible gateway response"):
+        await adapter.structured_generate("prompt", {"title": "string"})
+
+    assert completions.calls == 1
 
 
 def test_safe_json_parse_repairs_truncated_reflection_output():

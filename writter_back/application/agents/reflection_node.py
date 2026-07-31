@@ -25,10 +25,32 @@ from application.prompts.reflection_prompts import (
 
 def _normalize_issues(value: object) -> list[dict]:
     if isinstance(value, dict):
-        return [value]
-    if isinstance(value, list):
-        return [issue for issue in value if isinstance(issue, dict)]
-    return []
+        candidates = [value]
+    elif isinstance(value, list):
+        candidates = [issue for issue in value if isinstance(issue, dict)]
+    else:
+        return []
+
+    normalized = []
+    for issue in candidates:
+        clean_issue = dict(issue)
+        if "location" in clean_issue:
+            location = clean_issue["location"]
+            if isinstance(location, list):
+                location = "；".join(
+                    item for item in location if isinstance(item, str)
+                )
+            clean_issue["location"] = location if isinstance(location, str) else ""
+        if "severity" in clean_issue:
+            severity = clean_issue["severity"]
+            clean_issue["severity"] = (
+                severity
+                if isinstance(severity, str)
+                and severity in {"high", "medium", "low"}
+                else "low"
+            )
+        normalized.append(clean_issue)
+    return normalized
 
 
 def _parse_model_number(value: object, *, percentage_scale: bool = False) -> object:

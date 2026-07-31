@@ -19,6 +19,27 @@ def test_normalize_issues_drops_non_object_items() -> None:
     assert _normalize_issues([issue, None, "invalid"]) == [issue]
 
 
+def test_normalize_issues_sanitizes_collection_fields() -> None:
+    issues = _normalize_issues(
+        [
+            {
+                "type": "logic",
+                "location": ["开场", "第二段", 3],
+                "severity": [],
+            }
+        ]
+    )
+
+    assert issues == [
+        {
+            "type": "logic",
+            "location": "开场；第二段",
+            "severity": "low",
+        }
+    ]
+    assert issues[0]["location"] in {issues[0]["location"]}
+
+
 def test_reflection_metrics_accept_numeric_strings_and_percentages() -> None:
     metrics = _validate_reflection_metrics(
         {

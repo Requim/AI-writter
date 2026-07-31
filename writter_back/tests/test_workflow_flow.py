@@ -8,6 +8,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
+import httpx
+import openai
 import pytest
 from langgraph.graph import END, StateGraph
 
@@ -702,3 +704,19 @@ def test_invalid_structured_output_is_safe_and_retryable():
         "retryable": True,
     }
     assert "private" not in payload["message"]
+
+
+def test_interrupted_provider_stream_is_safe_and_retryable():
+    error = openai.APIError(
+        "Upstream response stream was interrupted",
+        request=httpx.Request("POST", "https://example.com/v1/chat/completions"),
+        body=None,
+    )
+
+    payload = _public_error_data(error)
+
+    assert payload == {
+        "code": "provider_connection_failed",
+        "message": "无法稳定连接模型服务，请重试当前步骤",
+        "retryable": True,
+    }
