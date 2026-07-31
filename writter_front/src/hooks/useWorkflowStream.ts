@@ -21,6 +21,10 @@ export interface WorkflowViewState {
   lastActivityAt?: string
   isStale?: boolean
   hasCheckpointDraft?: boolean
+  hasPendingCheckpoint?: boolean
+  checkpointChapterIndex?: number
+  lastPersistedChapterId?: string
+  currentChapter?: number
 }
 
 type Action =
@@ -71,6 +75,8 @@ export function workflowReducer(state: WorkflowViewState, action: Action): Workf
     retryable: undefined,
     retryAfter: undefined,
     isStale: false,
+    hasPendingCheckpoint: false,
+    checkpointChapterIndex: undefined,
     startedAt: new Date().toISOString(),
     lastActivityAt: new Date().toISOString(),
   }
@@ -101,6 +107,8 @@ export function workflowReducer(state: WorkflowViewState, action: Action): Workf
           : 'idle'
     const checkpointReason = snapshot.state?.router_reasoning
     const interruptMessage = interrupt?.message
+    const checkpointIndex = snapshot.state?.current_chapter_index
+    const checkpointProgress = snapshot.state?.progress_percentage
     return {
       ...state,
       status,
@@ -116,6 +124,10 @@ export function workflowReducer(state: WorkflowViewState, action: Action): Workf
       error: isStale ? '任务已长时间没有产生新进展，可能因页面断线或模型请求异常而停滞。' : undefined,
       retryable: isStale || state.retryable,
       hasCheckpointDraft: snapshot.state?.has_current_chapter_content === true,
+      hasPendingCheckpoint: !interrupt && Boolean(snapshot.next_nodes?.length),
+      checkpointChapterIndex: typeof checkpointIndex === 'number' ? checkpointIndex : undefined,
+      currentChapter: typeof checkpointIndex === 'number' ? checkpointIndex : undefined,
+      progress: typeof checkpointProgress === 'number' ? checkpointProgress : undefined,
     }
   }
   if (action.type === 'hydrate') return {
@@ -142,6 +154,17 @@ export function workflowReducer(state: WorkflowViewState, action: Action): Workf
     else if (event.data.status === 'completed' && state.activeNode === event.node) next.activeNode = undefined
     else if (event.data.status !== 'completed') next.activeNode = event.node
   }
+  if (event.type === 'chapter_persisted') {
+    next.draft = ''
+    next.hasCheckpointDraft = false
+    next.lastPersistedChapterId = typeof event.data.chapter_id === 'string'
+      ? event.data.chapter_id
+      : undefined
+    next.currentChapter = typeof event.data.current_chapter === 'number'
+      ? event.data.current_chapter
+      : state.currentChapter
+    if (typeof event.data.percentage === 'number') next.progress = event.data.percentage
+  }
   if (event.type === 'reasoning') {
     if (typeof event.data.text === 'string') next.reasoning = event.data.text
     if (typeof event.data.next_node === 'string') next.activeNode = event.data.next_node
@@ -162,6 +185,7 @@ export function workflowReducer(state: WorkflowViewState, action: Action): Workf
   if (event.type === 'completed') {
     next.connection = 'idle'
     next.hasCheckpointDraft = false
+    next.hasPendingCheckpoint = false
     if (next.status !== 'paused') next.status = 'idle'
   }
   if (event.type === 'error') {

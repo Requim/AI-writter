@@ -16,8 +16,24 @@ OUTLINE_SCHEMA: dict[str, str] = {
 MACRO_ONLY_SCHEMA = OUTLINE_SCHEMA
 
 
-def build_outline_prompt(novel_type: str, title: str, summary: str) -> str:
+def build_outline_prompt(
+    novel_type: str,
+    title: str,
+    summary: str,
+    target_total_chapters: int | None = None,
+    requested_writing_style: str | None = None,
+) -> str:
     """Build a bounded macro-outline prompt without per-chapter output."""
+    chapter_requirement = (
+        f"固定为用户计划的 {target_total_chapters} 章，不得擅自增加或减少。"
+        if target_total_chapters
+        else "根据题材选择 120-200 章，不要固定为某一个数字。"
+    )
+    style_requirement = (
+        f"以用户指定的“{requested_writing_style}”为强制基调，并扩展为叙事视角、节奏、语言、对话和氛围规范。"
+        if requested_writing_style
+        else "明确叙事视角、节奏、语言基调、对话风格和氛围。"
+    )
     return f"""请根据以下信息生成小说的宏观总纲。这里只规划全书结构，不生成逐章列表；
 每一章的详细细纲会在后续工作流中按章生成。
 
@@ -26,14 +42,20 @@ def build_outline_prompt(novel_type: str, title: str, summary: str) -> str:
 书名：{title}
 简介：{summary}
 
+【用户设定优先级】
+- 书名和简介是用户确认的正史事实，不是供改写的灵感素材。
+- 必须保留简介中出现的全部人名、人物关系、时代背景和核心故事方向。
+- 简介较短时只能围绕已有事实扩展，不得替换主角、关系、题材或另起故事。
+- 后续的世界设定、人物表、主线和分卷必须能够直接追溯到这份简介。
+
 【总纲要求】
 1. story_background（600-1000字）：世界规则、核心限制或力量代价、主要势力、
    社会矛盾和故事导火索。所有后续剧情必须服从这些约束。
 2. main_characters：6-10名核心角色。每人包含“姓名、性格、目标、冲突对象、
    关系标签”，并与至少两名角色形成明确关系。
 3. main_plot：使用“起、承、转、合”描述全书主线、关键反转和最终收束。
-4. writing_style（150-300字）：叙事视角、节奏、语言基调、对话风格和氛围。
-5. total_chapters：根据题材选择 120-200 章，不要固定为某一个数字。
+4. writing_style（150-300字）：{style_requirement}
+5. total_chapters：{chapter_requirement}
 6. volumes：规划 4-6 卷，必须连续覆盖第1章到 total_chapters。每卷包含：
    volume_name、volume_number、start_chapter、end_chapter、core_conflict、
    main_character_arc、climax_event，以及 next_volume_hook（卷尾衔接钩子）。

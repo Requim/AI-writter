@@ -115,6 +115,54 @@ describe('workflowReducer', () => {
     expect(hydrated.draft).toBe('')
   })
 
+  it('marks an idle routed checkpoint as resumable work', () => {
+    const snapshot: WorkflowSnapshot = {
+      thread_id: 'thread-1',
+      status: 'idle',
+      has_interrupt: false,
+      interrupts: [],
+      next_nodes: ['router_agent'],
+      state: { current_chapter_index: 2 },
+    }
+
+    const hydrated = workflowReducer({
+      ...initialWorkflowState,
+      currentChapter: 5,
+      progress: 50,
+    }, { type: 'snapshot', snapshot })
+    expect(hydrated.hasPendingCheckpoint).toBe(true)
+    expect(hydrated.checkpointChapterIndex).toBe(2)
+    expect(hydrated.currentChapter).toBe(2)
+    expect(hydrated.progress).toBeUndefined()
+  })
+
+  it('clears the live draft only after the chapter is persisted', () => {
+    const persisted = workflowReducer({
+      ...initialWorkflowState,
+      draft: '已生成正文',
+      status: 'running',
+    }, {
+      type: 'event',
+      event: {
+        id: 8,
+        type: 'chapter_persisted',
+        thread_id: 'thread-1',
+        node: 'persist_node',
+        data: {
+          chapter_id: 'chapter-2',
+          current_chapter: 2,
+          percentage: 20,
+        },
+        timestamp: '2026-07-15T00:00:04Z',
+      },
+    })
+
+    expect(persisted.draft).toBe('')
+    expect(persisted.lastPersistedChapterId).toBe('chapter-2')
+    expect(persisted.currentChapter).toBe(2)
+    expect(persisted.progress).toBe(20)
+  })
+
   it('keeps the routed business node active after router completion', () => {
     const reasoning = workflowReducer(initialWorkflowState, {
       type: 'event',

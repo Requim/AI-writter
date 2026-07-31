@@ -5,15 +5,7 @@ import { useNavigate } from 'react-router-dom'
 import { AppShell } from '@/components/AppShell'
 import { novelApi } from '@/api/novel'
 import { useNovelStore } from '@/stores/novelStore'
-import type { NovelCreateRequest } from '@/types/novel'
-
-interface CreationForm {
-  novel_type: string
-  title?: string
-  summary?: string
-  total_chapters: number
-  writing_style?: string
-}
+import { buildCreationSubmission, type CreationForm } from './creationSubmission'
 
 const genreOptions = [
   ['suspense', '悬疑'], ['sci_fi', '科幻'], ['romance', '言情'], ['fantasy', '奇幻'],
@@ -33,19 +25,11 @@ export default function CreateNovel() {
 
   const submit = async (values: CreationForm) => {
     setSubmitting(true)
-    const payload: NovelCreateRequest = {
-      novel_type: values.novel_type,
-      title: values.title?.trim() || undefined,
-      summary: values.summary?.trim() || undefined,
-      total_outline: values.total_chapters || values.writing_style ? {
-        total_chapters: values.total_chapters,
-        writing_style: values.writing_style,
-      } : undefined,
-    }
+    const { payload, startInput } = buildCreationSubmission(values)
     try {
       const result = await novelApi.create(payload)
       navigate(`/novels/${result.novel_id}`, {
-        state: { startInput: { novel_id: result.novel_id, novel_type: values.novel_type } },
+        state: { startInput: { novel_id: result.novel_id, ...startInput } },
       })
     } catch {
       message.error('创建失败，请检查后端与数据库配置')

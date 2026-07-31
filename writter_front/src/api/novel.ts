@@ -23,13 +23,22 @@ export const novelApi = {
     data<ChapterSummary[]>(apiClient.get(`/v1/novels/${novelId}/chapters`)),
   chapter: (novelId: string, chapterId: string) =>
     data<ChapterDetail>(apiClient.get(`/v1/novels/${novelId}/chapters/${chapterId}`)),
-  updateChapter: (novelId: string, chapterId: string, payload: Pick<ChapterDetail, 'title' | 'content'>) =>
+  updateChapter: (
+    novelId: string,
+    chapterId: string,
+    payload: Pick<ChapterDetail, 'title' | 'content'> & { expected_version: number },
+  ) =>
     data<ChapterDetail>(apiClient.put(`/v1/novels/${novelId}/chapters/${chapterId}`, payload)),
   rewriteChapter: (novelId: string, chapterId: string) =>
     data<ChapterDetail>(apiClient.post(`/v1/novels/${novelId}/chapters/${chapterId}/rewrite`)),
   remove: (novelId: string) => data<{ status: string }>(apiClient.delete(`/v1/novels/${novelId}`)),
   batchDeleteChapters: (novelId: string, chapterIds: string[]) =>
-    data<{ status: string; count: number; rewind_to: number | null }>(
+    data<{
+      status: string
+      count: number
+      rewind_to: number | null
+      checkpoint_status: 'synced' | 'not_found' | 'deferred'
+    }>(
       apiClient.post(`/v1/novels/${novelId}/chapters/batch-delete`, { chapter_ids: chapterIds }),
     ),
 }

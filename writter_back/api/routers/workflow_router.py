@@ -3,6 +3,7 @@
 import asyncio
 import logging
 from collections.abc import AsyncIterator
+from dataclasses import asdict
 from typing import Any
 from uuid import uuid4
 
@@ -11,6 +12,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from api.dependencies import get_tenant_context
+from application.checkpoint_reconciliation import reconcile_pending_checkpoint
 from application.errors import RetryableWorkflowError
 from application.events import WorkflowEvent
 from application.orchestrator import NovelOrchestrator
@@ -22,6 +24,7 @@ from infrastructure.database.identity_repository import (
 )
 from infrastructure.database.repository import PostgresNovelRepository
 from service.entities.identity import TenantContext
+from service.entities.novel import Novel
 
 logger = logging.getLogger("uvicorn")
 router = APIRouter()
@@ -48,13 +51,43 @@ async def _authorize_thread(
     context: TenantContext,
     thread_id: str,
     repository: PostgresNovelRepository,
-) -> None:
+) -> Novel:
     try:
         novel = await repository.find_by_id(str(context.tenant_id), thread_id)
     except ValueError:
         novel = None
     if novel is None:
         raise HTTPException(status_code=404, detail="小说不存在")
+    return novel
+
+
+def _seed_initial_input(input_data: dict[str, Any], novel: Novel) -> None:
+    """Backfill persisted creation settings without overriding explicit input."""
+    input_data.setdefault("novel_type", novel.novel_type)
+    if novel.progress is not None:
+        input_data.setdefault("current_chapter_index", novel.progress.current_chapter)
+        input_data.setdefault("progress_percentage", novel.progress.percentage)
+        input_data.setdefault("is_completed", novel.progress.is_complete())
+    if novel.title:
+        input_data.setdefault("title", novel.title)
+    if novel.summary:
+        input_data.setdefault("summary", novel.summary)
+
+    outline = novel.total_outline
+    if outline is None:
+        return
+    if outline.story_background and outline.main_plot and outline.volumes:
+        outline_data = asdict(outline)
+        if novel.title:
+            outline_data["source_title"] = novel.title
+        if novel.summary:
+            outline_data["source_summary"] = novel.summary
+        input_data.setdefault("total_outline", outline_data)
+        return
+    if outline.total_chapters:
+        input_data.setdefault("target_total_chapters", outline.total_chapters)
+    if outline.writing_style:
+        input_data.setdefault("requested_writing_style", outline.writing_style)
 
 
 async def _prepare_request(
@@ -63,6 +96,7 @@ async def _prepare_request(
     thread_id: str,
     orchestrator: NovelOrchestrator,
     quota: QuotaService,
+    novel: Novel | None = None,
 ) -> tuple[dict[str, Any] | None, Any, bool, bool]:
     input_data = dict(request.input or {})
     command = dict(request.command or {})
@@ -77,6 +111,8 @@ async def _prepare_request(
     auto_mode = command.pop("_auto_mode", input_data.pop("_auto_mode", False))
     orchestrator.set_auto_mode(context, thread_id, bool(auto_mode))
     if not is_resume and not is_retry:
+        if novel is not None:
+            _seed_initial_input(input_data, novel)
         existing_run_id = await orchestrator.get_workflow_run_id(context, thread_id)
         run_id = str(input_data.get("workflow_run_id") or existing_run_id or uuid4())
         input_data["workflow_run_id"] = run_id
@@ -160,6 +196,25 @@ async def _acquire(
         )
 
 
+async def _ensure_checkpoint_ready(
+    repository: PostgresNovelRepository,
+    orchestrator: NovelOrchestrator,
+    context: TenantContext,
+    thread_id: str,
+) -> None:
+    status = await reconcile_pending_checkpoint(
+        repository, orchestrator, context, thread_id
+    )
+    if status == "deferred":
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "checkpoint_sync_pending",
+                "message": "创作现场正在同步，请稍后重试",
+            },
+        )
+
+
 @router.post("/{thread_id}/invoke", deprecated=True)
 async def invoke_workflow(
     thread_id: str,
@@ -169,11 +224,14 @@ async def invoke_workflow(
     repository: PostgresNovelRepository = Depends(get_repository),
     quota: QuotaService = Depends(get_quota_service),
 ) -> Any:
-    await _authorize_thread(context, thread_id, repository)
+    novel = await _authorize_thread(context, thread_id, repository)
     await _acquire(orchestrator, context, thread_id)
     try:
+        await _ensure_checkpoint_ready(
+            repository, orchestrator, context, thread_id
+        )
         input_data, resume_value, is_resume, is_retry = await _prepare_request(
-            request, context, thread_id, orchestrator, quota
+            request, context, thread_id, orchestrator, quota, novel
         )
         current = asyncio.current_task()
         if current:
@@ -208,8 +266,24 @@ async def get_workflow_state(
     orchestrator: NovelOrchestrator = Depends(get_orchestrator),
     repository: PostgresNovelRepository = Depends(get_repository),
 ) -> dict[str, Any]:
-    await _authorize_thread(context, thread_id, repository)
+    novel = await _authorize_thread(context, thread_id, repository)
     try:
+        if not orchestrator.is_executing(context, thread_id):
+            status = await reconcile_pending_checkpoint(
+                repository, orchestrator, context, thread_id
+            )
+            if status == "deferred":
+                return {
+                    "thread_id": thread_id,
+                    "status": "unknown",
+                    "has_interrupt": False,
+                    "interrupts": [],
+                    "next_nodes": [],
+                    "execution": {"message": "创作现场正在同步"},
+                    "state": {
+                        "current_chapter_index": novel.progress.current_chapter,
+                    },
+                }
         return await asyncio.wait_for(
             orchestrator.get_public_state(context, thread_id), timeout=10.0
         )
@@ -231,11 +305,14 @@ async def _stream_response(
     repository: PostgresNovelRepository,
     quota: QuotaService,
 ) -> StreamingResponse:
-    await _authorize_thread(context, thread_id, repository)
+    novel = await _authorize_thread(context, thread_id, repository)
     await _acquire(orchestrator, context, thread_id)
     try:
+        await _ensure_checkpoint_ready(
+            repository, orchestrator, context, thread_id
+        )
         input_data, resume_value, is_resume, is_retry = await _prepare_request(
-            request, context, thread_id, orchestrator, quota
+            request, context, thread_id, orchestrator, quota, novel
         )
     except Exception:
         orchestrator.finish(context, thread_id)

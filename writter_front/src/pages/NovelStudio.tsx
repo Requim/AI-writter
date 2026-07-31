@@ -1,4 +1,5 @@
 import { App, Button, Input, Progress, Segmented, Skeleton, Tooltip } from 'antd'
+import axios from 'axios'
 import {
   DeleteOutlined,
   EditOutlined,
@@ -35,6 +36,12 @@ function autoResumeValue(interrupt: InterruptInfo, novelType: string): unknown {
     case 'review_reflection_issues': return 'revise'
     default: return 'accept'
   }
+}
+
+function apiErrorCode(error: unknown): string | undefined {
+  if (!axios.isAxiosError(error)) return undefined
+  const payload = error.response?.data as { detail?: { code?: unknown } } | undefined
+  return typeof payload?.detail?.code === 'string' ? payload.detail.code : undefined
 }
 
 export default function NovelStudio() {
@@ -116,6 +123,35 @@ export default function NovelStudio() {
     return () => window.clearInterval(timer)
   }, [sync, workflowState.connection, workflowState.status])
 
+  useEffect(() => {
+    const chapterId = workflowState.lastPersistedChapterId
+    if (!chapterId || !novelId) return
+    let active = true
+    const syncPersistedChapter = async () => {
+      try {
+        const [novelData, progressData, chapterData, detail] = await Promise.all([
+          novelApi.get(novelId),
+          novelApi.progress(novelId),
+          novelApi.chapters(novelId),
+          novelApi.chapter(novelId, chapterId),
+        ])
+        if (!active) return
+        setNovel(novelData)
+        setProgress(progressData)
+        setChapters(chapterData)
+        selectedChapterRef.current = detail
+        setSelectedChapter(detail)
+        setEditorTitle(detail.title)
+        setEditorContent(detail.content)
+        setEditorMode('read')
+      } catch {
+        if (active) message.warning('章节已保存，目录暂时未能刷新')
+      }
+    }
+    void syncPersistedChapter()
+    return () => { active = false }
+  }, [message, novelId, workflowState.lastPersistedChapterId])
+
   const openChapter = async (chapter: ChapterSummary) => {
     const detail = await novelApi.chapter(novelId, chapter.id)
     selectedChapterRef.current = detail
@@ -133,12 +169,29 @@ export default function NovelStudio() {
       const updated = await novelApi.updateChapter(novelId, selectedChapter.id, {
         title: editorTitle,
         content: editorContent,
+        expected_version: selectedChapter.version,
       })
       selectedChapterRef.current = updated
       setSelectedChapter(updated)
       setEditorMode('read')
       message.success('章节已保存')
+      if (updated.checkpoint_status === 'deferred') {
+        message.warning('正文已保存，创作现场将在服务恢复后重新同步')
+      }
       await refresh()
+    } catch (error) {
+      const errorCode = apiErrorCode(error)
+      if (errorCode !== 'chapter_version_conflict') {
+        message.error(errorCode === 'novel_busy' ? '作品正在生成，请结束任务后再编辑' : '章节保存失败，请稍后重试')
+        return
+      }
+      modal.confirm({
+        title: '章节已在其他窗口更新',
+        content: '当前编辑内容仍会保留。载入最新版后，本地未保存内容将被替换。',
+        okText: '载入最新版',
+        cancelText: '保留本地内容',
+        onOk: () => openChapter(selectedChapter),
+      })
     } finally {
       setSaving(false)
     }
@@ -147,21 +200,32 @@ export default function NovelStudio() {
   const deleteChapter = () => {
     if (!selectedChapter) return
     modal.confirm({
-      title: `删除《${selectedChapter.title}》？`,
-      content: '进度会回退到该章节，关联记忆也会同步清理。',
-      okText: '删除章节',
+      title: `从《${selectedChapter.title}》开始回退？`,
+      content: `第 ${selectedChapter.chapter_index + 1} 章及之后的所有章节都会删除，创作进度和连续性记忆将同步回退。`,
+      okText: '确认回退',
       okButtonProps: { danger: true },
       onOk: async () => {
-        await novelApi.batchDeleteChapters(novelId, [selectedChapter.id])
-        selectedChapterRef.current = undefined
-        setSelectedChapter(undefined)
-        await refresh()
+        try {
+          const result = await novelApi.batchDeleteChapters(novelId, [selectedChapter.id])
+          selectedChapterRef.current = undefined
+          setSelectedChapter(undefined)
+          await refresh()
+          message.success(`已回退到第 ${result.rewind_to! + 1} 章，共删除 ${result.count} 章`)
+          if (result.checkpoint_status === 'deferred') {
+            message.warning('正文已回退，创作现场将在服务恢复后重新同步')
+          }
+        } catch (error) {
+          message.error(apiErrorCode(error) === 'novel_busy' ? '作品正在生成，暂时无法回退' : '章节回退失败')
+          throw error
+        }
       },
     })
   }
 
-  const hasRecoverableDraft = Boolean(workflowState.draft || workflowState.hasCheckpointDraft)
-  const startWriting = () => workflowState.status === 'error' || hasRecoverableDraft
+  const hasRecoverableCheckpoint = Boolean(
+    workflowState.hasCheckpointDraft || workflowState.hasPendingCheckpoint,
+  )
+  const startWriting = () => workflowState.retryable || hasRecoverableCheckpoint
     ? retry(autoMode)
     : run({
       input: { novel_id: novelId, novel_type: novel?.novel_type || 'suspense', _auto_mode: autoMode },
@@ -201,8 +265,12 @@ export default function NovelStudio() {
               <Button icon={<PauseCircleOutlined />} onClick={() => setMobilePanel('workflow')}>等待确认</Button>
             ) : workflowState.status === 'error' && workflowState.retryable ? (
               <Button type="primary" icon={<ReloadOutlined />} onClick={() => void startWriting()}>重试当前步骤</Button>
-            ) : hasRecoverableDraft ? (
-              <Button type="primary" icon={<ReloadOutlined />} onClick={() => void startWriting()}>恢复质量审读</Button>
+            ) : hasRecoverableCheckpoint ? (
+              <Button type="primary" icon={<ReloadOutlined />} onClick={() => void startWriting()}>
+                {workflowState.hasCheckpointDraft
+                  ? '恢复质量审读'
+                  : `从第 ${(workflowState.checkpointChapterIndex ?? 0) + 1} 章继续`}
+              </Button>
             ) : (
               <Button type="primary" icon={<PlayCircleOutlined />} onClick={() => void startWriting()}>继续创作</Button>
             )}
@@ -210,8 +278,8 @@ export default function NovelStudio() {
         </header>
 
         <div className="studio-progress">
-          <span>第 {progress?.current_chapter || 0} / {progress?.total_chapters || novel.total_outline?.total_chapters || 0} 章</span>
-          <Progress percent={Math.round(progress?.percentage || workflowState.progress || 0)} showInfo={false} strokeColor="#176b5b" />
+          <span>第 {workflowState.currentChapter ?? progress?.current_chapter ?? 0} / {progress?.total_chapters || novel.total_outline?.total_chapters || 0} 章</span>
+          <Progress percent={Math.round(workflowState.progress ?? progress?.percentage ?? 0)} showInfo={false} strokeColor="#176b5b" />
         </div>
 
         <div className="studio-mobile-tabs" role="tablist" aria-label="创作台视图">

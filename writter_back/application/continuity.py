@@ -76,6 +76,8 @@ def extract_story_state(memory_context: str) -> str:
 def build_story_bible(total_outline: dict[str, Any], max_chars: int = 3200) -> str:
     """Create a stable, deterministic canon block from the macro outline."""
     bible = {
+        "source_title": total_outline.get("source_title", ""),
+        "source_summary": total_outline.get("source_summary", ""),
         "world_rules": total_outline.get("story_background", ""),
         "main_characters": total_outline.get("main_characters", []),
         "main_plot": total_outline.get("main_plot", {}),

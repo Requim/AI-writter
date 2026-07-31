@@ -125,7 +125,12 @@ class ChapterModel(Base):
             ondelete="CASCADE",
             name="fk_chapters_tenant_novel",
         ),
-        Index("ix_chapters_tenant_novel_index", "tenant_id", "novel_id", "chapter_index"),
+        UniqueConstraint(
+            "tenant_id",
+            "novel_id",
+            "chapter_index",
+            name="uq_chapters_tenant_novel_index",
+        ),
     )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
@@ -140,6 +145,7 @@ class ChapterModel(Base):
     user_decision = Column(JSONB, nullable=True)
     revision_count = Column(Integer, default=0)
     revision_history = Column(JSONB, nullable=True)
+    version = Column(Integer, nullable=False, default=1, server_default="1")
     status = Column(String(20), default="draft")
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)

@@ -3,17 +3,18 @@
 import asyncio
 import logging
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
 
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-from langgraph.types import Command
+from langgraph.types import Command, Overwrite
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
 from application.events import WorkflowEvent
 from application.quota_service import QuotaService
-from application.errors import RetryableWorkflowError
+from application.errors import RetryableWorkflowError, WorkflowBusyError
 from application.agents.router_agent import _route
 from application.workflow_builder import create_novel_workflow
 from config import settings
@@ -27,6 +28,49 @@ logger = logging.getLogger("uvicorn")
 
 LARGE_STATE_FIELDS = {"current_chapter_content", "memory_context", "completed_chapters"}
 TASK_REGISTRATION_GRACE_SECONDS = 60.0
+
+
+def _rewind_state_update(
+    values: dict[str, Any],
+    next_index: int,
+    discard_from_index: int,
+    is_completed: bool,
+) -> dict[str, Any]:
+    total_outline = values.get("total_outline")
+    total = (
+        int(total_outline.get("total_chapters", 0) or 0)
+        if isinstance(total_outline, dict)
+        else 0
+    )
+    outlines = [
+        item
+        for item in values.get("chapter_outlines", [])
+        if isinstance(item, dict)
+        and isinstance(item.get("chapter_number"), int)
+        and item["chapter_number"] <= next_index
+    ]
+    completed = [
+        item
+        for item in values.get("completed_chapters", [])
+        if isinstance(item, dict)
+        and isinstance(item.get("chapter_index"), int)
+        and item["chapter_index"] < discard_from_index
+    ]
+    return {
+        "__route__": "end" if is_completed else "continue",
+        "current_chapter_index": next_index,
+        "current_chapter_content": "",
+        "memory_context": "",
+        "memory_retrieved_for_chapter": -1,
+        "reflection_issues": [],
+        "user_decision": {},
+        "revision_instructions": "",
+        "revision_attempts": 0,
+        "progress_percentage": (next_index / total * 100) if total else 0,
+        "is_completed": is_completed,
+        "chapter_outlines": Overwrite(outlines),
+        "completed_chapters": Overwrite(completed),
+    }
 
 
 class NovelOrchestrator(AgentOrchestrator):
@@ -170,6 +214,25 @@ class NovelOrchestrator(AgentOrchestrator):
         }
         return True
 
+    @asynccontextmanager
+    async def exclusive_operation(
+        self,
+        context: TenantContext,
+        thread_id: str,
+        message: str,
+    ) -> AsyncIterator[None]:
+        """在小说级互斥锁内执行章节变更，避免与生成任务并发写入。"""
+        if not await self.try_start(context, thread_id):
+            raise WorkflowBusyError("该作品已有创作或编辑任务正在执行")
+        task = asyncio.current_task()
+        if task is not None:
+            self.register_task(context, thread_id, task)
+        self.record_activity(context, thread_id, message=message)
+        try:
+            yield
+        finally:
+            self.finish(context, thread_id, task=task)
+
     def register_task(
         self, context: TenantContext, thread_id: str, task: asyncio.Task[Any]
     ) -> None:
@@ -300,6 +363,46 @@ class NovelOrchestrator(AgentOrchestrator):
             message=reasoning,
         )
         return next_node
+
+    async def rewind_checkpoint(
+        self,
+        context: TenantContext,
+        thread_id: str,
+        next_index: int,
+        *,
+        discard_from_index: int,
+        is_completed: bool = False,
+    ) -> bool:
+        """将 checkpoint 回退到数据库已确认的下一章节位置。"""
+        await self._ensure_workflow()
+        config = self._make_config(context, thread_id, include_llm=False)
+        state = await self._workflow.aget_state(config)
+        values = getattr(state, "values", {}) or {}
+        if not values:
+            return False
+        update = _rewind_state_update(
+            values, next_index, discard_from_index, is_completed
+        )
+        await self._workflow.aupdate_state(
+            config,
+            update,
+            as_node="progress_check_node",
+        )
+        self.record_activity(
+            context,
+            thread_id,
+            active_node=None if is_completed else "router_agent",
+            message=(
+                "章节已重写，作品仍为完结状态"
+                if is_completed
+                else f"已回退，下一步从第 {next_index + 1} 章继续"
+            ),
+            status="idle",
+        )
+        if is_completed:
+            key = self.execution_key(context, thread_id)
+            self._execution_snapshots[key]["active_node"] = None
+        return True
 
     async def retry(
         self, context: TenantContext, thread_id: str

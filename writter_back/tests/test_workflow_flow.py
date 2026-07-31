@@ -15,10 +15,14 @@ from api.routers.workflow_router import (
     WorkflowInvokeRequest,
     _prepare_request,
     _public_error_data,
+    _seed_initial_input,
 )
 from application.agents.router_agent import _route
 from application.agents.router_agent import router_agent
-from application.errors import RetryableWorkflowError
+from application.agents.outline_generator_node import apply_creation_constraints
+from application.continuity import build_story_bible
+from application.errors import RetryableWorkflowError, WorkflowBusyError
+from application.agents.progress_check_node import progress_check_node
 from application.orchestrator import NovelOrchestrator
 from application.prompts.chapter_outline_prompts import CHAPTER_OUTLINE_SCHEMA
 from application.prompts.chapter_outline_prompts import build_chapter_outline_prompt
@@ -31,6 +35,9 @@ from application.prompts.reflection_prompts import (
 from application.schemas.agent_state import NovelAgentState
 from application.workflow_builder import WORKFLOW_NODES, create_novel_workflow
 from service.entities.identity import TenantContext
+from service.entities.novel import Novel
+from service.value_objects.outline import Outline
+from service.value_objects.progress import Progress
 
 
 def tenant_context() -> TenantContext:
@@ -255,6 +262,102 @@ def test_macro_outline_prompt_does_not_request_all_chapters():
     assert "禁止输出 chapters 字段" in prompt
 
 
+def test_macro_outline_prompt_includes_user_planning_constraints():
+    prompt = build_outline_prompt(
+        "romance",
+        "郫西往事",
+        "青春爱情故事",
+        target_total_chapters=36,
+        requested_writing_style="幽默诙谐",
+    )
+
+    assert "固定为用户计划的 36 章" in prompt
+    assert "用户指定的“幽默诙谐”" in prompt
+    assert "书名和简介是用户确认的正史事实" in prompt
+    assert "不得替换主角、关系、题材或另起故事" in prompt
+
+
+def test_story_bible_keeps_user_title_and_summary_as_canon():
+    bible = build_story_bible(
+        {
+            "source_title": "郫西往事",
+            "source_summary": "姚奇伶和吴梓银的青春爱情故事",
+            "story_background": "当代校园",
+            "main_characters": [{"姓名": "姚奇伶"}, {"姓名": "吴梓银"}],
+            "main_plot": {"起": "相识"},
+            "writing_style": "幽默诙谐",
+        }
+    )
+
+    assert "郫西往事" in bible
+    assert "姚奇伶和吴梓银的青春爱情故事" in bible
+
+
+def test_generated_outline_is_normalized_to_user_planning_constraints():
+    outline = apply_creation_constraints(
+        {
+            "writing_style": "第三人称叙事",
+            "total_chapters": 150,
+            "volumes": [
+                {"volume_number": index + 1, "start_chapter": index * 30 + 1, "end_chapter": (index + 1) * 30}
+                for index in range(5)
+            ],
+        },
+        target_total_chapters=36,
+        requested_writing_style="幽默诙谐",
+    )
+
+    assert outline["total_chapters"] == 36
+    assert outline["writing_style"] == "用户指定风格：幽默诙谐。第三人称叙事"
+    volumes = outline["volumes"]
+    assert isinstance(volumes, list)
+    assert volumes[0]["start_chapter"] == 1
+    assert volumes[-1]["end_chapter"] == 36
+    assert all(
+        volumes[index]["end_chapter"] + 1 == volumes[index + 1]["start_chapter"]
+        for index in range(len(volumes) - 1)
+    )
+
+
+def test_initial_workflow_input_is_backfilled_from_persisted_creation_settings():
+    input_data: dict[str, object] = {"novel_id": "test-novel"}
+    novel = Novel(
+        novel_type="romance",
+        title="郫西往事",
+        summary="姚奇伶和吴梓银的青春爱情故事",
+        total_outline=Outline(total_chapters=36, writing_style="幽默诙谐"),
+    )
+
+    _seed_initial_input(input_data, novel)
+
+    assert input_data["novel_type"] == "romance"
+    assert input_data["title"] == "郫西往事"
+    assert input_data["summary"] == "姚奇伶和吴梓银的青春爱情故事"
+    assert input_data["target_total_chapters"] == 36
+    assert input_data["requested_writing_style"] == "幽默诙谐"
+    assert "total_outline" not in input_data
+
+
+def test_initial_workflow_input_keeps_explicit_values_and_complete_outline():
+    input_data: dict[str, object] = {"title": "本次指定书名"}
+    novel = Novel(
+        novel_type="romance",
+        title="数据库书名",
+        total_outline=Outline(
+            story_background="故事背景",
+            main_plot={"起": "相遇"},
+            total_chapters=36,
+            writing_style="幽默诙谐",
+            volumes=[{"start_chapter": 1, "end_chapter": 36}],
+        ),
+    )
+
+    _seed_initial_input(input_data, novel)
+
+    assert input_data["title"] == "本次指定书名"
+    assert input_data["total_outline"]["total_chapters"] == 36
+
+
 def test_macro_outline_validation_accepts_volume_only_contract():
     outline = {
         "story_background": "有限制的世界",
@@ -416,6 +519,95 @@ async def test_retry_checkpoint_routes_existing_draft_to_reflection():
     assert next_node == "reflection_node"
     assert workflow.aupdate_state.await_args.args[1]["next_tool"] == "reflection_node"
     assert workflow.aupdate_state.await_args.kwargs["as_node"] == "router_agent"
+
+
+@pytest.mark.asyncio
+async def test_rewind_checkpoint_discards_stale_chapter_state():
+    service = orchestrator()
+    workflow = SimpleNamespace(
+        aget_state=AsyncMock(
+            return_value=SimpleNamespace(
+                values={
+                    "total_outline": {"total_chapters": 6},
+                    "current_chapter_index": 4,
+                    "current_chapter_content": "旧草稿",
+                    "chapter_outlines": [
+                        {"chapter_number": index} for index in range(1, 5)
+                    ],
+                    "completed_chapters": [
+                        {"chapter_index": index} for index in range(4)
+                    ],
+                }
+            )
+        ),
+        aupdate_state=AsyncMock(),
+    )
+    service._workflow = workflow
+
+    synced = await service.rewind_checkpoint(
+        tenant_context(), str(uuid4()), 2, discard_from_index=2
+    )
+
+    update = workflow.aupdate_state.await_args.args[1]
+    assert synced is True
+    assert update["current_chapter_index"] == 2
+    assert update["current_chapter_content"] == ""
+    assert [item["chapter_number"] for item in update["chapter_outlines"].value] == [1, 2]
+    assert [item["chapter_index"] for item in update["completed_chapters"].value] == [0, 1]
+    assert workflow.aupdate_state.await_args.kwargs["as_node"] == "progress_check_node"
+
+
+@pytest.mark.asyncio
+async def test_progress_check_uses_persisted_rewind_position():
+    persisted = SimpleNamespace(
+        progress=Progress(
+            current_chapter=2,
+            total_chapters=6,
+            percentage=100 / 3,
+            status="writing",
+        )
+    )
+    config = {
+        "configurable": {
+            "novel_repository": SimpleNamespace(
+                find_by_id=AsyncMock(return_value=persisted)
+            ),
+            "tenant_id": str(uuid4()),
+            "novel_id": str(uuid4()),
+            "auto_mode": True,
+        }
+    }
+    state = {
+        "total_outline": {"total_chapters": 6},
+        "current_chapter_index": 4,
+        "is_completed": True,
+        "current_chapter_content": "旧草稿",
+        "chapter_outlines": [{"chapter_number": index} for index in range(1, 5)],
+        "completed_chapters": [{"chapter_index": index} for index in range(4)],
+    }
+
+    result = await progress_check_node(state, config)
+
+    assert result["__route__"] == "continue"
+    assert result["current_chapter_index"] == 2
+    assert result["is_completed"] is False
+    assert result["current_chapter_content"] == ""
+    assert len(result["completed_chapters"].value) == 2
+
+
+@pytest.mark.asyncio
+async def test_exclusive_operation_rejects_overlapping_mutation():
+    service = orchestrator()
+    context = tenant_context()
+    thread_id = str(uuid4())
+
+    async with service.exclusive_operation(context, thread_id, "测试章节修改"):
+        assert service.is_executing(context, thread_id) is True
+        with pytest.raises(WorkflowBusyError):
+            async with service.exclusive_operation(context, thread_id, "重复修改"):
+                pass
+
+    assert service.is_executing(context, thread_id) is False
 
 
 @pytest.mark.asyncio

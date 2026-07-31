@@ -11,6 +11,8 @@ class NovelAgentState(TypedDict):
     novel_type: str                          # 小说类型（强制用户输入，无AI fallback）
     title: Optional[str]                      # 书名（用户优先，空则AI生成）
     summary: Optional[str]                    # 简介（用户优先，空则AI生成）
+    target_total_chapters: Optional[int]      # 用户计划章节数（约束AI生成总纲）
+    requested_writing_style: Optional[str]    # 用户指定写作风格（约束AI生成总纲）
     total_outline: Optional[Dict]            # 总纲领（用户优先，空则AI生成）
     chapter_outlines_input: Optional[Dict]    # 用户提供的章节细纲（优先使用）
     

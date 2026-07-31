@@ -41,10 +41,13 @@ export interface ChapterSummary {
   title: string
   word_count: number
   status: string
+  version: number
 }
 
 export interface ChapterDetail extends ChapterSummary {
   content: string
+  updated_at: string
+  checkpoint_status?: 'synced' | 'not_found' | 'deferred'
 }
 
 export interface ReflectionIssue {
@@ -59,6 +62,7 @@ export type WorkflowEventType =
   | 'status'
   | 'reasoning'
   | 'content_delta'
+  | 'chapter_persisted'
   | 'quality'
   | 'interrupt'
   | 'progress'

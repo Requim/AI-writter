@@ -11,6 +11,7 @@ from uuid import uuid4, UUID
 from datetime import datetime
 from application.schemas.agent_state import NovelAgentState
 from application.continuity import extract_story_state
+from application.streaming import emit_workflow_event
 from application.prompts.memory_prompts import (
     build_chapter_summary_prompt,
     build_story_state_prompt,
@@ -226,6 +227,20 @@ async def persist_node(
             rolling_plan=(
                 json.dumps(rolling_plan, ensure_ascii=False) if rolling_plan else None
             ),
+            discard_following=bool(
+                config["configurable"].get("discard_following_chapters", False)
+            ),
+        )
+        emit_workflow_event(
+            "chapter_persisted",
+            {
+                "chapter_id": chapter_id,
+                "chapter_index": current_index,
+                "current_chapter": completed_count,
+                "percentage": new_percentage,
+                "is_completed": is_completed,
+            },
+            "persist_node",
         )
         logger.info(
             "【持久化节点】章节、摘要、累计状态、滚动规划和进度已原子保存 | ch=%s, title=%s",

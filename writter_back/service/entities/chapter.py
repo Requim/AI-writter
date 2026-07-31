@@ -21,6 +21,7 @@ class Chapter:
     user_decision: Optional[Dict[str, Any]] = None
     revision_count: int = 0
     revision_history: List[Dict[str, Any]] = field(default_factory=list)
+    version: int = 1
     
     status: str = "draft"  # draft, writing, completed, revised
     created_at: datetime = field(default_factory=datetime.now)

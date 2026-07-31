@@ -8,6 +8,7 @@ WorkflowEventType = Literal[
     "status",
     "reasoning",
     "content_delta",
+    "chapter_persisted",
     "quality",
     "interrupt",
     "progress",

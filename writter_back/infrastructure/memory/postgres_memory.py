@@ -4,12 +4,114 @@ import json
 import logging
 import uuid
 from typing import List, Dict, Any
-from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy import text
 
 from service.ports.memory_service import MemoryService
 
 logger = logging.getLogger(__name__)
+
+
+async def _latest_layer(
+    session: AsyncSession,
+    tenant_id: uuid.UUID,
+    novel_id: uuid.UUID,
+    memory_type: str,
+    current_index: int,
+) -> str | None:
+    result = await session.execute(
+        text(
+            "SELECT content FROM novel_memories "
+            "WHERE tenant_id = :tenant_id AND novel_id = :novel_id "
+            "AND metadata @> CAST(:meta_filter AS jsonb) "
+            "AND (metadata->>'chapter_index' IS NULL "
+            "OR (metadata->>'chapter_index')::int < :current_index) "
+            "ORDER BY created_at DESC LIMIT 1"
+        ),
+        {
+            "tenant_id": tenant_id,
+            "novel_id": novel_id,
+            "meta_filter": json.dumps({"type": memory_type}),
+            "current_index": current_index,
+        },
+    )
+    row = result.fetchone()
+    return str(row[0]) if row else None
+
+
+async def _recent_chapters(
+    session: AsyncSession,
+    tenant_id: uuid.UUID,
+    novel_id: uuid.UUID,
+    current_index: int,
+    count: int,
+) -> list[str]:
+    result = await session.execute(
+        text(
+            "SELECT content FROM novel_memories "
+            "WHERE tenant_id = :tenant_id AND novel_id = :novel_id "
+            "AND metadata @> CAST(:type_filter AS jsonb) "
+            "AND (metadata->>'chapter_index')::int >= :min_index "
+            "AND (metadata->>'chapter_index')::int < :current_index "
+            "ORDER BY (metadata->>'chapter_index')::int ASC"
+        ),
+        {
+            "tenant_id": tenant_id,
+            "novel_id": novel_id,
+            "type_filter": json.dumps({"type": "chapter"}),
+            "min_index": current_index - count,
+            "current_index": current_index,
+        },
+    )
+    return [str(row[0]) for row in result.fetchall()]
+
+
+async def _historical_summaries(
+    session: AsyncSession,
+    tenant_id: uuid.UUID,
+    novel_id: uuid.UUID,
+    max_index: int,
+) -> list[str]:
+    result = await session.execute(
+        text(
+            "SELECT content, metadata FROM novel_memories "
+            "WHERE tenant_id = :tenant_id AND novel_id = :novel_id "
+            "AND metadata @> CAST(:type_filter AS jsonb) "
+            "AND (metadata->>'chapter_index')::int < :max_index "
+            "ORDER BY (metadata->>'chapter_index')::int ASC"
+        ),
+        {
+            "tenant_id": tenant_id,
+            "novel_id": novel_id,
+            "type_filter": json.dumps({"type": "chapter_summary"}),
+            "max_index": max_index,
+        },
+    )
+    summaries = []
+    for content, metadata in result.fetchall():
+        parsed = (
+            metadata if isinstance(metadata, dict) else json.loads(metadata or "{}")
+        )
+        summaries.append(f"第{parsed.get('chapter_index', 0) + 1}章摘要：{content}")
+    return summaries
+
+
+def _format_hierarchical_context(
+    story_state: str | None,
+    rolling_plan: str | None,
+    recent_chapters: list[str],
+    historical_summaries: list[str],
+) -> str:
+    parts = []
+    if story_state:
+        parts.append(f"<S层故事状态>\n{story_state}")
+    if rolling_plan:
+        parts.append(f"<P层滚动规划>\n{rolling_plan}")
+    if recent_chapters:
+        parts.append("<M层近期章节>\n" + "\n\n".join(recent_chapters))
+    if historical_summaries:
+        parts.append("<L层历史章节摘录>\n" + "\n".join(historical_summaries))
+    return "\n\n".join(parts)
 
 
 class PostgresMemoryAdapter(MemoryService):
@@ -218,120 +320,20 @@ class PostgresMemoryAdapter(MemoryService):
             m_count,
         )
         novel_uuid = uuid.UUID(novel_id)
-
         async with self.async_session() as session:
-            # S-layer: story state
-            s_stmt = text("""
-                SELECT content FROM novel_memories
-                WHERE tenant_id = :tenant_id AND novel_id = :novel_id
-                  AND metadata @> CAST(:meta_filter AS jsonb)
-                ORDER BY created_at DESC
-                LIMIT 1
-            """)
-            s_result = await session.execute(
-                s_stmt,
-                {
-                    "tenant_id": uuid.UUID(tenant_id),
-                    "novel_id": novel_uuid,
-                    "meta_filter": json.dumps({"type": "story_state"}),
-                },
+            tenant_uuid = uuid.UUID(tenant_id)
+            story_state = await _latest_layer(
+                session, tenant_uuid, novel_uuid, "story_state", current_index
             )
-            s_row = s_result.fetchone()
-            story_state = s_row[0] if s_row else None
-
-            # P-layer: latest rolling five-chapter beat plan
-            p_stmt = text("""
-                SELECT content FROM novel_memories
-                WHERE tenant_id = :tenant_id AND novel_id = :novel_id
-                  AND metadata @> CAST(:meta_filter AS jsonb)
-                ORDER BY created_at DESC
-                LIMIT 1
-            """)
-            p_result = await session.execute(
-                p_stmt,
-                {
-                    "tenant_id": uuid.UUID(tenant_id),
-                    "novel_id": novel_uuid,
-                    "meta_filter": json.dumps({"type": "rolling_plan"}),
-                },
+            rolling_plan = await _latest_layer(
+                session, tenant_uuid, novel_uuid, "rolling_plan", current_index
             )
-            p_row = p_result.fetchone()
-            rolling_plan = p_row[0] if p_row else None
-
-            # M-layer: recent chapters (exclude current chapter)
-            m_stmt = text("""
-                SELECT content, metadata FROM novel_memories
-                WHERE tenant_id = :tenant_id AND novel_id = :novel_id
-                  AND metadata @> CAST(:type_filter AS jsonb)
-                  AND (metadata->>'chapter_index')::int >= :min_index
-                  AND (metadata->>'chapter_index')::int < :current_index
-                ORDER BY (metadata->>'chapter_index')::int ASC
-            """)
-            m_result = await session.execute(
-                m_stmt,
-                {
-                    "tenant_id": uuid.UUID(tenant_id),
-                    "novel_id": novel_uuid,
-                    "type_filter": json.dumps({"type": "chapter"}),
-                    "min_index": current_index - m_count,
-                    "current_index": current_index,
-                },
+            recent = await _recent_chapters(
+                session, tenant_uuid, novel_uuid, current_index, m_count
             )
-            m_rows = m_result.fetchall()
-
-            # L-layer: historical chapter summaries
-            l_stmt = text("""
-                SELECT content, metadata FROM novel_memories
-                WHERE tenant_id = :tenant_id AND novel_id = :novel_id
-                  AND metadata @> CAST(:type_filter AS jsonb)
-                  AND (metadata->>'chapter_index')::int < :max_index
-                ORDER BY (metadata->>'chapter_index')::int ASC
-            """)
-            l_result = await session.execute(
-                l_stmt,
-                {
-                    "tenant_id": uuid.UUID(tenant_id),
-                    "novel_id": novel_uuid,
-                    "type_filter": json.dumps({"type": "chapter_summary"}),
-                    "max_index": current_index - m_count,
-                },
+            historical = await _historical_summaries(
+                session, tenant_uuid, novel_uuid, current_index - m_count
             )
-            l_rows = l_result.fetchall()
-
-        # Return empty string if no data at all
-        if not story_state and not rolling_plan and not m_rows and not l_rows:
-            return ""
-
-        parts = []
-
-        # S-layer
-        if story_state:
-            parts.append(f"<S层故事状态>\n{story_state}")
-
-        # P-layer
-        if rolling_plan:
-            parts.append(f"<P层滚动规划>\n{rolling_plan}")
-
-        # M-layer（store_chapter_memory 已含"第N章：Title"前缀，此处直接用原始内容）
-        if m_rows:
-            m_parts = []
-            for row in m_rows:
-                content = row[0]
-                m_parts.append(content)
-            parts.append("<M层近期章节>\n" + "\n\n".join(m_parts))
-
-        # L-layer
-        if l_rows:
-            l_parts = []
-            for row in l_rows:
-                content = row[0]
-                meta = (
-                    row[1]
-                    if isinstance(row[1], dict)
-                    else (json.loads(row[1]) if row[1] else {})
-                )
-                idx = meta.get("chapter_index", 0)
-                l_parts.append(f"第{idx + 1}章摘要：{content}")
-            parts.append("<L层历史章节摘录>\n" + "\n".join(l_parts))
-
-        return "\n\n".join(parts)
+        return _format_hierarchical_context(
+            story_state, rolling_plan, recent, historical
+        )
