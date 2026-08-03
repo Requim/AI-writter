@@ -30,15 +30,16 @@ flowchart LR
     F --> A["认证与租户上下文"]
     F --> O["LangGraph Orchestrator"]
     F --> R["Repository / Quota / Memory"]
+    F --> I["Redis 命令幂等租约"]
     O --> L["DeepSeek / OpenAI Compatible / Anthropic"]
     O --> C["PostgreSQL Checkpoint"]
     R --> P[("PostgreSQL + pgvector image")]
     C --> P
 ```
 
-运行时由 FastAPI lifespan 创建并复用数据库 engine、session factory、身份仓储、小说仓储、记忆服务、额度服务和 orchestrator。应用关闭时统一释放连接池和 checkpoint 资源。
+运行时由 FastAPI lifespan 创建并复用数据库 engine、session factory、身份仓储、小说仓储、记忆服务、额度服务、命令幂等存储和 orchestrator。应用关闭时统一释放 Redis、数据库连接池和 checkpoint 资源。
 
-生产 Compose 固定一个后端 worker。执行锁和活动任务保存在进程内，适合当前单机部署；扩展为多实例前需要迁移到 Redis 或其他共享协调层。
+Redis 已负责跨请求的命令幂等保护，但执行锁和活动任务仍保存在后端进程内。生产 Compose 因此固定一个后端 worker；扩展为多实例前仍需将执行协调迁移到共享存储。
 
 ## 技术栈
 
@@ -49,6 +50,7 @@ flowchart LR
 | 后端 | Python 3.11+、FastAPI、Pydantic、Uvicorn |
 | 工作流 | LangGraph、PostgreSQL Checkpointer |
 | 数据库 | PostgreSQL 16、SQLAlchemy Async、asyncpg、psycopg |
+| 命令幂等 | Redis 7.4、AOF |
 | 认证 | PyJWT、Argon2id、随机不透明 Refresh Token |
 | LLM | OpenAI SDK、Anthropic SDK、DeepSeek/OpenAI 兼容协议 |
 | 迁移 | Alembic |
@@ -421,6 +423,7 @@ docker compose down -v
 | --- | --- | --- |
 | `ENVIRONMENT` | `development` | `production` 会启用更严格校验 |
 | `DATABASE_URL` | 后端本地模板提供 | SQLAlchemy async PostgreSQL URL |
+| `REDIS_URL` | `redis://localhost:6379/0` | 工作流命令幂等存储；不可用时生成请求失败关闭 |
 | `POSTGRES_DB` | `novel_writer` | Compose 数据库名 |
 | `POSTGRES_USER` | `novel_writer` | Compose 数据库用户 |
 | `POSTGRES_PASSWORD` | 必填 | 数据库密码 |
@@ -439,6 +442,9 @@ docker compose down -v
 | `LLM_MAX_RETRIES` | `0` | SDK 网络重试；结构化解析另有一次有限重试 |
 | `WORKFLOW_TIMEOUT_SECONDS` | `600` | 执行停滞判定和 API 超时参考 |
 | `SSE_HEARTBEAT_SECONDS` | `15` | Heartbeat 间隔 |
+| `WORKFLOW_IDEMPOTENCY_REQUIRED` | `false` | 新前端部署完成后再强制 `Idempotency-Key` |
+| `WORKFLOW_REVIEW_V3_ENABLED` | `false` | 只让新启动流程写入 v3 提案式审核 checkpoint |
+| `ADAPTIVE_COMPACTION_ENABLED` | `false` | 命中确定性长度条件时最多压缩一次 |
 | `MAX_REFLECTION_LOOPS` | `3` | 配置的审读循环上限 |
 | `REFLECTION_THRESHOLD` | `0.8` | 质量通过阈值 |
 | `CORS_ORIGINS` | 本地前端地址 | 逗号分隔白名单 |
@@ -552,7 +558,7 @@ npm run build
 
 `docker-compose.prod.yml` 会：
 
-- 固定三个容器名。
+- 固定四个容器名。
 - 不暴露后端和数据库端口。
 - 将前端仅绑定到 `127.0.0.1:5173`。
 - 使用预构建 `dist` 的 `Dockerfile.runtime`。
@@ -571,14 +577,30 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up --build -d
 docker compose -f docker-compose.yml -f docker-compose.prod.yml ps
 ```
 
+如果服务器已有可复用的 Redis，将后端 `REDIS_URL` 指向该实例的独立逻辑库，
+并使用外部 Redis 覆盖文件。该覆盖会停用本项目内置 Redis、移除后端对内置
+Redis 的启动依赖，并让后端接入 `unlimitworld_default` 外部网络：
+
+```bash
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.prod.yml \
+  -f docker-compose.external-redis.yml \
+  up --build -d
+```
+
+复用前必须确认现有 Redis 已启用持久化、无公网端口、淘汰策略为
+`noeviction`，并为本项目分配独立逻辑库或 ACL。后续生产操作必须持续带上同一
+组 Compose 文件，避免误启动内置 Redis。
+
 部署顺序建议：
 
-1. 备份 PostgreSQL 和当前应用目录。
-2. 更新代码和锁文件。
-3. 构建前端 `dist`。
-4. 使用生产 Compose 构建镜像。
-5. 先确认数据库和后端 healthy，再切换前端。
-6. 检查域名首页、同源 `/api`、SSE 和浏览器控制台。
+1. 备份 PostgreSQL、Redis 卷和当前应用目录。
+2. 更新代码和锁文件，保持三个工作流开关为 `false`。
+3. 使用生产 Compose 部署 Redis 与兼容版后端，确认 readiness 同时通过 PostgreSQL、Redis 检查。
+4. 构建并切换前端，验证 Token 自动刷新、命令 ID 和旧状态过滤后，将 `WORKFLOW_IDEMPOTENCY_REQUIRED` 设为 `true`。
+5. 用测试作品完成旧 checkpoint 恢复和新建全流程，再开启 `WORKFLOW_REVIEW_V3_ENABLED`。
+6. 单独验证章节压缩边界后开启 `ADAPTIVE_COMPACTION_ENABLED`，检查同源 `/api`、SSE 和浏览器控制台。
 
 不要只使用基础 Compose 重建生产前端，否则会丢失 `edge` 网络和生产端口覆盖，导致反向代理短暂 `502`。
 

@@ -13,10 +13,22 @@ services:
       timeout: 5s
       retries: 12
 
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - novel_writer_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
   backend:
     build: ./writter_back
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-novel_writer}:${POSTGRES_PASSWORD}@database:5432/${POSTGRES_DB:-novel_writer}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       ENVIRONMENT: ${ENVIRONMENT:-development}
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
       PLATFORM_ADMIN_EMAIL: ${PLATFORM_ADMIN_EMAIL:-}
@@ -28,9 +40,14 @@ services:
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       CORS_ORIGINS: http://localhost:5173
+      WORKFLOW_IDEMPOTENCY_REQUIRED: ${WORKFLOW_IDEMPOTENCY_REQUIRED:-false}
+      WORKFLOW_REVIEW_V3_ENABLED: ${WORKFLOW_REVIEW_V3_ENABLED:-false}
+      ADAPTIVE_COMPACTION_ENABLED: ${ADAPTIVE_COMPACTION_ENABLED:-false}
       WORKERS: 1
     depends_on:
       database:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     ports:
       - "8000:8000"
@@ -55,3 +72,4 @@ services:
 
 volumes:
   novel_writer_data:
+  novel_writer_redis_data:

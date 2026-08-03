@@ -11,6 +11,7 @@ import json
 
 from application.continuity import build_budgeted_context, compact_text
 from application.prompts.version import PROMPT_VERSION
+from application.word_budget import chapter_target_words
 
 
 def _fmt_events(events) -> str:
@@ -139,6 +140,48 @@ _SYSTEM_PROMPT_EXTRA = (
 #  场景队列生成：逐个场景生成
 # ─────────────────────────────────────────────
 
+_FIRST_SCENE_TEMPLATE = """请根据以下细纲，撰写第{chapter_num}章的第一个场景（共{total_scenes}个场景）。
+
+【基本信息】
+小说类型：{novel_type}
+书名：{title}
+章节标题：{ch_title}
+本章场景数：{total_scenes}  当前场景：场景1（共{total_scenes}个）
+本场景目标字数：{target_words}字
+
+【本场景细纲】
+{scene_block}
+
+【静态故事圣经（不可违背）】
+{story_bible}
+
+【本章状态契约】
+{contract}
+
+【本章主角心理轨迹】
+{internal_monologue}
+
+【本章伏笔与悬念】
+- 需自然回收的伏笔（Callback）：{callback}
+- 由行动后果埋设的新矛盾（Setup）：{setup}
+
+【前文衔接】
+（前文记忆分层：<S层故事状态> | <M层近期章节> | <L层历史章节摘录>）
+{context}{previous_tail}
+
+【场景定位】
+- 这是本章的「开篇场景」，承担着承接前文、建立本章基调的任务。
+- 如果 callback 与本场景因果相关，请在行动中自然回收；否则保留给更合适的场景。
+- 场景结尾须自然留出向下一场景过渡的空间。
+
+{instructions}
+
+【输出要求】
+- 直接输出正文，不要写"场景1"等标签。
+- 本场景目标字数约 {target_words} 字。
+- 字数可上下浮动，但不超过目标字数的 120%；优先完成行动与后果，不得用重复描写补足篇幅。
+"""
+
 
 def build_first_scene_prompt(
     scene: dict,
@@ -167,46 +210,67 @@ def build_first_scene_prompt(
         else ""
     )
 
-    return f"""请根据以下细纲，撰写第{chapter_num}章的第一个场景（共{total_scenes}个场景）。
+    return _FIRST_SCENE_TEMPLATE.format(
+        chapter_num=chapter_num,
+        total_scenes=total_scenes,
+        novel_type=novel_type,
+        title=title,
+        ch_title=ch_title,
+        target_words=target_words,
+        scene_block=scene_block,
+        story_bible=compact_text(story_bible, 2600) if story_bible else "无",
+        contract=contract,
+        internal_monologue=internal_monologue or "无特殊要求",
+        callback=callback_str,
+        setup=setup_str,
+        context=ctx,
+        previous_tail=prev_tail_block,
+        instructions=_WRITING_INSTRUCTIONS,
+    )
+
+
+_NEXT_SCENE_TEMPLATE = """请接续上文，撰写第{chapter_num}章的下一个场景（场景{scene_index}/{total_scenes}）。
 
 【基本信息】
 小说类型：{novel_type}
 书名：{title}
 章节标题：{ch_title}
-本章场景数：{total_scenes}  当前场景：场景1（共{total_scenes}个）
+当前场景：场景{scene_index}（共{total_scenes}个）
 本场景目标字数：{target_words}字
+
+↑ 上一场景核心脉要（Events.Result + 落点氛围）↓
+{previous_digest}
+
+【已完成场景账本（均为正文已落地事实）】
+{ledger}
+
+【静态故事圣经（不可违背）】
+{story_bible}
+
+【本章状态契约与剩余义务】
+{contract}
 
 【本场景细纲】
 {scene_block}
 
-【静态故事圣经（不可违背）】
-{compact_text(story_bible, 2600) if story_bible else "无"}
-
-【本章状态契约】
-{contract}
-
 【本章主角心理轨迹】
-{internal_monologue or "无特殊要求"}
+{internal_monologue}
 
 【本章伏笔与悬念】
-- 需自然回收的伏笔（Callback）：{callback_str}
-- 由行动后果埋设的新矛盾（Setup）：{setup_str}
+- 需回收的伏笔（Callback）：{callback}
+- 待埋设的新矛盾（Setup）：{setup}
+- 根据场景账本判断尚未履行的 turn、price_paid 和 state_delta，不得重复已完成事件。
 
 【前文衔接】
 （前文记忆分层：<S层故事状态> | <M层近期章节> | <L层历史章节摘录>）
-{ctx}{prev_tail_block}
-
-【场景定位】
-- 这是本章的「开篇场景」，承担着承接前文、建立本章基调的任务。
-- 如果 callback 与本场景因果相关，请在行动中自然回收；否则保留给更合适的场景。
-- 场景结尾须自然留出向下一场景过渡的空间。
-
-{_WRITING_INSTRUCTIONS}
+{context}
+{correction}
 
 【输出要求】
-- 直接输出正文，不要写"场景1"等标签。
+- 直接输出正文，不要写"场景{scene_index}"等标签。
 - 本场景目标字数约 {target_words} 字。
-- 字数可上下浮动（若需要更充分展开），但不超过目标字数的 150%。
+- 注意与上一场景的自然衔接，避免情节跳跃。
+- 字数可上下浮动，但不超过目标字数的 120%；不得重复上一场景已经确认的信息。
 """
 
 
@@ -238,49 +302,25 @@ def build_next_scene_prompt(
     correction = f"\n【动态校准】{correction_note}" if correction_note else ""
     ledger = compact_text(json.dumps(scene_ledger or [], ensure_ascii=False, indent=2), 2400)
 
-    return f"""请接续上文，撰写第{chapter_num}章的下一个场景（场景{scene_index}/{total_scenes}）。
-
-【基本信息】
-小说类型：{novel_type}
-书名：{title}
-章节标题：{ch_title}
-当前场景：场景{scene_index}（共{total_scenes}个）
-本场景目标字数：{target_words}字
-
-↑ 上一场景核心脉要（Events.Result + 落点氛围）↓
-{prev_scene_digest}
-
-【已完成场景账本（均为正文已落地事实）】
-{ledger or "无"}
-
-【静态故事圣经（不可违背）】
-{compact_text(story_bible, 2200) if story_bible else "无"}
-
-【本章状态契约与剩余义务】
-{contract}
-
-【本场景细纲】
-{scene_block}
-
-【本章主角心理轨迹】
-{internal_monologue or "无特殊要求"}
-
-【本章伏笔与悬念】
-- 需回收的伏笔（Callback）：{callback_str}
-- 待埋设的新矛盾（Setup）：{setup_str}
-- 根据场景账本判断尚未履行的 turn、price_paid 和 state_delta，不得重复已完成事件。
-
-【前文衔接】
-（前文记忆分层：<S层故事状态> | <M层近期章节> | <L层历史章节摘录>）
-{ctx}
-{correction}
-
-【输出要求】
-- 直接输出正文，不要写"场景{scene_index}"等标签。
-- 本场景目标字数约 {target_words} 字。
-- 注意与上一场景的自然衔接，避免情节跳跃。
-- 字数可上下浮动，但不超过目标字数的 150%。
-"""
+    return _NEXT_SCENE_TEMPLATE.format(
+        chapter_num=chapter_num,
+        scene_index=scene_index,
+        total_scenes=total_scenes,
+        novel_type=novel_type,
+        title=title,
+        ch_title=ch_title,
+        target_words=target_words,
+        previous_digest=prev_scene_digest,
+        ledger=ledger or "无",
+        story_bible=compact_text(story_bible, 2200) if story_bible else "无",
+        contract=contract,
+        scene_block=scene_block,
+        internal_monologue=internal_monologue or "无特殊要求",
+        callback=callback_str,
+        setup=setup_str,
+        context=ctx,
+        correction=correction,
+    )
 
 
 # ─────────────────────────────────────────────
@@ -298,9 +338,9 @@ def build_scene_continue_prompt(
     base = (
         f"当前场景内容字数 {word_count}，目标 {target_words} 字，字数不足。\n"
         f"请继续扩展本场景内容。优先补充：\n"
-        f"1. 补全尚未完成的行动、反制、策略变化与后果\n"
-        f"2. 用人物选择和有辨识度的细节增加有效信息，而非重复情绪\n"
-        f"3. 让对话暴露关系或改变局势，并保持角色独有声音\n"
+        f"1. 只补全尚未完成的行动、反制、信息增量与不可逆代价\n"
+        f"2. 不增加纯环境描写、重复情绪、闲聊或规则复述来凑字数\n"
+        f"3. 让新增段落改变人物策略、关系或局势\n"
         f"4. 保证新增内容与既有结尾自然衔接\n\n"
         f"已有内容（结尾部分）：\n{existing_content[-800:]}"
     )
@@ -312,6 +352,44 @@ def build_scene_continue_prompt(
 # ─────────────────────────────────────────────
 #  保守模式（单次生成整章，用于降级)
 # ─────────────────────────────────────────────
+
+_CHAPTER_TEMPLATE = """请根据以下深度细纲，撰写第{chapter_number}章正文内容。
+
+【基本信息】
+小说类型：{novel_type}
+书名：{title}
+章节标题：{chapter_title}
+字数分配参考：{word_distribution}
+本章目标字数：约 {target_words} 字；不得超过目标的 115%，禁止注水。
+
+【细纲数据】
+{scenes}
+
+【静态故事圣经（不可违背）】
+{story_bible}
+
+【本章状态契约】
+{contract}
+
+【主角心理轨迹】
+{internal_monologue}
+
+【伏笔与悬念】
+- 本章需自然回收的伏笔（Callback）：{callback}
+- 由本章行动后果埋下的新矛盾（Setup）：{setup}
+
+【前文衔接】
+（前文记忆分层：<S层故事状态> | <M层近期章节> | <L层历史章节摘录>）
+{context}{previous_tail}
+
+{instructions}
+
+═══════════════════════════════════
+【输出要求】
+- 直接输出正文，不要写「场景1」「第1步」等标签。
+- 字数严格控制在 3000-7000 字之间。
+- 结尾必须产生强烈的「必须翻到下一页」的钩子效果。
+"""
 
 
 def build_chapter_writer_prompt(
@@ -348,43 +426,23 @@ def build_chapter_writer_prompt(
         else ""
     )
 
-    return f"""请根据以下深度细纲，撰写第{ch_num}章正文内容。
-
-【基本信息】
-小说类型：{novel_type}
-书名：{title}
-章节标题：{ch_title}
-    字数分配参考：{word_dist or "3000-7000字"}
-    目标字数：不少于3000字，尽量不超过7000字，禁止注水。
-
-【细纲数据】
-{scenes_text}
-
-【静态故事圣经（不可违背）】
-{compact_text(story_bible, 2600) if story_bible else "无"}
-
-【本章状态契约】
-{contract}
-
-【主角心理轨迹】
-{internal_monologue or "无特殊要求"}
-
-【伏笔与悬念】
-- 本章需自然回收的伏笔（Callback）：{logic_hooks.get("callback", "无")}
-- 由本章行动后果埋下的新矛盾（Setup）：{logic_hooks.get("setup", "无")}
-
-【前文衔接】
-（前文记忆分层：<S层故事状态> | <M层近期章节> | <L层历史章节摘录>）
-{ctx}{prev_tail_block}
-
-{_WRITING_INSTRUCTIONS}
-
-═══════════════════════════════════
-【输出要求】
-- 直接输出正文，不要写「场景1」「第1步」等标签。
-- 字数严格控制在 3000-7000 字之间。
-- 结尾必须产生强烈的「必须翻到下一页」的钩子效果。
-"""
+    return _CHAPTER_TEMPLATE.format(
+        chapter_number=ch_num,
+        novel_type=novel_type,
+        title=title,
+        chapter_title=ch_title,
+        word_distribution=word_dist or "3000-7000字",
+        target_words=chapter_target_words(chapter_outline),
+        scenes=scenes_text,
+        story_bible=compact_text(story_bible, 2600) if story_bible else "无",
+        contract=contract,
+        internal_monologue=internal_monologue or "无特殊要求",
+        callback=logic_hooks.get("callback", "无"),
+        setup=logic_hooks.get("setup", "无"),
+        context=ctx,
+        previous_tail=prev_tail_block,
+        instructions=_WRITING_INSTRUCTIONS,
+    )
 
 
 def build_chapter_continue_prompt(word_count: int, existing_content: str) -> str:

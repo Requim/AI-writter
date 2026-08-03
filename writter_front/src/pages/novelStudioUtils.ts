@@ -2,6 +2,8 @@ import type { ChapterDetail, ChapterSummary, InterruptInfo } from '@/types/novel
 
 /** 返回自动模式处理当前人工确认时应提交的值。 */
 export function autoResumeValue(interrupt: InterruptInfo, novelType: string): unknown {
+  const proposalId = interrupt.proposal?.proposal_id || interrupt.proposal_id
+  if (proposalId) return { proposal_id: proposalId, decision: 'accept' }
   switch (interrupt.action) {
     case 'require_novel_type': return novelType
     case 'review_or_modify_creative_brief': return 'accept'
@@ -14,7 +16,10 @@ export function autoResumeValue(interrupt: InterruptInfo, novelType: string): un
 
 /** 返回用于阻止同一中断被重复提交的稳定键。 */
 export function interruptKey(interrupt: InterruptInfo): string {
-  return `${interrupt.action}-${interrupt.chapter_number ?? ''}`
+  const proposalId = interrupt.proposal?.proposal_id || interrupt.proposal_id || ''
+  const version = interrupt.proposal?.version || interrupt.proposal_version || ''
+  if (!proposalId && !version) return `${interrupt.action}-${interrupt.chapter_number ?? ''}`
+  return `${interrupt.action}-${interrupt.chapter_number ?? ''}-${proposalId}-${version}`
 }
 
 /** 判断当前中断是否属于用户本次明确启动的自动创作。 */

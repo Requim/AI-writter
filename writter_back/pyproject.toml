@@ -26,6 +26,7 @@ dependencies = [
     "psycopg[binary]>=3.3.4",
     "msgpack>=1.1.2",
     "json-repair>=0.61.4",
+    "redis>=5.2.0",
 ]
 
 [project.optional-dependencies]
@@ -85,4 +86,3 @@ files = [
     "api/routers/admin_router.py",
 ]
 exclude = ["scripts/", "_check_.*\\.py"]
-

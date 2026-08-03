@@ -4,7 +4,7 @@ import logging
 from typing import Literal
 
 from langchain_core.runnables import RunnableConfig
-from langgraph.types import Command, interrupt
+from langgraph.types import Command
 
 from application.prompts.creative_brief_prompts import (
     CREATIVE_BRIEF_SCHEMA,
@@ -14,7 +14,15 @@ from application.prompts.creative_brief_prompts import (
     validate_creative_brief,
 )
 from application.prompts.version import PROMPT_VERSION
+from application.proposals import (
+    proposal_update,
+    proposal_matches,
+    require_proposal,
+    request_decision,
+    unpack_decision,
+)
 from application.schemas.agent_state import NovelAgentState
+from application.streaming import emit_workflow_event
 
 logger = logging.getLogger("uvicorn")
 
@@ -42,12 +50,13 @@ def _merge_seed(generated: dict, seed: dict) -> dict:
 async def creative_brief_node(
     state: NovelAgentState,
     config: RunnableConfig,
-) -> Command[Literal["title_node", "creative_brief_node"]]:
-    """生成并确认创作简报，作为后续提示词的共同事实源。"""
+) -> Command[Literal["title_node", "creative_brief_review_node"]]:
+    """生成创作简报并先写入 checkpoint，不执行人工审核。"""
+    if proposal_matches(state, "creative_brief"):
+        return Command(goto="creative_brief_review_node")
     seed = normalize_creative_brief(state.get("creative_brief"))
     if not validate_creative_brief(seed):
         return Command(goto="title_node", update={"prompt_version": PROMPT_VERSION})
-
     legacy = _legacy_brief(state)
     if legacy:
         legacy = _merge_seed(legacy, seed)
@@ -55,10 +64,13 @@ async def creative_brief_node(
             goto="title_node",
             update={"creative_brief": legacy, "prompt_version": PROMPT_VERSION},
         )
-
     llm = config["configurable"].get("llm_config", {}).get("llm_instance")
     if not llm:
         raise RuntimeError("创作简报生成失败：LLM 不可用")
+    emit_workflow_event(
+        "status", {"status": "started", "message": "正在生成创作简报提案"},
+        "creative_brief_node",
+    )
     generated = await llm.structured_generate(
         prompt=build_creative_brief_prompt(
             state.get("novel_type", ""),
@@ -76,20 +88,60 @@ async def creative_brief_node(
     if missing:
         raise RuntimeError(f"创作简报生成失败：缺少 {', '.join(missing)}")
     if config["configurable"].get("auto_mode", False):
-        return Command(goto="title_node", update={"creative_brief": brief, "prompt_version": PROMPT_VERSION})
-
-    decision = interrupt(
-        {
-            "action": "review_or_modify_creative_brief",
-            "message": "AI 已形成创作简报，请确认故事承诺与核心冲突",
-            "ai_generated_creative_brief": brief,
-        }
+        return Command(
+            goto="title_node",
+            update={"creative_brief": brief, "prompt_version": PROMPT_VERSION},
+        )
+    return Command(
+        goto="creative_brief_review_node",
+        update=proposal_update(state, "creative_brief", brief),
     )
+
+
+async def creative_brief_review_node(
+    state: NovelAgentState,
+    config: RunnableConfig,
+) -> Command[Literal["title_node", "creative_brief_node"]]:
+    """审核已保存的创作简报，本节点不得调用 LLM。"""
+    del config
+    proposal = require_proposal(state, "creative_brief")
+    raw_decision = request_decision(
+        state,
+        proposal,
+        action="review_or_modify_creative_brief",
+        message="AI 已形成创作简报，请确认故事承诺与核心冲突",
+        ai_generated_creative_brief=proposal["payload"],
+    )
+    decision = unpack_decision(raw_decision, proposal)
     if decision == "accept":
-        return Command(goto="title_node", update={"creative_brief": brief, "prompt_version": PROMPT_VERSION})
+        return _accept_brief(proposal["payload"])
+    if decision == "regenerate":
+        feedback = raw_decision.get("feedback", "") if isinstance(raw_decision, dict) else ""
+        return _regenerate_brief(feedback or "请生成不同方案")
     if isinstance(decision, dict):
-        selected = normalize_creative_brief({**brief, **decision})
+        selected = _merge_seed(proposal["payload"], decision)
         if not validate_creative_brief(selected):
-            return Command(goto="title_node", update={"creative_brief": selected, "prompt_version": PROMPT_VERSION})
-    feedback = "请生成不同方案" if decision == "regenerate" else str(decision or "")
-    return Command(goto="creative_brief_node", update={"creative_brief_feedback": feedback})
+            return _accept_brief(selected)
+    return _regenerate_brief(str(decision or ""))
+
+
+def _accept_brief(brief: dict) -> Command:
+    return Command(
+        goto="title_node",
+        update={
+            "creative_brief": brief,
+            "pending_proposal": None,
+            "pending_proposal_decision": None,
+        },
+    )
+
+
+def _regenerate_brief(feedback: str) -> Command:
+    return Command(
+        goto="creative_brief_node",
+        update={
+            "pending_proposal": None,
+            "pending_proposal_decision": None,
+            "creative_brief_feedback": feedback,
+        },
+    )

@@ -5,15 +5,24 @@ from application.schemas.agent_state import NovelAgentState
 from application.agents import (
     type_confirmation_node,
     creative_brief_node,
+    creative_brief_review_node,
     title_generator_node,
+    title_review_node,
     summary_generator_node,
+    summary_review_node,
     outline_generator_node,
+    outline_review_node,
     progress_check_node,
     memory_retrieval_node,
     chapter_outline_node,
+    chapter_outline_review_node,
+    metadata_persist_node,
     chapter_writer_node,
+    chapter_compaction_node,
     reflection_node,
+    reflection_review_node,
     revision_node,
+    revision_review_node,
     persist_node,
     router_agent,
 )
@@ -21,15 +30,24 @@ from application.agents import (
 WORKFLOW_NODES = {
     "type_confirmation": type_confirmation_node,
     "creative_brief_node": creative_brief_node,
+    "creative_brief_review_node": creative_brief_review_node,
     "title_node": title_generator_node,
+    "title_review_node": title_review_node,
     "summary_node": summary_generator_node,
+    "summary_review_node": summary_review_node,
     "outline_node": outline_generator_node,
+    "outline_review_node": outline_review_node,
     "progress_check_node": progress_check_node,
     "memory_retrieval_node": memory_retrieval_node,
     "chapter_outline_node": chapter_outline_node,
+    "chapter_outline_review_node": chapter_outline_review_node,
+    "metadata_persist_node": metadata_persist_node,
     "chapter_writer_node": chapter_writer_node,
+    "chapter_compaction_node": chapter_compaction_node,
     "reflection_node": reflection_node,
+    "reflection_review_node": reflection_review_node,
     "revision_node": revision_node,
+    "revision_review_node": revision_review_node,
     "persist_node": persist_node,
     "router_agent": router_agent,
 }
@@ -39,6 +57,7 @@ ROUTER_ROUTES = {
     "memory_retrieval_node": "memory_retrieval_node",
     "chapter_outline_node": "chapter_outline_node",
     "chapter_writer_node": "chapter_writer_node",
+    "chapter_compaction_node": "chapter_compaction_node",
     "reflection_node": "reflection_node",
     "revision_node": "revision_node",
     "persist_node": "persist_node",
@@ -81,8 +100,8 @@ def create_novel_workflow(checkpointer=None):
     # ========= 第二阶段：章节创作循环（确定性 state 路由） =========
     # 所有写作节点完成后回到 router_agent，根据 state 选择下一步。
     workflow.add_edge("memory_retrieval_node", "router_agent")
-    workflow.add_edge("chapter_outline_node", "router_agent")
     workflow.add_edge("chapter_writer_node", "router_agent")
+    workflow.add_edge("chapter_compaction_node", "router_agent")
     # reflection_node/revision_node 通过 Command(goto=...) 自决路由，不加静态边
     #
     # 【确定性数据流 - 非决策路径】

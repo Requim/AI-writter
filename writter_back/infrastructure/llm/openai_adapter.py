@@ -5,9 +5,9 @@ import logging
 import openai
 from typing import Any, AsyncIterator, Dict, List, Optional
 from .base import (
-    STRUCTURED_OUTPUT_ATTEMPTS,
     BaseLLMAdapter,
     safe_json_parse,
+    structured_output_attempts,
     structured_result_errors,
     structured_retry_instruction,
 )
@@ -83,7 +83,8 @@ class OpenAIAdapter(BaseLLMAdapter):
     async def structured_generate(self, prompt: str, schema: Dict[str, Any],
                                  system_prompt: Optional[str] = None,
                                  temperature: float = 0.3,
-                                 top_p: float = 1.0) -> Dict[str, Any]:
+                                 top_p: float = 1.0,
+                                 max_attempts: int | None = None) -> Dict[str, Any]:
         """流式生成 JSON，并自动纠正不完整或类型错误的结果。"""
         messages = []
         if system_prompt:
@@ -91,7 +92,8 @@ class OpenAIAdapter(BaseLLMAdapter):
         messages.append({"role": "user", "content": prompt})
 
         retry_errors: list[str] = []
-        for attempt in range(STRUCTURED_OUTPUT_ATTEMPTS):
+        attempts = structured_output_attempts(max_attempts)
+        for attempt in range(attempts):
             request_messages = list(messages)
             if attempt:
                 request_messages.append({
@@ -109,7 +111,7 @@ class OpenAIAdapter(BaseLLMAdapter):
                 return result
             logger.warning(
                 "【OpenAI结构化输出】结果不合格 | 尝试=%s/%s, 长度=%s, finish_reason=%s, 问题=%s",
-                attempt + 1, STRUCTURED_OUTPUT_ATTEMPTS, len(raw),
+                attempt + 1, attempts, len(raw),
                 finish_reason or "unknown", retry_errors[:12],
             )
         return {}

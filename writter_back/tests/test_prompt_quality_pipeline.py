@@ -171,9 +171,12 @@ def test_server_quality_gate_ignores_model_passed_and_uses_rubric() -> None:
     assert low_gate["decision"] == "human_review"
 
 
-@pytest.mark.parametrize(("raw_score", "expected_score"), [(8.4, 0.84), (84, 0.84)])
+@pytest.mark.parametrize(
+    ("raw_score", "expected_score", "source_scale"),
+    [(8.4, 0.84, 10), (84, 0.84, 100)],
+)
 def test_server_quality_gate_normalizes_model_rubric_scale(
-    raw_score: float, expected_score: float
+    raw_score: float, expected_score: float, source_scale: int
 ) -> None:
     result = _review_result(4.2)
     result["rubric_scores"] = _rubric(raw_score)
@@ -182,6 +185,8 @@ def test_server_quality_gate_normalizes_model_rubric_scale(
 
     assert gate["score"] == pytest.approx(expected_score)
     assert gate["decision"] == "pass"
+    assert gate["source_score_scale"] == source_scale
+    assert gate["raw_rubric_scores"]["causality"] == raw_score
 
 
 def test_evidenced_hard_failure_routes_to_refactor() -> None:
@@ -283,8 +288,8 @@ async def test_creative_brief_regeneration_stays_on_single_graph_branch() -> Non
 
     actions = [item.value["action"] for item in second["__interrupt__"]]
     assert actions == ["review_or_modify_creative_brief"]
-    # 恢复 interrupt 会重放当前节点一次，随后 regenerate 再进入一次本节点。
-    assert llm.brief_calls == 3
+    # 审核节点不调用模型，regenerate 只进入一次生成节点。
+    assert llm.brief_calls == 2
 
 
 @pytest.mark.asyncio

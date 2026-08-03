@@ -87,6 +87,7 @@ export type WorkflowEventType =
   | 'reasoning'
   | 'content_delta'
   | 'chapter_persisted'
+  | 'metadata_updated'
   | 'quality'
   | 'interrupt'
   | 'progress'
@@ -98,15 +99,43 @@ export interface WorkflowEvent {
   id: number
   type: WorkflowEventType
   thread_id: string
+  command_id?: string
   node?: string
   data: Record<string, unknown>
   timestamp: string
 }
 
-export interface InterruptInfo {
-  action: string
+export interface PendingProposal {
+  proposal_id: string
+  kind: string
+  version: number
+  payload: JsonValue
+  chapter_number?: number
+  prompt_version?: string
+}
+
+export type ReviewInterruptAction =
+  | 'review_or_modify_creative_brief'
+  | 'confirm_or_provide_title'
+  | 'confirm_or_provide_summary'
+  | 'review_or_modify_outline'
+  | 'review_or_provide_chapter_outline'
+  | 'review_reflection_issues'
+  | 'quality_gate_exhausted'
+  | 'quality_gate_human_review'
+  | 'quality_review_unavailable'
+  | 'confirm_revision'
+
+export type SystemInterruptAction = 'require_novel_type' | 'ready_for_next_chapter'
+
+interface InterruptBase {
   message?: string
   chapter_number?: number
+  proposal?: PendingProposal
+  proposal_id?: string
+  proposal_version?: number
+  proposal_kind?: string
+  prompt_version?: string
   quality_score?: number
   ai_suggestions?: Array<string | TitleSuggestion>
   ai_generated_summary?: string
@@ -116,11 +145,28 @@ export interface InterruptInfo {
   [key: string]: unknown
 }
 
+export interface ReviewInterruptInfo extends InterruptBase {
+  action: ReviewInterruptAction
+}
+
+export interface SystemInterruptInfo extends InterruptBase {
+  action: SystemInterruptAction
+}
+
+export interface LegacyInterruptInfo extends InterruptBase {
+  action: string & {}
+}
+
+export type InterruptInfo = ReviewInterruptInfo | SystemInterruptInfo | LegacyInterruptInfo
+
 export interface WorkflowExecutionSnapshot {
   status?: 'running' | 'cancelling' | 'completed' | 'cancelled' | 'idle' | string
   active_node?: string
+  command_id?: string
   message?: string
   started_at?: string
+  stage_started_at?: string
+  stage_elapsed_seconds?: number
   last_activity_at?: string
   is_stale?: boolean
 }

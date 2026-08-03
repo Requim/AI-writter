@@ -9,6 +9,7 @@ WorkflowEventType = Literal[
     "reasoning",
     "content_delta",
     "chapter_persisted",
+    "metadata_updated",
     "quality",
     "interrupt",
     "progress",
@@ -22,6 +23,7 @@ class WorkflowEvent(BaseModel):
     id: int
     type: WorkflowEventType
     thread_id: str
+    command_id: str | None = None
     node: str | None = None
     data: dict[str, Any] = Field(default_factory=dict)
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

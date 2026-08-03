@@ -62,6 +62,52 @@ def orchestrator() -> NovelOrchestrator:
     )
 
 
+def _chapter_outline_result() -> dict:
+    return {
+        "chapter_number": 1,
+        "title": "第一章 回声",
+        "chapter_goal": "建立核心悬念",
+        "core_conflict": "主角收到不可能存在的来信",
+        "key_events": ["收到来信", "确认寄信人已死亡"],
+        "entry_state": {"time": "清晨", "location": "出租屋"},
+        "causal_chain": ["收到来信", "核对笔迹", "决定调查"],
+        "state_changes": [{"subject": "主角", "before": "不知情", "after": "开始调查"}],
+        "knowledge_boundaries": [],
+        "continuity_constraints": ["寄信人已经死亡"],
+        "exit_state": {"location": "出租屋", "last_action": "打开信封"},
+        "logic_hooks": {"callback": "无", "setup": "信封中的照片"},
+        "rolling_plan": [{
+            "chapter_number": 1,
+            "goal": "建立核心悬念",
+            "required_event": "收到来信",
+            "state_delta": "主角决定调查",
+            "callback_ids": [],
+            "exit_hook": "照片出现",
+        }],
+        "scenes": [
+            {"events": {"result": "发现信件"}},
+            {"events": {"result": "确认笔迹"}},
+            {"events": {"result": "打开信封"}},
+        ],
+        "estimated_word_count": 3200,
+    }
+
+
+def _reflection_result() -> dict:
+    return {
+        "passed": "true",
+        "overall_quality_score": "92%",
+        "word_count_analysis": {
+            "total_count": "3200",
+            "effective_density": "92%",
+            "is_valid_word_count": "true",
+        },
+        "issues": [],
+        "logic_chain_status": "连贯",
+        "foreshadowing_check": "有效",
+    }
+
+
 class FakeWorkflowLLM:
     def __init__(self) -> None:
         self.chapter_outline_calls = 0
@@ -74,58 +120,55 @@ class FakeWorkflowLLM:
         del prompt
         if schema is CHAPTER_OUTLINE_SCHEMA:
             self.chapter_outline_calls += 1
-            return {
-                "chapter_number": 1,
-                "title": "第一章 回声",
-                "chapter_goal": "建立核心悬念",
-                "core_conflict": "主角收到不可能存在的来信",
-                "key_events": ["收到来信", "确认寄信人已死亡"],
-                "entry_state": {"time": "清晨", "location": "出租屋"},
-                "causal_chain": ["收到来信", "核对笔迹", "决定调查"],
-                "state_changes": [
-                    {"subject": "主角", "before": "不知情", "after": "开始调查"}
-                ],
-                "knowledge_boundaries": [],
-                "continuity_constraints": ["寄信人已经死亡"],
-                "exit_state": {"location": "出租屋", "last_action": "打开信封"},
-                "logic_hooks": {"callback": "无", "setup": "信封中的照片"},
-                "rolling_plan": [
-                    {
-                        "chapter_number": 1,
-                        "goal": "建立核心悬念",
-                        "required_event": "收到来信",
-                        "state_delta": "主角决定调查",
-                        "callback_ids": [],
-                        "exit_hook": "照片出现",
-                    }
-                ],
-                "scenes": [
-                    {"events": {"result": "发现信件"}},
-                    {"events": {"result": "确认笔迹"}},
-                    {"events": {"result": "打开信封"}},
-                ],
-                "estimated_word_count": 3200,
-            }
+            return _chapter_outline_result()
         if schema is CHUNK_REFLECTION_SCHEMA:
             return {"issues": []}
         if schema is AGGREGATION_SCHEMA or schema is REFLECTION_SCHEMA:
-            return {
-                "passed": "true",
-                "overall_quality_score": "92%",
-                "word_count_analysis": {
-                    "total_count": "3200",
-                    "effective_density": "92%",
-                    "is_valid_word_count": "true",
-                },
-                "issues": [],
-                "logic_chain_status": "连贯",
-                "foreshadowing_check": "有效",
-            }
+            return _reflection_result()
         raise AssertionError(f"Unexpected schema: {schema}")
 
     async def stream_text(self, *_args, **_kwargs):
         self.stream_calls += 1
         yield "正文" * 600
+
+
+def _manual_workflow_input() -> dict:
+    return {
+        "novel_type": "suspense",
+        "title": "测试小说",
+        "summary": "测试简介",
+        "total_outline": {
+            "story_background": "测试世界",
+            "main_characters": [],
+            "main_plot": {},
+            "writing_style": "克制",
+            "total_chapters": 1,
+            "volumes": [],
+        },
+        "current_chapter_index": 0,
+        "chapter_outlines": [],
+        "completed_chapters": [],
+        "current_chapter_content": "",
+        "memory_context": "",
+        "is_completed": False,
+        "revision_attempts": 0,
+        "errors": [],
+    }
+
+
+def _manual_workflow_config(llm: FakeWorkflowLLM) -> dict:
+    return {
+        "recursion_limit": 40,
+        "configurable": {
+            "llm_config": {"llm_instance": llm},
+            "auto_mode": False,
+            "novel_id": "00000000-0000-0000-0000-000000000001",
+            "tenant_id": "00000000-0000-0000-0000-000000000002",
+            "novel_repository": None,
+            "memory_service": None,
+            "quota_service": None,
+        },
+    }
 
 
 class FakeRoutingWorkflow:
@@ -193,6 +236,7 @@ async def test_router_is_invoked_by_langgraph_with_config_contract():
         "memory_retrieval_node",
         "chapter_outline_node",
         "chapter_writer_node",
+        "chapter_compaction_node",
         "reflection_node",
     ):
         graph.add_node(destination, finish_node)
@@ -255,6 +299,32 @@ async def test_fake_llm_completes_one_chapter_through_real_graph():
     assert len(result["completed_chapters"]) == 1
     assert llm.chapter_outline_calls == 1
     assert llm.stream_calls == 3
+
+
+@pytest.mark.asyncio
+async def test_manual_chapter_outline_has_no_router_bypass_in_real_graph():
+    llm = FakeWorkflowLLM()
+    workflow = create_novel_workflow()
+    updates = [
+        chunk
+        async for chunk in workflow.astream(
+            _manual_workflow_input(),
+            _manual_workflow_config(llm),
+            stream_mode="updates",
+        )
+    ]
+    interrupts = [
+        item
+        for chunk in updates
+        for item in chunk.get("__interrupt__", ())
+    ]
+
+    assert sum("router_agent" in chunk for chunk in updates) == 1
+    assert sum("chapter_outline_node" in chunk for chunk in updates) == 1
+    assert llm.chapter_outline_calls == 1
+    assert [item.value["action"] for item in interrupts] == [
+        "review_or_provide_chapter_outline"
+    ]
 
 
 def test_macro_outline_prompt_does_not_request_all_chapters():
@@ -414,6 +484,15 @@ def test_chapter_outline_prompt_uses_current_volume_and_macro_context():
                 "chapter_outlines": [{"chapter_number": 1}],
             },
             "chapter_writer_node",
+        ),
+        (
+            {
+                "total_outline": {"total_chapters": 10},
+                "current_chapter_index": 0,
+                "current_chapter_content": "正文",
+                "compaction_checked": False,
+            },
+            "chapter_compaction_node",
         ),
         (
             {
@@ -665,6 +744,7 @@ async def test_router_completion_keeps_next_business_node_active():
             context,
             thread_id,
             input_data={"novel_id": thread_id},
+            command_id="command-1",
         )
     ]
 
@@ -674,9 +754,33 @@ async def test_router_completion_keeps_next_business_node_active():
         if event.type == "status" and event.node == "router_agent"
     )
     assert router_status.data["next_node"] == "chapter_outline_node"
+    assert all(event.command_id == "command-1" for event in events)
     snapshot = service._execution_snapshots[service.execution_key(context, thread_id)]
     assert snapshot["active_node"] == "chapter_outline_node"
     assert snapshot["message"] == "本轮工作流已结束"
+
+
+def test_started_event_message_updates_execution_snapshot():
+    service = orchestrator()
+    context = tenant_context()
+    thread_id = str(uuid4())
+    service.set_active_command(context, thread_id, "command-1")
+
+    event = service._custom_stream_event(
+        context,
+        thread_id,
+        {
+            "type": "status",
+            "node": "reflection_node",
+            "data": {"status": "started", "message": "正在执行章节质量审读"},
+        },
+        "command-1",
+    )
+    snapshot = service.get_execution_snapshot(context, thread_id)
+
+    assert event.command_id == "command-1"
+    assert snapshot["active_node"] == "reflection_node"
+    assert snapshot["message"] == "正在执行章节质量审读"
 
 
 def test_provider_524_is_safe_and_retryable():

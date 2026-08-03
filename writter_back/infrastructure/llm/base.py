@@ -12,6 +12,13 @@ logger = logging.getLogger("uvicorn")
 STRUCTURED_OUTPUT_ATTEMPTS = 3
 
 
+def structured_output_attempts(max_attempts: int | None) -> int:
+    """将调用级尝试上限约束在适配器允许的范围内。"""
+    if max_attempts is None:
+        return STRUCTURED_OUTPUT_ATTEMPTS
+    return max(1, min(max_attempts, STRUCTURED_OUTPUT_ATTEMPTS))
+
+
 def _matches_schema_type(value: object, expected: str) -> bool:
     """判断模型字段是否符合轻量 schema 类型。"""
     if expected == "integer":
@@ -156,7 +163,8 @@ class BaseLLMAdapter(LLMService):
     async def structured_generate(self, prompt: str, schema: Dict[str, Any],
                                   system_prompt: Optional[str] = None,
                                   temperature: float = 0.3,
-                                  top_p: float = 1.0) -> Dict[str, Any]:
+                                  top_p: float = 1.0,
+                                  max_attempts: int | None = None) -> Dict[str, Any]:
         raise NotImplementedError
 
     async def chat(self, messages: List[Dict[str, str]], temperature: float = 0.7, top_p: float = 1.0) -> str:

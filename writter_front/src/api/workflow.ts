@@ -1,9 +1,34 @@
 import type { WorkflowEvent } from '@/types/novel'
 import { useAuthStore } from '@/stores/authStore'
+import { redirectToLogin, refreshSession } from './session'
 
 export interface WorkflowRequest {
   input?: Record<string, unknown>
   command?: Record<string, unknown>
+}
+
+function workflowHeaders(idempotencyKey?: string): HeadersInit {
+  const { accessToken, currentTenantId } = useAuthStore.getState()
+  return {
+    'Content-Type': 'application/json',
+    ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+    ...(currentTenantId ? { 'X-Tenant-ID': currentTenantId } : {}),
+    ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
+  }
+}
+
+function postWorkflow(
+  threadId: string,
+  body: string,
+  signal?: AbortSignal,
+  idempotencyKey?: string,
+): Promise<Response> {
+  return fetch(`/api/v1/workflows/${threadId}/stream`, {
+    method: 'POST',
+    headers: workflowHeaders(idempotencyKey),
+    body,
+    signal,
+  })
 }
 
 export class WorkflowRequestError extends Error {
@@ -77,18 +102,20 @@ export async function streamWorkflow(
   payload: WorkflowRequest,
   onEvent: (event: WorkflowEvent) => void,
   signal?: AbortSignal,
+  idempotencyKey?: string,
 ): Promise<void> {
-  const { accessToken, currentTenantId } = useAuthStore.getState()
-  const response = await fetch(`/api/v1/workflows/${threadId}/stream`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
-      ...(currentTenantId ? { 'X-Tenant-ID': currentTenantId } : {}),
-    },
-    body: JSON.stringify(payload),
-    signal,
-  })
+  const body = JSON.stringify(payload)
+  let response = await postWorkflow(threadId, body, signal, idempotencyKey)
+  if (response.status === 401) {
+    try {
+      await refreshSession()
+      response = await postWorkflow(threadId, body, signal, idempotencyKey)
+    } catch (error) {
+      redirectToLogin()
+      throw error
+    }
+  }
+  if (response.status === 401) redirectToLogin()
   return parseSseStream(response, onEvent)
 }
 

@@ -1,239 +1,67 @@
 import { useCallback, useReducer, useRef } from 'react'
 import { streamWorkflow, WorkflowRequestError, type WorkflowRequest } from '@/api/workflow'
+import { createIdempotencyKey } from '@/api/idempotency'
 import { workflowApi } from '@/api/novel'
-import type { InterruptInfo, ReflectionIssue, WorkflowEvent, WorkflowSnapshot } from '@/types/novel'
+import type { InterruptInfo, WorkflowEvent, WorkflowSnapshot } from '@/types/novel'
+import {
+  initialWorkflowState,
+  workflowReducer,
+} from './workflowState'
 
-export interface WorkflowViewState {
-  status: 'idle' | 'running' | 'paused' | 'recoverable' | 'error' | 'stalled' | 'cancelling'
-  connection: 'idle' | 'streaming' | 'detached'
-  draft: string
-  activeNode?: string
-  reasoning?: string
-  qualityScore?: number
-  issues: ReflectionIssue[]
-  interrupt?: InterruptInfo
-  progress?: number
-  retryable?: boolean
-  retryAfter?: number
-  events: WorkflowEvent[]
-  error?: string
-  startedAt?: string
-  lastActivityAt?: string
-  isStale?: boolean
-  hasCheckpointDraft?: boolean
-  hasPendingCheckpoint?: boolean
-  checkpointChapterIndex?: number
-  lastPersistedChapterId?: string
-  currentChapter?: number
+export { initialWorkflowState, workflowReducer } from './workflowState'
+export type { WorkflowViewState } from './workflowState'
+
+const SNAPSHOT_SYNC_CODES = new Set([
+  'workflow_command_in_progress',
+  'workflow_command_already_applied',
+  'stale_workflow_decision',
+  'workflow_already_running',
+])
+
+function shouldSyncRequest(error: unknown): boolean {
+  return error instanceof WorkflowRequestError
+    && error.status === 409
+    && (!error.code || SNAPSHOT_SYNC_CODES.has(error.code))
 }
 
-type Action =
-  | { type: 'start'; preserveDraft?: boolean }
-  | { type: 'event'; event: WorkflowEvent }
-  | { type: 'failure'; message: string }
-  | { type: 'snapshot'; snapshot: WorkflowSnapshot }
-  | { type: 'cancelling' }
-  | { type: 'cancelled' }
-  | { type: 'hydrate'; interrupt?: InterruptInfo }
-
-export const initialWorkflowState: WorkflowViewState = {
-  status: 'idle',
-  connection: 'idle',
-  draft: '',
-  issues: [],
-  events: [],
+function shouldSyncEvent(event: WorkflowEvent): boolean {
+  return event.type === 'error'
+    && typeof event.data.code === 'string'
+    && SNAPSHOT_SYNC_CODES.has(event.data.code)
 }
 
-const interruptNodes: Record<string, string> = {
-  require_novel_type: 'type_confirmation',
-  review_or_modify_creative_brief: 'creative_brief_node',
-  confirm_or_provide_title: 'title_node',
-  confirm_or_provide_summary: 'summary_node',
-  review_or_modify_outline: 'outline_node',
-  review_or_provide_chapter_outline: 'chapter_outline_node',
-  review_reflection_issues: 'reflection_node',
-  quality_gate_exhausted: 'reflection_node',
-  quality_gate_human_review: 'reflection_node',
-  confirm_revision: 'revision_node',
-  ready_for_next_chapter: 'progress_check_node',
-}
-
-function nodeForInterrupt(interrupt?: InterruptInfo): string | undefined {
-  return interrupt ? interruptNodes[interrupt.action] : undefined
-}
-
-export function workflowReducer(state: WorkflowViewState, action: Action): WorkflowViewState {
-  if (action.type === 'start') return {
-    ...state,
-    status: 'running',
-    connection: 'streaming',
-    draft: action.preserveDraft ? state.draft : '',
-    activeNode: undefined,
-    reasoning: undefined,
-    qualityScore: undefined,
-    issues: [],
-    interrupt: undefined,
-    events: [],
-    error: undefined,
-    retryable: undefined,
-    retryAfter: undefined,
-    isStale: false,
-    hasPendingCheckpoint: false,
-    checkpointChapterIndex: undefined,
-    startedAt: new Date().toISOString(),
-    lastActivityAt: new Date().toISOString(),
-  }
-  if (action.type === 'failure') return { ...state, status: 'error', connection: 'idle', error: action.message }
-  if (action.type === 'cancelling') return { ...state, status: 'cancelling' }
-  if (action.type === 'cancelled') return {
-    ...state,
-    status: 'idle',
-    connection: 'idle',
-    activeNode: undefined,
-    error: undefined,
-    isStale: false,
-  }
-  if (action.type === 'snapshot') {
-    const { snapshot } = action
-    const execution = snapshot.execution
-    const interrupt = snapshot.interrupts?.[0]
-    const activeNode = nodeForInterrupt(interrupt)
-      || execution?.active_node
-      || snapshot.next_nodes?.[0]
-    const isStale = snapshot.status === 'running' && execution?.is_stale === true
-    const hasCheckpointDraft = snapshot.state?.has_current_chapter_content === true
-    const hasPendingCheckpoint = !interrupt && Boolean(snapshot.next_nodes?.length)
-    const status: WorkflowViewState['status'] = interrupt
-      ? 'paused'
-      : isStale
-        ? 'stalled'
-        : snapshot.status === 'running'
-          ? 'running'
-          : hasCheckpointDraft || hasPendingCheckpoint
-            ? 'recoverable'
-            : 'idle'
-    const checkpointReason = snapshot.state?.router_reasoning
-    const interruptMessage = interrupt?.message
-    const checkpointIndex = snapshot.state?.current_chapter_index
-    const checkpointProgress = snapshot.state?.progress_percentage
-    return {
-      ...state,
-      status,
-      connection: snapshot.status === 'running' ? 'detached' : 'idle',
-      activeNode,
-      interrupt,
-      reasoning: interruptMessage
-        || execution?.message
-        || (typeof checkpointReason === 'string' ? checkpointReason : state.reasoning),
-      startedAt: execution?.started_at,
-      lastActivityAt: execution?.last_activity_at,
-      isStale,
-      error: isStale ? '任务已长时间没有产生新进展，可能因页面断线或模型请求异常而停滞。' : undefined,
-      retryable: isStale || state.retryable,
-      hasCheckpointDraft,
-      hasPendingCheckpoint,
-      checkpointChapterIndex: typeof checkpointIndex === 'number' ? checkpointIndex : undefined,
-      currentChapter: typeof checkpointIndex === 'number' ? checkpointIndex : undefined,
-      progress: typeof checkpointProgress === 'number' ? checkpointProgress : undefined,
-    }
-  }
-  if (action.type === 'hydrate') return {
-    ...state,
-    status: action.interrupt ? 'paused' : state.status,
-    activeNode: nodeForInterrupt(action.interrupt) || state.activeNode,
-    reasoning: action.interrupt?.message || state.reasoning,
-    interrupt: action.interrupt,
-  }
-
-  const event = action.event
-  const next: WorkflowViewState = {
-    ...state,
-    events: [...state.events.slice(-39), event],
-    lastActivityAt: event.type === 'heartbeat' ? state.lastActivityAt : event.timestamp,
-  }
-  if (event.type === 'content_delta') {
-    const text = typeof event.data.text === 'string' ? event.data.text : ''
-    next.draft = event.data.operation === 'reset' ? text : state.draft + text
-  }
-  if (event.type === 'status') {
-    const nextNode = typeof event.data.next_node === 'string' ? event.data.next_node : undefined
-    if (nextNode) next.activeNode = nextNode
-    else if (event.data.status === 'completed' && state.activeNode === event.node) next.activeNode = undefined
-    else if (event.data.status !== 'completed') next.activeNode = event.node
-  }
-  if (event.type === 'chapter_persisted') {
-    next.draft = ''
-    next.hasCheckpointDraft = false
-    next.lastPersistedChapterId = typeof event.data.chapter_id === 'string'
-      ? event.data.chapter_id
-      : undefined
-    next.currentChapter = typeof event.data.current_chapter === 'number'
-      ? event.data.current_chapter
-      : state.currentChapter
-    if (typeof event.data.percentage === 'number') next.progress = event.data.percentage
-  }
-  if (event.type === 'reasoning') {
-    if (typeof event.data.text === 'string') next.reasoning = event.data.text
-    if (typeof event.data.next_node === 'string') next.activeNode = event.data.next_node
-  }
-  if (event.type === 'quality') {
-    next.qualityScore = typeof event.data.score === 'number' ? event.data.score : undefined
-    next.issues = Array.isArray(event.data.issues) ? (event.data.issues as ReflectionIssue[]) : []
-  }
-  if (event.type === 'progress' && typeof event.data.percentage === 'number') next.progress = event.data.percentage
-  if (event.type === 'interrupt') {
-    const interrupts = event.data.interrupts
-    next.interrupt = Array.isArray(interrupts) ? (interrupts[0] as InterruptInfo) : undefined
-    next.activeNode = nodeForInterrupt(next.interrupt) || next.activeNode
-    next.reasoning = next.interrupt?.message || next.reasoning
-    next.status = 'paused'
-    next.connection = 'idle'
-  }
-  if (event.type === 'completed') {
-    next.connection = 'idle'
-    next.hasCheckpointDraft = false
-    next.hasPendingCheckpoint = false
-    if (next.status !== 'paused') next.status = 'idle'
-  }
-  if (event.type === 'error') {
-    next.status = 'error'
-    next.connection = 'idle'
-    next.error = typeof event.data.message === 'string' ? event.data.message : '工作流执行失败'
-    next.retryable = event.data.retryable === true
-    next.retryAfter = typeof event.data.retry_after === 'number' ? event.data.retry_after : undefined
-  }
-  return next
+function replaceController(ref: React.MutableRefObject<AbortController | null>): AbortController {
+  ref.current?.abort()
+  const controller = new AbortController()
+  ref.current = controller
+  return controller
 }
 
 export function useWorkflowStream(threadId?: string) {
   const [state, dispatch] = useReducer(workflowReducer, initialWorkflowState)
   const controllerRef = useRef<AbortController | null>(null)
 
-  const sync = useCallback(async () => {
+  const sync = useCallback(async (force = false) => {
     if (!threadId) return
     const snapshot = await workflowApi.state(threadId)
-    dispatch({ type: 'snapshot', snapshot })
+    dispatch({ type: 'snapshot', snapshot, force })
     return snapshot
   }, [threadId])
 
   const run = useCallback(async (payload: WorkflowRequest, preserveDraft = false) => {
     if (!threadId) return
-    controllerRef.current?.abort()
-    const controller = new AbortController()
-    controllerRef.current = controller
-    dispatch({ type: 'start', preserveDraft })
+    const controller = replaceController(controllerRef)
+    const commandId = createIdempotencyKey()
+    dispatch({ type: 'start', preserveDraft, commandId })
     try {
-      await streamWorkflow(threadId, payload, (event) => dispatch({ type: 'event', event }), controller.signal)
+      await streamWorkflow(threadId, payload, (event) => {
+        dispatch({ type: 'event', event })
+        if (shouldSyncEvent(event)) void sync(true).catch(() => undefined)
+      }, controller.signal, commandId)
     } catch (error) {
       if (controller.signal.aborted) return
-      if (error instanceof WorkflowRequestError && error.status === 409) {
-        try {
-          await sync()
-          return
-        } catch {
-          dispatch({ type: 'failure', message: error.message })
-          return
-        }
+      if (shouldSyncRequest(error)) {
+        try { await sync(true); return } catch { /* report the original command conflict */ }
       }
       dispatch({ type: 'failure', message: error instanceof Error ? error.message : '未知错误' })
     }
@@ -259,9 +87,7 @@ export function useWorkflowStream(threadId?: string) {
     command: { retry: true, _auto_mode: autoMode },
   }, true), [run])
 
-  const hydrateInterrupt = useCallback((interrupt?: InterruptInfo) => {
-    dispatch({ type: 'hydrate', interrupt })
-  }, [])
+  const hydrateInterrupt = useCallback((interrupt?: InterruptInfo) => dispatch({ type: 'hydrate', interrupt }), [])
 
   const hydrateSnapshot = useCallback((snapshot: WorkflowSnapshot) => {
     dispatch({ type: 'snapshot', snapshot })

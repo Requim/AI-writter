@@ -1,140 +1,134 @@
-"""章节细纲生成节点 - 用户输入优先，否则AI生成"""
+"""逐章细纲的生成节点与人工审核节点。"""
 
+import json
 import logging
+from typing import Any, Literal
+
+from langchain_core.runnables import RunnableConfig
+from langgraph.types import Command
+
+from application.continuity import normalize_chapter_contract, validate_chapter_contract
+from application.prompts.chapter_outline_prompts import (
+    CHAPTER_OUTLINE_SCHEMA,
+    build_chapter_outline_prompt,
+)
+from application.proposals import (
+    proposal_update,
+    proposal_matches,
+    require_proposal,
+    request_decision,
+    unpack_decision,
+)
+from application.schemas.agent_state import NovelAgentState
+from application.streaming import emit_workflow_event
 
 logger = logging.getLogger("uvicorn")
-from langchain_core.runnables import RunnableConfig
-from langgraph.types import interrupt, Command
-from typing import Literal
-from application.schemas.agent_state import NovelAgentState
-from application.prompts.chapter_outline_prompts import (
-    build_chapter_outline_prompt,
-    CHAPTER_OUTLINE_SCHEMA,
-)
-from application.continuity import normalize_chapter_contract, validate_chapter_contract
+
+
+def _total_outline(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str):
+        return {}
+    try:
+        parsed = json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _validated_outline(generated: Any, chapter_number: int) -> dict[str, Any]:
+    if not isinstance(generated, dict) or not generated:
+        raise RuntimeError("章节细纲生成失败：模型未返回有效 JSON")
+    outline = normalize_chapter_contract(generated, chapter_number)
+    issues = validate_chapter_contract(outline, chapter_number)
+    if issues:
+        raise RuntimeError(f"第 {chapter_number} 章细纲生成失败：" + "；".join(issues))
+    word_count = outline.get("estimated_word_count", 5000)
+    outline["estimated_word_count"] = max(3000, min(7000, int(word_count)))
+    return outline
+
+
+async def _generate_outline(
+    state: NovelAgentState, config: RunnableConfig, chapter_number: int
+) -> dict[str, Any]:
+    llm = config["configurable"].get("llm_config", {}).get("llm_instance")
+    if not llm:
+        raise RuntimeError("章节细纲生成失败：LLM 不可用")
+    emit_workflow_event(
+        "status", {"status": "started", "message": f"正在生成第{chapter_number}章细纲"},
+        "chapter_outline_node",
+    )
+    generated = await llm.structured_generate(
+        prompt=build_chapter_outline_prompt(
+            chapter_index=chapter_number,
+            novel_type=state.get("novel_type", ""),
+            title=state.get("title", ""),
+            total_outline=_total_outline(state.get("total_outline")),
+            memory_context=state.get("memory_context", ""),
+        ),
+        schema=CHAPTER_OUTLINE_SCHEMA,
+        temperature=0.45,
+    )
+    return _validated_outline(generated, chapter_number)
 
 
 async def chapter_outline_node(
     state: NovelAgentState,
     config: RunnableConfig,
-) -> Command[Literal["router_agent", "chapter_writer_node", "chapter_outline_node"]]:
-    """
-    章节细纲生成节点 - 用户可提供，否则AI生成
-    总纲只提供全局约束和卷规划，当前章节细纲在此即时生成。
-    """
-    novel_type = state.get("novel_type", "")
-    title = state.get("title", "")
-    total_outline_raw = state.get("total_outline", {})
-    if isinstance(total_outline_raw, str):
-        import json
-
-        try:
-            total_outline_raw = json.loads(total_outline_raw)
-        except Exception:
-            total_outline_raw = {}
-    total_outline = total_outline_raw if isinstance(total_outline_raw, dict) else {}
-    current_index = state.get("current_chapter_index", 0)
-    memory_context = state.get("memory_context", "")
-    has_user_outline = "chapter_outlines_input" in state and bool(
-        state.get("chapter_outlines_input")
-    )
-    mem_status = "✅ 有" if memory_context else "❌ 无"
-    logger.info(f"{'=' * 60}")
-    logger.info(
-        f"【章节细纲节点】进入 | 书名={title}, 第 {current_index + 1} 章, 用户已提供细纲={'是' if has_user_outline else '否'}, 前文记忆={mem_status}"
-    )
-
+) -> Command[Literal["router_agent", "chapter_outline_review_node"]]:
+    """生成当前章节细纲并保存提案，不执行人工审核。"""
+    chapter_number = int(state.get("current_chapter_index", 0) or 0) + 1
+    if proposal_matches(state, "chapter_outline", chapter_number):
+        return Command(goto="chapter_outline_review_node")
     if state.get("chapter_outlines_input"):
-        logger.info("【章节细纲节点】使用用户提供的细纲 -> 章节写作节点")
-        logger.info(f"{'=' * 60}")
-        user_outline = normalize_chapter_contract(
-            state["chapter_outlines_input"], current_index + 1
+        outline = normalize_chapter_contract(
+            state["chapter_outlines_input"], chapter_number
         )
         return Command(
             goto="router_agent",
-            update={
-                "chapter_outlines": [user_outline],
-                "chapter_outlines_input": None,
-            },
+            update={"chapter_outlines": [outline], "chapter_outlines_input": None},
         )
-
-    # 从 config.configurable 获取 LLM 实例
-    llm_config = config["configurable"].get("llm_config", {})
-    llm = llm_config.get("llm_instance")
-
-    if not llm:
-        raise RuntimeError("章节细纲生成失败：LLM 不可用")
-
-    # 先生成可校验的章节契约。失败时将具体缺口反馈给模型，最多重试一次。
-    chapter_number = current_index + 1
-    validation_issues: list[str] = []
-    ai_outline: dict = {}
-    for attempt in range(2):
-        prompt = build_chapter_outline_prompt(
-            chapter_index=chapter_number,
-            novel_type=novel_type,
-            title=title,
-            total_outline=total_outline,
-            memory_context=memory_context,
-            validation_issues=validation_issues or None,
-        )
-        generated = await llm.structured_generate(
-            prompt=prompt,
-            schema=CHAPTER_OUTLINE_SCHEMA,
-            temperature=0.45,
-        )
-        if isinstance(generated, dict) and generated:
-            ai_outline = normalize_chapter_contract(generated, chapter_number)
-            validation_issues = validate_chapter_contract(ai_outline, chapter_number)
-        else:
-            validation_issues = ["模型未返回有效 JSON"]
-        if not validation_issues:
-            break
-        logger.warning(
-            "【章节细纲节点】契约预检未通过 | attempt=%s, issues=%s",
-            attempt + 1,
-            validation_issues,
-        )
-
-    if validation_issues:
-        raise RuntimeError(
-            f"第 {chapter_number} 章细纲生成失败：" + "；".join(validation_issues)
-        )
-
-    # 验证字数规划
-    word_count = ai_outline.get("estimated_word_count", 4500)
-    if word_count < 3000 or word_count > 7000:
-        ai_outline["estimated_word_count"] = max(3000, min(7000, word_count))
-
-    # 自动模式：直接接受
-    auto_mode = config["configurable"].get("auto_mode", False)
-    if auto_mode:
-        logger.info("【章节细纲节点】自动模式 | 接受AI生成")
-        logger.info(f"{'=' * 60}")
-        return Command(goto="router_agent", update={"chapter_outlines": [ai_outline]})
-
-    # 暂停，让用户审阅/修改
-    user_decision = interrupt(
-        {
-            "action": "review_or_provide_chapter_outline",
-            "message": f"第{current_index + 1}章细纲已生成，请审阅或修改",
-            "chapter_number": current_index + 1,
-            "ai_generated_outline": ai_outline,
-            "note": "您可以：1) 直接使用（回复'accept'）2) 提供自定义细纲 3) 要求重新生成（回复'regenerate'）",
-        }
+    outline = await _generate_outline(state, config, chapter_number)
+    if config["configurable"].get("auto_mode", False):
+        return Command(goto="router_agent", update={"chapter_outlines": [outline]})
+    return Command(
+        goto="chapter_outline_review_node",
+        update=proposal_update(state, "chapter_outline", outline, chapter_number),
     )
 
-    if user_decision == "accept":
-        logger.info("【章节细纲节点】用户接受AI细纲 -> 路由节点")
-        logger.info(f"{'=' * 60}")
-        return Command(goto="router_agent", update={"chapter_outlines": [ai_outline]})
-    elif user_decision == "regenerate":
-        logger.info("【章节细纲节点】用户要求重新生成，循环回本节点")
-        return Command(goto="chapter_outline_node")
-    else:
-        logger.info("【章节细纲节点】用户提供了自定义细纲 -> 路由节点")
-        logger.info(f"{'=' * 60}")
-        custom_outline = normalize_chapter_contract(user_decision, chapter_number)
+
+async def chapter_outline_review_node(
+    state: NovelAgentState,
+    config: RunnableConfig,
+) -> Command[Literal["router_agent", "chapter_outline_node"]]:
+    """审核已保存的章节细纲，本节点不得调用 LLM。"""
+    del config
+    chapter_number = int(state.get("current_chapter_index", 0) or 0) + 1
+    proposal = require_proposal(state, "chapter_outline", chapter_number)
+    raw_decision = request_decision(
+        state,
+        proposal,
+        action="review_or_provide_chapter_outline",
+        message=f"第{chapter_number}章细纲已生成，请审阅或修改",
+        ai_generated_outline=proposal["payload"],
+    )
+    decision = unpack_decision(raw_decision, proposal)
+    if decision == "regenerate":
         return Command(
-            goto="router_agent", update={"chapter_outlines": [custom_outline]}
+            goto="chapter_outline_node",
+            update={
+                "pending_proposal": None,
+                "pending_proposal_decision": None,
+            },
         )
+    selected = proposal["payload"] if decision == "accept" else decision
+    outline = _validated_outline(selected, chapter_number)
+    return Command(
+        goto="router_agent",
+        update={
+            "chapter_outlines": [outline],
+            "pending_proposal": None,
+            "pending_proposal_decision": None,
+        },
+    )

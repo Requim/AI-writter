@@ -1,7 +1,26 @@
 """LangGraph Agent状态定义"""
-from typing import Annotated, List, Optional, Dict
+from typing import Annotated, Any, List, Optional, Dict, Literal
 from operator import add
 from typing_extensions import TypedDict
+
+
+class PendingProposal(TypedDict):
+    """等待人工确认的、已持久化到 checkpoint 的生成提案。"""
+
+    proposal_id: str
+    kind: Literal[
+        "creative_brief",
+        "title",
+        "summary",
+        "outline",
+        "chapter_outline",
+        "reflection",
+        "revision",
+    ]
+    version: int
+    payload: Any
+    chapter_number: Optional[int]
+    prompt_version: str
 
 
 class NovelAgentState(TypedDict):
@@ -22,11 +41,18 @@ class NovelAgentState(TypedDict):
     generated_title: Optional[str]            # AI生成的书名（当用户未提供时）
     title_story_hint: Optional[str]           # AI生成书名时附带的"一句话卖点"，联动传给简介生成
     generated_summary: Optional[str]          # AI生成的简介
+    editorial_summary: Optional[str]          # 供总纲规划使用的内部简介
     generated_outline: Optional[Dict]         # AI生成的总纲领
+    pending_proposal: Optional[PendingProposal]  # 当前等待审核的生成提案
+    pending_proposal_decision: Optional[Any]     # 仅用于恢复旧 checkpoint 的一次性决定
+    proposal_versions: Dict[str, int]          # 每类提案的单调版本号
+    workflow_schema_version: int               # checkpoint 状态契约版本
     current_chapter_index: int                # 当前处理的章节索引
     chapter_outlines: Annotated[List[Dict], add]   # 最终使用的章节细纲列表
     current_chapter_content: Optional[str]    # 当前章节内容
     scene_ledger: Optional[List[Dict]]         # 已生成场景的累计执行账本
+    compaction_checked: bool                   # 当前正文是否完成过压缩判定
+    compaction_metrics: Optional[Dict]         # 压缩触发原因和保真校验结果
     completed_chapters: Annotated[List[Dict], add]
     
     # ========== 长期记忆 ==========
@@ -40,6 +66,7 @@ class NovelAgentState(TypedDict):
     revision_attempts: int                    # 自动模式修正重试次数，用于循环修正防死循环
     revision_history: Optional[List[Dict]]    # 自动修订的审读问题历史
     quality_gate: Optional[Dict]              # 服务端计算的质量判定与分项评分
+    quality_results: Annotated[List[Dict], add]  # 跨章节保留的审读审计结果
     
     # ========== 进度控制 ==========
     progress_percentage: float

@@ -63,6 +63,8 @@ def _rewind_cleanup(state: NovelAgentState, current_index: int) -> dict[str, obj
     ]
     return {
         "current_chapter_content": "",
+        "compaction_checked": False,
+        "compaction_metrics": {},
         "memory_context": "",
         "memory_retrieved_for_chapter": -1,
         "reflection_issues": [],
@@ -77,6 +79,8 @@ def _continue_update(current_index: int) -> dict[str, object]:
         "__route__": "continue",
         "current_chapter_index": current_index,
         "current_chapter_content": "",
+        "compaction_checked": False,
+        "compaction_metrics": {},
         "reflection_issues": [],
         "user_decision": {},
         "memory_context": "",

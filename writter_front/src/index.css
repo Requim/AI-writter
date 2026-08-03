@@ -98,18 +98,28 @@ h1, h2, h3 { color: var(--ink); }
 .empty-shelf { padding: 90px 0; background: rgba(255,255,255,0.45); border: 1px dashed var(--line); }
 
 .creation-page { max-width: 1180px; margin: 0 auto; padding: 30px 40px 80px; }
-.creation-layout { margin-top: 20px; display: grid; grid-template-columns: minmax(0, 1fr) 370px; gap: 72px; align-items: start; }
+.creation-layout { margin-top: 20px; display: grid; grid-template-columns: minmax(0, 1fr) 290px; gap: 48px; align-items: start; }
 .creation-form { padding-top: 18px; }
 .creation-form h1 { margin: 8px 0 12px; font: 700 40px/1.3 "Noto Serif SC", serif; }
 .section-lead { max-width: 620px; margin-bottom: 34px; color: var(--muted); line-height: 1.8; }
 .creation-form .ant-form { max-width: 680px; }
 .creation-form .ant-form-item { margin-bottom: 22px; }
+.advanced-settings { margin: 2px 0 20px; border-block: 1px solid var(--line); border-radius: 0; }
+.advanced-settings .ant-collapse-header { padding-inline: 0 !important; color: var(--ink) !important; font-weight: 600; }
+.advanced-settings .ant-collapse-content-box { padding-inline: 0 !important; padding-bottom: 0 !important; }
+.advanced-settings .anticon { margin-right: 7px; color: var(--wine); }
+.creation-quota { min-height: 52px; margin: 8px 0 18px; padding: 10px 12px; display: flex; align-items: center; justify-content: space-between; gap: 16px; background: #edf5f1; border-left: 3px solid var(--green); }
+.creation-quota span { color: #35574f; font-size: 12px; }
+.creation-quota strong { color: var(--green); font: 700 17px/1 "Noto Serif SC", serif; }
+.creation-quota small { color: var(--muted); font-size: 10px; text-align: right; }
+.creation-quota[data-state="empty"] { background: #fff1f0; border-left-color: var(--wine); }
+.creation-quota[data-state="unknown"] { background: #f2efea; border-left-color: var(--gold); }
 .form-row { display: grid; grid-template-columns: 180px minmax(0, 1fr); gap: 18px; }
 .form-row .ant-input-number { width: 100%; }
-.creation-preview { min-height: 540px; padding: 40px 36px; color: #f9f5ec; background: #71313d; border: 10px solid #672834; outline: 1px solid #b8966d; outline-offset: -20px; display: flex; flex-direction: column; align-items: center; text-align: center; position: sticky; top: 96px; }
-.creation-preview > .anticon { margin-top: 86px; font-size: 36px; color: #d3b57f; }
-.creation-preview > span { margin-top: 28px; font-size: 12px; color: #dccaa8; }
-.creation-preview h2 { max-width: 260px; margin: 14px 0; color: #fffaf0; font: 700 28px/1.6 "Noto Serif SC", serif; overflow-wrap: anywhere; }
+.creation-preview { min-height: 390px; padding: 30px 28px; color: #f9f5ec; background: #71313d; border: 8px solid #672834; outline: 1px solid #b8966d; outline-offset: -16px; display: flex; flex-direction: column; align-items: center; text-align: center; position: sticky; top: 96px; }
+.creation-preview > .anticon { margin-top: 44px; font-size: 30px; color: #d3b57f; }
+.creation-preview > span { margin-top: 20px; font-size: 11px; color: #dccaa8; }
+.creation-preview h2 { max-width: 220px; margin: 12px 0; color: #fffaf0; font: 700 23px/1.55 "Noto Serif SC", serif; overflow-wrap: anywhere; }
 .preview-folio { align-self: flex-start; font: 500 10px/1 monospace; opacity: 0.7; }
 .preview-rule { width: 48px; border-top: 1px solid #d3b57f; }
 .creation-preview p { margin-top: 18px; color: #e8ded0; font: 600 13px/1.8 "Noto Serif SC", serif; }
@@ -125,7 +135,7 @@ h1, h2, h3 { color: var(--ink); }
 .studio-progress span { color: var(--muted); font-size: 11px; }
 .studio-progress .ant-progress { margin: 0; line-height: 1; }
 .studio-mobile-tabs { display: none; }
-.studio-grid { min-height: calc(100vh - 182px); display: grid; grid-template-columns: 246px minmax(420px, 1fr) 310px; }
+.studio-grid { min-height: calc(100vh - 182px); display: grid; grid-template-columns: 246px minmax(420px, 1fr) minmax(320px, 360px); }
 .manuscript-panel, .workflow-panel { min-width: 0; padding: 22px 18px; background: var(--paper-deep); }
 .manuscript-panel { border-right: 1px solid var(--line); }
 .workflow-panel { border-left: 1px solid var(--line); }
@@ -209,24 +219,39 @@ h1, h2, h3 { color: var(--ink); }
 .quality-block, .interrupt-block { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--line); }
 .quality-block > div:first-child { display: flex; align-items: baseline; justify-content: space-between; }
 .quality-block strong { color: var(--wine); font: 700 28px/1 "Noto Serif SC", serif; }
+.quality-block strong small { color: var(--muted); font: 500 10px/1 "Noto Sans SC", sans-serif; }
 .quality-block p { margin: 7px 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
 .interrupt-title { color: var(--wine); font-weight: 600; font-size: 13px; }
 .interrupt-block > p { margin: 8px 0 12px; color: var(--muted); font-size: 12px; line-height: 1.6; }
 .interrupt-actions { display: flex; gap: 6px; margin-bottom: 8px; flex-wrap: wrap; }
-.outline-review { margin: 12px 0 14px; padding: 12px 0; border-top: 1px dotted var(--line); border-bottom: 1px dotted var(--line); }
-.outline-review > span, .outline-review > strong { display: block; }
-.outline-review > span { color: var(--green); font-size: 10px; }
-.outline-review > strong { margin-top: 4px; overflow-wrap: anywhere; font: 600 14px/1.6 "Noto Serif SC", serif; }
-.outline-review > p { margin: 7px 0 0; color: #4f4945; font-size: 11px; line-height: 1.7; }
-.outline-review ol { margin: 9px 0 0; padding-left: 18px; color: var(--muted); font-size: 11px; line-height: 1.7; }
-.creative-brief-review dl { display: grid; gap: 8px; margin: 10px 0 0; }
-.creative-brief-review dl > div { display: grid; grid-template-columns: 66px minmax(0, 1fr); gap: 10px; }
-.creative-brief-review dt { color: var(--muted); font-size: 10px; }
-.creative-brief-review dd { min-width: 0; margin: 0; overflow-wrap: anywhere; color: #403b37; font-size: 11px; line-height: 1.65; }
-.title-suggestions .ant-btn { height: auto; padding: 8px 0; text-align: left; white-space: normal; }
-.title-suggestions .ant-btn > span { display: grid; width: 100%; gap: 2px; }
-.title-suggestions small { color: var(--muted); font-weight: 400; line-height: 1.45; }
-.interrupt-block .ant-input { margin: 8px 0; }
+.review-surface { margin: 12px 0 14px; padding: 12px 0; border-block: 1px dotted var(--line); }
+.review-heading > span, .review-heading > strong { display: block; }
+.review-heading > span { color: var(--green); font-size: 10px; }
+.review-heading > strong { margin-top: 4px; overflow-wrap: anywhere; font: 600 14px/1.6 "Noto Serif SC", serif; }
+.review-rows, .nested-review { display: grid; gap: 8px; margin: 10px 0 0; }
+.review-rows > div { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 10px; }
+.review-rows dt, .nested-review dt { color: var(--muted); font-size: 10px; }
+.review-rows dd, .nested-review dd { min-width: 0; margin: 0; overflow-wrap: anywhere; color: #403b37; font-size: 11px; line-height: 1.65; }
+.review-list { margin: 3px 0; padding-left: 18px; }
+.review-list li { margin: 3px 0; }
+.nested-review { padding-left: 8px; border-left: 1px solid #ddd5ca; }
+.nested-review > div { display: grid; grid-template-columns: minmax(64px, 0.4fr) minmax(0, 1fr); gap: 7px; }
+.review-surface details { margin-top: 12px; padding-top: 9px; border-top: 1px dotted var(--line); }
+.review-surface summary { color: var(--wine); cursor: pointer; font-size: 11px; font-weight: 600; }
+.title-review .ant-btn { height: auto; padding: 9px 0; text-align: left; white-space: normal; border-bottom: 1px solid #e4ded5; border-radius: 0; }
+.title-review .ant-btn > span { display: grid; width: 100%; gap: 3px; }
+.title-review .ant-btn:hover { padding-inline: 7px; background: #fff; }
+.title-choice { display: flex !important; grid-template-columns: none !important; align-items: center; justify-content: space-between; gap: 8px; }
+.title-choice > span { display: inline-flex; align-items: center; gap: 5px; }
+.title-review small { color: var(--muted); font-weight: 400; line-height: 1.5; }
+.title-review .expand-titles { justify-content: center; border-bottom: 0; text-align: center; }
+.summary-review .ant-tabs-nav { margin-bottom: 8px; }
+.summary-review p, .revision-review > p { margin: 0; color: #4f4945; font-size: 11px; line-height: 1.8; white-space: pre-wrap; }
+.quality-density { margin: 12px 0; padding: 8px 0; display: flex; align-items: baseline; justify-content: space-between; border-block: 1px solid var(--line); }
+.quality-density span { color: var(--muted); font-size: 10px; }
+.quality-density strong { color: var(--wine); font: 700 18px/1 "Noto Serif SC", serif; }
+.revision-preview { max-height: 230px; overflow: auto; }
+.review-instruction .ant-input { margin: 8px 0; }
 .error-note { margin-top: 16px; padding: 10px; color: #8c1f2e; background: #fff1f0; border: 1px solid #eab7bc; font-size: 11px; }
 .error-note small { display: block; margin-top: 5px; color: #6f454b; }
 .error-note .ant-btn { margin-top: 9px; }

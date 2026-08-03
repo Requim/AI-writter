@@ -4,15 +4,23 @@ import logging
 from typing import Any, Literal
 
 from langchain_core.runnables import RunnableConfig
-from langgraph.types import Command, interrupt
+from langgraph.types import Command
 
 from application.prompts.outline_prompts import (
     OUTLINE_SCHEMA,
     build_outline_prompt,
     validate_outline,
 )
-from application.schemas.agent_state import NovelAgentState
 from application.prompts.version import PROMPT_VERSION
+from application.proposals import (
+    proposal_update,
+    proposal_matches,
+    require_proposal,
+    request_decision,
+    unpack_decision,
+)
+from application.schemas.agent_state import NovelAgentState
+from application.streaming import emit_workflow_event
 
 logger = logging.getLogger("uvicorn")
 
@@ -56,115 +64,134 @@ def apply_creation_constraints(
     return constrained
 
 
+def _prepare_outline(state: NovelAgentState, generated: dict[str, Any]) -> dict[str, Any]:
+    """应用可信输入约束并验证宏观总纲。"""
+    outline = dict(generated)
+    outline.pop("chapters", None)
+    outline = apply_creation_constraints(
+        outline,
+        state.get("target_total_chapters"),
+        state.get("requested_writing_style"),
+    )
+    if state.get("title"):
+        outline["source_title"] = state["title"]
+    planning_summary = state.get("editorial_summary") or state.get("summary", "")
+    if planning_summary:
+        outline["source_summary"] = planning_summary
+    outline["creative_brief"] = state.get("creative_brief") or {}
+    outline["prompt_version"] = PROMPT_VERSION
+    try:
+        outline["total_chapters"] = int(outline.get("total_chapters", 0))
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("宏观总纲生成失败：total_chapters 无效") from exc
+    validation = validate_outline(outline)
+    if not validation["valid"]:
+        details = "；".join(validation["fatal_issues"][:3])
+        raise RuntimeError(f"宏观总纲生成失败：{details}")
+    return outline
+
+
+def _reuse_existing_outline(
+    state: NovelAgentState,
+) -> Command[Literal["persist_node"]] | None:
+    existing = state.get("total_outline")
+    if not isinstance(existing, dict):
+        return None
+    if not existing.get("story_background") or not existing.get("total_chapters"):
+        return None
+    enriched = dict(existing)
+    enriched["creative_brief"] = state.get("creative_brief") or enriched.get(
+        "creative_brief", {}
+    )
+    enriched["prompt_version"] = PROMPT_VERSION
+    return Command(
+        goto="persist_node",
+        update={"total_outline": enriched, "__next_node__": "progress_check_node"},
+    )
+
+
 async def outline_generator_node(
     state: NovelAgentState,
     config: RunnableConfig,
-) -> Command[Literal["persist_node", "outline_node"]]:
-    """Generate global constraints and volumes, never all chapter plans at once."""
-    novel_type = state.get("novel_type", "")
+) -> Command[Literal["persist_node", "outline_review_node"]]:
+    """生成宏观总纲并保存提案，不执行人工审核。"""
     title = state.get("title", "")
-    summary = state.get("summary", "")
-    target_total_chapters = state.get("target_total_chapters")
-    requested_writing_style = state.get("requested_writing_style")
-    existing = state.get("total_outline")
-
-    logger.info("%s", "=" * 60)
-    logger.info(
-        "【宏观总纲节点】进入 | 书名=%s, 已有总纲=%s",
-        title,
-        "是" if isinstance(existing, dict) and existing else "否",
-    )
-    has_existing_outline = (
-        isinstance(existing, dict)
-        and bool(existing.get("story_background"))
-        and bool(existing.get("total_chapters"))
-    )
-    if has_existing_outline:
-        enriched = dict(existing)
-        enriched["creative_brief"] = state.get("creative_brief") or enriched.get("creative_brief", {})
-        enriched["prompt_version"] = PROMPT_VERSION
+    if proposal_matches(state, "outline"):
+        return Command(goto="outline_review_node")
+    existing_command = _reuse_existing_outline(state)
+    if existing_command:
         logger.info("【宏观总纲节点】跳过 | 使用已有总纲并补齐创作简报")
-        return Command(
-            goto="persist_node",
-            update={"total_outline": enriched, "__next_node__": "progress_check_node"},
-        )
-
+        return existing_command
     llm = config["configurable"].get("llm_config", {}).get("llm_instance")
     if not llm:
         raise RuntimeError("宏观总纲生成失败：LLM 不可用")
-
-    ai_outline = await llm.structured_generate(
+    emit_workflow_event(
+        "status", {"status": "started", "message": "正在生成宏观总纲提案"},
+        "outline_node",
+    )
+    planning_summary = state.get("editorial_summary") or state.get("summary", "")
+    generated = await llm.structured_generate(
         prompt=build_outline_prompt(
-            novel_type,
+            state.get("novel_type", ""),
             title,
-            summary,
-            target_total_chapters=target_total_chapters,
-            requested_writing_style=requested_writing_style,
+            planning_summary,
+            target_total_chapters=state.get("target_total_chapters"),
+            requested_writing_style=state.get("requested_writing_style"),
             creative_brief=state.get("creative_brief"),
         ),
         schema=OUTLINE_SCHEMA,
         temperature=0.75,
         top_p=0.9,
     )
-    if not ai_outline:
+    if not generated:
         raise RuntimeError("宏观总纲生成失败：模型未返回有效 JSON")
-
-    # Enforce the contract even when a compatible provider adds extra fields.
-    ai_outline.pop("chapters", None)
-    ai_outline = apply_creation_constraints(
-        ai_outline,
-        target_total_chapters=target_total_chapters,
-        requested_writing_style=requested_writing_style,
-    )
-    if title:
-        ai_outline["source_title"] = title
-    if summary:
-        ai_outline["source_summary"] = summary
-    ai_outline["creative_brief"] = state.get("creative_brief") or {}
-    ai_outline["prompt_version"] = PROMPT_VERSION
-    try:
-        ai_outline["total_chapters"] = int(ai_outline.get("total_chapters", 0))
-    except (TypeError, ValueError) as exc:
-        raise RuntimeError("宏观总纲生成失败：total_chapters 无效") from exc
-
-    validation = validate_outline(ai_outline)
-    if not validation["valid"]:
-        details = "；".join(validation["fatal_issues"][:3])
-        raise RuntimeError(f"宏观总纲生成失败：{details}")
-
-    logger.info(
-        "【宏观总纲节点】完成 | 角色=%s, 卷=%s, 总章节=%s, 提示=%s",
-        len(ai_outline.get("main_characters", [])),
-        len(ai_outline.get("volumes", [])),
-        ai_outline.get("total_chapters"),
-        len(validation["issues"]),
-    )
-
+    ai_outline = _prepare_outline(state, generated)
     if config["configurable"].get("auto_mode", False):
         return Command(
             goto="persist_node",
             update={"total_outline": ai_outline, "__next_node__": "progress_check_node"},
         )
-
-    user_decision = interrupt(
-        {
-            "action": "review_or_modify_outline",
-            "message": "AI已生成宏观总纲，请审阅后进入逐章创作",
-            "ai_generated_outline": ai_outline,
-            "validation": validation,
-            "note": "回复 accept 使用，回复 regenerate 重做，或提交自定义宏观总纲。",
-        }
+    return Command(
+        goto="outline_review_node",
+        update=proposal_update(state, "outline", ai_outline),
     )
-    if user_decision == "regenerate":
-        return Command(goto="outline_node")
-    selected = ai_outline if user_decision == "accept" else user_decision
+
+
+async def outline_review_node(
+    state: NovelAgentState,
+    config: RunnableConfig,
+) -> Command[Literal["persist_node", "outline_node"]]:
+    """审核已保存的宏观总纲，本节点不得调用 LLM。"""
+    del config
+    proposal = require_proposal(state, "outline")
+    validation = validate_outline(proposal["payload"])
+    raw_decision = request_decision(
+        state,
+        proposal,
+        action="review_or_modify_outline",
+        message="AI 已生成宏观总纲，请审阅后进入逐章创作",
+        ai_generated_outline=proposal["payload"],
+        validation=validation,
+    )
+    decision = unpack_decision(raw_decision, proposal)
+    if decision == "regenerate":
+        return Command(
+            goto="outline_node",
+            update={
+                "pending_proposal": None,
+                "pending_proposal_decision": None,
+            },
+        )
+    selected = proposal["payload"] if decision == "accept" else decision
     if not isinstance(selected, dict):
         raise RuntimeError("宏观总纲生成失败：用户提交的总纲格式无效")
-    selected = dict(selected)
-    selected.pop("chapters", None)
-    selected["creative_brief"] = state.get("creative_brief") or selected.get("creative_brief", {})
-    selected["prompt_version"] = PROMPT_VERSION
+    selected = _prepare_outline(state, selected)
     return Command(
         goto="persist_node",
-        update={"total_outline": selected, "__next_node__": "progress_check_node"},
+        update={
+            "total_outline": selected,
+            "pending_proposal": None,
+            "pending_proposal_decision": None,
+            "__next_node__": "progress_check_node",
+        },
     )

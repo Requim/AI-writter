@@ -5,6 +5,8 @@ from typing import Any
 
 from application.prompts.version import PROMPT_VERSION
 
+SUMMARY_SCHEMA = {"reader_blurb": "string", "editorial_brief": "string"}
+
 
 def build_summary_prompt(
     novel_type: str,
@@ -20,7 +22,7 @@ def build_summary_prompt(
 
     brief = json.dumps(creative_brief or {}, ensure_ascii=False, indent=2)
     return f"""[PROMPT_VERSION:{PROMPT_VERSION}]
-你是一位擅长创作爆款网文的策划人。请根据以下信息，撰写一段 300 字左右的精炼简介。
+你是一位资深小说编辑。请同时生成面向读者的封面文案，以及供后续总纲规划使用的内部简介。
 
 【基础信息】
 书名：《{title}》
@@ -29,22 +31,26 @@ def build_summary_prompt(
 【创作简报（不可改写）】
 {brief}
 
-【撰写结构要求】（请依次完成以下四个模块）：
-1. 背景设定（World Building）：用一句话交代独特的世界观底色或当前面临的剧变。
-2. 主角身份与困境（Identity & Conflict）：主角是谁？他正面临什么"不得不解决"的生死危机或利益冲突？
-3. 核心卖点（The Hook）：点出书名中暗示的独特金手指、特殊能力或反常规设定。
-4. 剧情张力（Escalation）：展示多方势力的对垒或命运的不可预测性，拒绝平铺直叙。
-5. 简介必须同时兑现 core_premise、core_conflict、reader_promise 和 originality_anchor，
-   但不要把 theme_question 直接回答出来。
+【reader_blurb 要求】
+1. 250-350 字，不使用模块标题、Markdown 或策划术语。
+2. 依次建立背景、主角困境、独特机制与升级风险，结尾留下具体悬念。
+3. 同时兑现 core_premise、core_conflict、reader_promise 和 originality_anchor，
+   但不要直接回答 theme_question。
+
+【editorial_brief 要求】
+1. 400-700 字，明确主角目标、对手目标、核心机制、代价、升级路径和预期结局方向。
+2. 使用内部策划语言，给总纲足够的因果约束；不得引入创作简报之外的万能解法。
 
 【风格引导】
 - 拒绝废话：严禁使用"在XX的世界里"、"他能否成就传奇"、"这一次，他要夺回属于自己的一切"等万金油废话。
 - 画面感：使用具有动感和压迫感的词汇。
 - 逻辑钩子：简介的结尾必须引发读者对剧情走向的好奇。
 
-【输出格式】
-【一句话简介】：（用最硬核的一句话概括卖点，不超过 30 字）
-【正文简介】：（300 字左右的逻辑化叙述，严格按照上述四段式结构）
+只输出以下 JSON，不要 Markdown 或额外解释：
+{{
+  "reader_blurb": "面向读者的封面文案",
+  "editorial_brief": "供总纲规划使用的内部简介"
+}}
 """
 
 

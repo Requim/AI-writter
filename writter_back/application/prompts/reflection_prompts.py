@@ -326,6 +326,7 @@ RUBRIC_SCHEMA = {
 }
 
 AGGREGATION_SCHEMA = {
+    "score_scale": "integer",
     "rubric_scores": RUBRIC_SCHEMA,
     "hard_failures": "array",
     "word_count_analysis": {
@@ -339,6 +340,7 @@ AGGREGATION_SCHEMA = {
 }
 
 REFLECTION_SCHEMA = {
+    "score_scale": "integer",
     "rubric_scores": RUBRIC_SCHEMA,
     "hard_failures": "array",
     "word_count_analysis": {

@@ -4,7 +4,7 @@ import logging
 from typing import Any, Literal
 
 from langchain_core.runnables import RunnableConfig
-from langgraph.types import Command, interrupt
+from langgraph.types import Command
 
 from application.prompts.title_prompts import (
     TITLE_CANDIDATES_SCHEMA,
@@ -12,7 +12,15 @@ from application.prompts.title_prompts import (
     TITLE_TOP_P,
     build_title_prompt,
 )
+from application.proposals import (
+    proposal_update,
+    proposal_matches,
+    require_proposal,
+    request_decision,
+    unpack_decision,
+)
 from application.schemas.agent_state import NovelAgentState
+from application.streaming import emit_workflow_event
 
 logger = logging.getLogger("uvicorn")
 
@@ -50,13 +58,19 @@ def _resolve_choice(choice: Any, candidates: list[dict[str, Any]]) -> dict[str, 
 
 async def title_generator_node(
     state: NovelAgentState, config: RunnableConfig
-) -> Command[Literal["summary_node", "title_node"]]:
-    """使用用户书名，或生成并按明确评分选择候选书名。"""
+) -> Command[Literal["summary_node", "title_review_node", "metadata_persist_node"]]:
+    """使用用户书名，或生成候选并保存为待审核提案。"""
     if state.get("title"):
         return Command(goto="summary_node")
+    if proposal_matches(state, "title"):
+        return Command(goto="title_review_node")
     llm = config["configurable"].get("llm_config", {}).get("llm_instance")
     if not llm:
         raise RuntimeError("书名生成失败：LLM 不可用")
+    emit_workflow_event(
+        "status", {"status": "started", "message": "正在生成书名候选"},
+        "title_node",
+    )
     result = await llm.structured_generate(
         build_title_prompt(state.get("novel_type", ""), state.get("creative_brief")),
         TITLE_CANDIDATES_SCHEMA,
@@ -67,20 +81,50 @@ async def title_generator_node(
     if not candidates:
         raise RuntimeError("书名生成失败：模型未返回有效候选")
     if config["configurable"].get("auto_mode", False):
-        choice = candidates[0]
-    else:
-        choice = interrupt(
-            {
-                "action": "confirm_or_provide_title",
-                "message": "AI 已生成并评估书名候选，请选择或输入自定义书名",
-                "ai_suggestions": candidates,
-            }
-        )
-        if choice == "regenerate":
-            return Command(goto="title_node")
-    selected = _resolve_choice(choice, candidates)
-    logger.info("【书名生成节点】选择书名=%s, 评分=%s", selected["title"], _score(candidates[0]))
+        selected = _resolve_choice(candidates[0], candidates)
+        return _accept_title(selected)
     return Command(
-        goto="summary_node",
-        update={"title": selected["title"], "title_story_hint": selected["hint"]},
+        goto="title_review_node",
+        update=proposal_update(state, "title", candidates),
     )
+
+
+def _accept_title(selected: dict[str, str]) -> Command:
+    logger.info("【书名审核节点】选择书名=%s", selected["title"])
+    return Command(
+        goto="metadata_persist_node",
+        update={
+            "title": selected["title"],
+            "generated_title": selected["title"],
+            "title_story_hint": selected["hint"],
+            "pending_proposal": None,
+            "pending_proposal_decision": None,
+            "__next_node__": "summary_node",
+        },
+    )
+
+
+async def title_review_node(
+    state: NovelAgentState, config: RunnableConfig
+) -> Command[Literal["metadata_persist_node", "title_node"]]:
+    """审核已保存的书名候选，本节点不得调用 LLM。"""
+    del config
+    proposal = require_proposal(state, "title")
+    candidates = proposal["payload"]
+    raw_decision = request_decision(
+        state,
+        proposal,
+        action="confirm_or_provide_title",
+        message="AI 已生成并评估书名候选，请选择或输入自定义书名",
+        ai_suggestions=candidates,
+    )
+    decision = unpack_decision(raw_decision, proposal)
+    if decision == "regenerate":
+        return Command(
+            goto="title_node",
+            update={
+                "pending_proposal": None,
+                "pending_proposal_decision": None,
+            },
+        )
+    return _accept_title(_resolve_choice(decision, candidates))

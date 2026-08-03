@@ -1,0 +1,12 @@
+services:
+  redis:
+    profiles:
+      - bundled-redis
+
+  backend:
+    depends_on: !override
+      database:
+        condition: service_healthy
+    networks:
+      default:
+      edge:

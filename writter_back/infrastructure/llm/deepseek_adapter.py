@@ -4,9 +4,9 @@ import logging
 import openai
 from typing import Any, AsyncIterator, Dict, List, Optional
 from .base import (
-    STRUCTURED_OUTPUT_ATTEMPTS,
     BaseLLMAdapter,
     safe_json_parse,
+    structured_output_attempts,
     structured_result_errors,
     structured_retry_instruction,
 )
@@ -74,7 +74,8 @@ class DeepSeekAdapter(BaseLLMAdapter):
     async def structured_generate(self, prompt: str, schema: Dict[str, Any],
                                   system_prompt: Optional[str] = None,
                                   temperature: float = 0.3,
-                                  top_p: float = 1.0) -> Dict[str, Any]:
+                                  top_p: float = 1.0,
+                                  max_attempts: int | None = None) -> Dict[str, Any]:
         """结构化生成，并自动纠正缺字段或类型错误的 JSON。"""
         messages = []
         if system_prompt:
@@ -82,7 +83,8 @@ class DeepSeekAdapter(BaseLLMAdapter):
         messages.append({"role": "user", "content": prompt})
 
         retry_errors: list[str] = []
-        for attempt in range(STRUCTURED_OUTPUT_ATTEMPTS):
+        attempts = structured_output_attempts(max_attempts)
+        for attempt in range(attempts):
             request_messages = list(messages)
             if attempt:
                 request_messages.append({
@@ -103,7 +105,7 @@ class DeepSeekAdapter(BaseLLMAdapter):
                 return result
             logger.warning(
                 "【DeepSeek结构化输出】结果不合格 | 尝试=%s/%s, 长度=%s, 问题=%s",
-                attempt + 1, STRUCTURED_OUTPUT_ATTEMPTS, len(content), retry_errors[:12],
+                attempt + 1, attempts, len(content), retry_errors[:12],
             )
         logger.error("【DeepSeek结构化输出】自动纠错失败 | 问题=%s", retry_errors[:12])
         return {}

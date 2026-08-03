@@ -8,3 +8,9 @@ class QualityGateReviewRequired(RuntimeError):
 
 class WorkflowBusyError(RuntimeError):
     """小说已有互斥操作正在执行。"""
+
+
+class StaleWorkflowDecisionError(RuntimeError):
+    """用户提交的决定不属于当前等待审核的提案。"""
+
+    code = "stale_workflow_decision"

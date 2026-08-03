@@ -5,7 +5,7 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, cast
 
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.types import Command, Overwrite
@@ -16,6 +16,8 @@ from application.events import WorkflowEvent
 from application.quota_service import QuotaService
 from application.errors import RetryableWorkflowError, WorkflowBusyError
 from application.agents.router_agent import _route
+from application.proposals import proposal_update
+from application.schemas.agent_state import NovelAgentState
 from application.workflow_builder import create_novel_workflow
 from config import settings
 from infrastructure.database.repository import PostgresNovelRepository
@@ -26,8 +28,63 @@ from service.ports.agent_service import AgentOrchestrator
 
 logger = logging.getLogger("uvicorn")
 
-LARGE_STATE_FIELDS = {"current_chapter_content", "memory_context", "completed_chapters"}
+LARGE_STATE_FIELDS = {
+    "current_chapter_content",
+    "memory_context",
+    "completed_chapters",
+    "quality_results",
+}
 TASK_REGISTRATION_GRACE_SECONDS = 60.0
+
+LEGACY_PROPOSAL_FIELDS = {
+    "review_or_modify_creative_brief": ("creative_brief", "ai_generated_creative_brief"),
+    "confirm_or_provide_title": ("title", "ai_suggestions"),
+    "confirm_or_provide_summary": ("summary", "ai_generated_summary"),
+    "review_or_modify_outline": ("outline", "ai_generated_outline"),
+    "review_or_provide_chapter_outline": ("chapter_outline", "ai_generated_outline"),
+}
+LEGACY_QUALITY_ACTIONS = {
+    "review_reflection_issues",
+    "quality_gate_exhausted",
+    "quality_gate_human_review",
+}
+
+
+def _legacy_quality_payload(interrupt_data: dict[str, Any]) -> dict[str, Any]:
+    gate = {
+        "decision": interrupt_data.get("quality_decision", "human_review"),
+        "score": interrupt_data.get("quality_score", 0),
+        "rubric_scores": interrupt_data.get("rubric_scores", {}),
+        "word_count_analysis": interrupt_data.get("word_count_analysis", {}),
+        "source_score_scale": interrupt_data.get("source_score_scale"),
+    }
+    return {
+        "status": "ready",
+        "action": interrupt_data.get("action"),
+        "gate": gate,
+        "issues": interrupt_data.get("issues", []),
+    }
+
+
+def _legacy_proposal_parts(interrupt_data: Any) -> tuple[str, Any, int | None] | None:
+    """从 v2 interrupt 中提取可恢复的提案内容。"""
+    if not isinstance(interrupt_data, dict):
+        return None
+    action = str(interrupt_data.get("action", ""))
+    chapter_number = interrupt_data.get("chapter_number")
+    chapter = int(chapter_number) if isinstance(chapter_number, int) else None
+    if action in LEGACY_QUALITY_ACTIONS:
+        return "reflection", _legacy_quality_payload(interrupt_data), chapter
+    source = LEGACY_PROPOSAL_FIELDS.get(action)
+    if source is None:
+        return None
+    kind, payload_field = source
+    payload = interrupt_data.get(payload_field)
+    if kind == "summary" and isinstance(payload, str):
+        payload = {"reader_blurb": payload, "editorial_brief": payload}
+    if payload in (None, "", [], {}):
+        return None
+    return kind, payload, chapter
 
 
 def _rewind_state_update(
@@ -64,8 +121,12 @@ def _rewind_state_update(
         "memory_retrieved_for_chapter": -1,
         "reflection_issues": [],
         "user_decision": {},
+        "pending_proposal": None,
+        "pending_proposal_decision": None,
         "revision_instructions": "",
         "revision_attempts": 0,
+        "compaction_checked": False,
+        "compaction_metrics": {},
         "progress_percentage": (next_index / total * 100) if total else 0,
         "is_completed": is_completed,
         "chapter_outlines": Overwrite(outlines),
@@ -184,6 +245,8 @@ class NovelOrchestrator(AgentOrchestrator):
                 "tenant_id": str(context.tenant_id),
                 "tenant_context": context,
                 "auto_mode": self._auto_mode.get(internal_thread_id, False),
+                "workflow_review_v3_enabled": settings.WORKFLOW_REVIEW_V3_ENABLED,
+                "adaptive_compaction_enabled": settings.ADAPTIVE_COMPACTION_ENABLED,
                 "memory_service": self.memory_service,
                 "novel_repository": self.repository,
                 "quota_service": self.quota_service,
@@ -210,9 +273,17 @@ class NovelOrchestrator(AgentOrchestrator):
             "active_node": None,
             "message": "正在连接创作工作流",
             "started_at": now,
+            "stage_started_at": now,
             "last_activity_at": now,
         }
         return True
+
+    def set_active_command(
+        self, context: TenantContext, thread_id: str, command_id: str
+    ) -> None:
+        """绑定当前执行命令，供事件和快照过滤旧响应。"""
+        key = self.execution_key(context, thread_id)
+        self._execution_snapshots.setdefault(key, {})["command_id"] = command_id
 
     @asynccontextmanager
     async def exclusive_operation(
@@ -253,12 +324,30 @@ class NovelOrchestrator(AgentOrchestrator):
     ) -> None:
         key = self.execution_key(context, thread_id)
         snapshot = self._execution_snapshots.setdefault(key, {})
+        now = datetime.now(timezone.utc).isoformat()
         snapshot["status"] = status
-        snapshot["last_activity_at"] = datetime.now(timezone.utc).isoformat()
+        snapshot["last_activity_at"] = now
         if active_node is not None:
+            if active_node != snapshot.get("active_node"):
+                snapshot["stage_started_at"] = now
             snapshot["active_node"] = active_node
         if message is not None:
             snapshot["message"] = message
+
+    def get_execution_snapshot(
+        self, context: TenantContext, thread_id: str
+    ) -> dict[str, Any]:
+        """返回带当前阶段耗时的执行快照。"""
+        key = self.execution_key(context, thread_id)
+        snapshot = dict(self._execution_snapshots.get(key, {}))
+        started_at = snapshot.get("stage_started_at")
+        if isinstance(started_at, str):
+            try:
+                elapsed = datetime.now(timezone.utc) - datetime.fromisoformat(started_at)
+                snapshot["stage_elapsed_seconds"] = max(0, int(elapsed.total_seconds()))
+            except ValueError:
+                pass
+        return snapshot
 
     def is_executing(self, context: TenantContext, thread_id: str) -> bool:
         lock = self._locks.get(self.execution_key(context, thread_id))
@@ -328,10 +417,41 @@ class NovelOrchestrator(AgentOrchestrator):
         self, context: TenantContext, thread_id: str, resume_value: Any
     ) -> dict[str, Any]:
         await self._ensure_workflow()
+        command = await self.prepare_resume_command(context, thread_id, resume_value)
         return await self._workflow.ainvoke(
-            Command(resume=resume_value),
+            command,
             self._make_config(context, thread_id),
         )
+
+    async def prepare_resume_command(
+        self, context: TenantContext, thread_id: str, resume_value: Any
+    ) -> Command:
+        """为旧审核 checkpoint 补建提案，避免恢复时重新调用模型。"""
+        await self._ensure_workflow()
+        config = self._make_config(context, thread_id, include_llm=False)
+        snapshot = await self._workflow.aget_state(config)
+        values = getattr(snapshot, "values", {}) or {}
+        if values.get("pending_proposal"):
+            return Command(resume=resume_value)
+        interrupts: list[Any] = []
+        for task in getattr(snapshot, "tasks", []) or []:
+            interrupts.extend(self._interrupt_values(getattr(task, "interrupts", [])))
+        parts = _legacy_proposal_parts(interrupts[0] if interrupts else None)
+        if parts is None:
+            first = interrupts[0] if interrupts else None
+            if isinstance(first, dict) and first.get("action") == "confirm_revision":
+                logger.warning("旧版修订 checkpoint 仅含预览，将执行一次兼容性重算")
+            return Command(resume=resume_value)
+        kind, payload, chapter_number = parts
+        update = proposal_update(
+            cast(NovelAgentState, values),
+            kind,
+            payload,
+            chapter_number,
+        )
+        update["pending_proposal_decision"] = resume_value
+        logger.info("已从旧 checkpoint 补建 %s 提案", kind)
+        return Command(resume=resume_value, update=update)
 
     async def prepare_retry_checkpoint(
         self, context: TenantContext, thread_id: str
@@ -420,6 +540,127 @@ class NovelOrchestrator(AgentOrchestrator):
         values = value if isinstance(value, (list, tuple)) else [value]
         return [getattr(item, "value", item) for item in values]
 
+    async def _stream_payload(
+        self,
+        context: TenantContext,
+        thread_id: str,
+        input_data: dict[str, Any] | None,
+        resume_value: Any,
+        is_resume: bool,
+        is_retry: bool,
+    ) -> Any:
+        if is_retry:
+            await self.prepare_retry_checkpoint(context, thread_id)
+            return None
+        if is_resume:
+            return await self.prepare_resume_command(context, thread_id, resume_value)
+        return input_data or {"novel_id": thread_id}
+
+    def _custom_stream_event(
+        self,
+        context: TenantContext,
+        thread_id: str,
+        chunk: dict[str, Any],
+        command_id: str | None,
+    ) -> WorkflowEvent:
+        data = chunk.get("data", {})
+        event_type = chunk.get("type", "status")
+        message = (
+            data.get("message") or data.get("text")
+            if isinstance(data, dict)
+            else None
+        )
+        active_node = chunk.get("node")
+        if event_type == "reasoning" and isinstance(data, dict):
+            active_node = data.get("next_node") or active_node
+        self.record_activity(
+            context,
+            thread_id,
+            active_node=active_node,
+            message=message if isinstance(message, str) else None,
+        )
+        return WorkflowEvent(
+            id=0,
+            type=event_type,
+            thread_id=thread_id,
+            command_id=command_id,
+            node=chunk.get("node"),
+            data=data,
+        )
+
+    def _interrupt_stream_event(
+        self,
+        context: TenantContext,
+        thread_id: str,
+        interrupts: list[Any],
+        command_id: str | None,
+    ) -> WorkflowEvent:
+        first = interrupts[0] if interrupts else None
+        message = first.get("message") if isinstance(first, dict) else None
+        self.record_activity(
+            context,
+            thread_id,
+            message=message or "等待人工确认后继续",
+            status="paused",
+        )
+        return WorkflowEvent(
+            id=0,
+            type="interrupt",
+            thread_id=thread_id,
+            command_id=command_id,
+            data={"interrupts": interrupts},
+        )
+
+    def _node_stream_events(
+        self,
+        context: TenantContext,
+        thread_id: str,
+        node: str,
+        update: Any,
+        command_id: str | None,
+    ) -> list[WorkflowEvent]:
+        next_node = update.get("next_tool") if isinstance(update, dict) else None
+        next_node = next_node if isinstance(next_node, str) and next_node else None
+        reasoning = update.get("router_reasoning") if isinstance(update, dict) else None
+        message = reasoning if isinstance(reasoning, str) and reasoning else f"{node} 已完成"
+        self.record_activity(context, thread_id, active_node=next_node, message=message)
+        if not next_node:
+            key = self.execution_key(context, thread_id)
+            snapshot = self._execution_snapshots.get(key, {})
+            if snapshot.get("active_node") == node:
+                snapshot["active_node"] = None
+        events = [self._node_status_event(thread_id, node, next_node, command_id)]
+        if isinstance(reasoning, str):
+            events.append(self._event(thread_id, "reasoning", node, {"text": reasoning}, command_id))
+        if isinstance(update, dict) and "progress_percentage" in update:
+            data = {
+                "percentage": update["progress_percentage"],
+                "current_chapter": update.get("current_chapter_index"),
+            }
+            events.append(self._event(thread_id, "progress", node, data, command_id))
+        return events
+
+    @staticmethod
+    def _event(
+        thread_id: str,
+        event_type: str,
+        node: str | None,
+        data: dict[str, Any],
+        command_id: str | None,
+    ) -> WorkflowEvent:
+        return WorkflowEvent(
+            id=0, type=event_type, thread_id=thread_id,
+            command_id=command_id, node=node, data=data,
+        )
+
+    def _node_status_event(
+        self, thread_id: str, node: str, next_node: str | None, command_id: str | None
+    ) -> WorkflowEvent:
+        data = {"status": "completed"}
+        if next_node:
+            data["next_node"] = next_node
+        return self._event(thread_id, "status", node, data, command_id)
+
     async def stream_events(
         self,
         context: TenantContext,
@@ -428,144 +669,47 @@ class NovelOrchestrator(AgentOrchestrator):
         resume_value: Any = None,
         is_resume: bool = False,
         is_retry: bool = False,
+        command_id: str | None = None,
     ) -> AsyncIterator[WorkflowEvent]:
         await self._ensure_workflow()
-        if is_retry:
-            await self.prepare_retry_checkpoint(context, thread_id)
-        self.record_activity(
-            context,
-            thread_id,
-            message=(
-                "正在重试失败步骤"
-                if is_retry
-                else "正在恢复创作现场"
-                if is_resume
-                else "正在启动创作流程"
-            ),
-        )
-        payload: Any = (
-            None
-            if is_retry
-            else Command(resume=resume_value)
-            if is_resume
-            else (input_data or {"novel_id": thread_id})
+        message = "正在重试失败步骤" if is_retry else "正在恢复创作现场" if is_resume else "正在启动创作流程"
+        self.record_activity(context, thread_id, message=message)
+        payload = await self._stream_payload(
+            context, thread_id, input_data, resume_value, is_resume, is_retry
         )
         sequence = 0
         async for mode, chunk in self._workflow.astream(
-            payload,
-            self._make_config(context, thread_id),
-            stream_mode=["custom", "updates"],
+            payload, self._make_config(context, thread_id), stream_mode=["custom", "updates"]
         ):
-            if mode == "custom" and isinstance(chunk, dict):
-                data = chunk.get("data", {})
-                event_type = chunk.get("type", "status")
-                message = data.get("text") if isinstance(data, dict) else None
-                active_node = chunk.get("node")
-                if event_type == "reasoning" and isinstance(data, dict):
-                    active_node = data.get("next_node") or active_node
-                self.record_activity(
-                    context,
-                    thread_id,
-                    active_node=active_node,
-                    message=message if isinstance(message, str) else None,
-                )
+            events = self._events_from_chunk(context, thread_id, mode, chunk, command_id)
+            for event in events:
                 sequence += 1
-                yield WorkflowEvent(
-                    id=sequence,
-                    type=event_type,
-                    thread_id=thread_id,
-                    node=chunk.get("node"),
-                    data=data,
-                )
-                continue
-            if mode != "updates" or not isinstance(chunk, dict):
-                continue
-            interrupts = self._interrupt_values(chunk.get("__interrupt__"))
-            if interrupts:
-                message = None
-                if interrupts and isinstance(interrupts[0], dict):
-                    message = interrupts[0].get("message")
-                self.record_activity(
-                    context,
-                    thread_id,
-                    message=message or "等待人工确认后继续",
-                    status="paused",
-                )
-                sequence += 1
-                yield WorkflowEvent(
-                    id=sequence,
-                    type="interrupt",
-                    thread_id=thread_id,
-                    data={"interrupts": interrupts},
-                )
-            for node, update in chunk.items():
-                if node.startswith("__"):
-                    continue
-                next_node = None
-                activity_message = f"{node} 已完成"
-                if isinstance(update, dict):
-                    configured_next = update.get("next_tool")
-                    if isinstance(configured_next, str) and configured_next:
-                        next_node = configured_next
-                    router_reasoning = update.get("router_reasoning")
-                    if isinstance(router_reasoning, str) and router_reasoning:
-                        activity_message = router_reasoning
-                self.record_activity(
-                    context,
-                    thread_id,
-                    active_node=next_node,
-                    message=activity_message,
-                )
-                if not next_node:
-                    key = self.execution_key(context, thread_id)
-                    snapshot = self._execution_snapshots.get(key, {})
-                    if snapshot.get("active_node") == node:
-                        snapshot["active_node"] = None
-                sequence += 1
-                yield WorkflowEvent(
-                    id=sequence,
-                    type="status",
-                    thread_id=thread_id,
-                    node=node,
-                    data={
-                        "status": "completed",
-                        **({"next_node": next_node} if next_node else {}),
-                    },
-                )
-                if isinstance(update, dict) and "router_reasoning" in update:
-                    sequence += 1
-                    yield WorkflowEvent(
-                        id=sequence,
-                        type="reasoning",
-                        thread_id=thread_id,
-                        node=node,
-                        data={"text": update["router_reasoning"]},
-                    )
-                if isinstance(update, dict) and "progress_percentage" in update:
-                    sequence += 1
-                    yield WorkflowEvent(
-                        id=sequence,
-                        type="progress",
-                        thread_id=thread_id,
-                        node=node,
-                        data={
-                            "percentage": update["progress_percentage"],
-                            "current_chapter": update.get("current_chapter_index"),
-                        },
-                    )
-        self.record_activity(
-            context,
-            thread_id,
-            message="本轮工作流已结束",
-            status="completed",
-        )
-        sequence += 1
-        yield WorkflowEvent(
-            id=sequence,
-            type="completed",
-            thread_id=thread_id,
-            data={"status": "idle"},
-        )
+                yield event.model_copy(update={"id": sequence})
+        self.record_activity(context, thread_id, message="本轮工作流已结束", status="completed")
+        yield self._event(
+            thread_id, "completed", None, {"status": "idle"}, command_id
+        ).model_copy(update={"id": sequence + 1})
+
+    def _events_from_chunk(
+        self,
+        context: TenantContext,
+        thread_id: str,
+        mode: str,
+        chunk: Any,
+        command_id: str | None,
+    ) -> list[WorkflowEvent]:
+        if mode == "custom" and isinstance(chunk, dict):
+            return [self._custom_stream_event(context, thread_id, chunk, command_id)]
+        if mode != "updates" or not isinstance(chunk, dict):
+            return []
+        events: list[WorkflowEvent] = []
+        interrupts = self._interrupt_values(chunk.get("__interrupt__"))
+        if interrupts:
+            events.append(self._interrupt_stream_event(context, thread_id, interrupts, command_id))
+        for node, update in chunk.items():
+            if not node.startswith("__"):
+                events.extend(self._node_stream_events(context, thread_id, node, update, command_id))
+        return events
 
     async def stream(
         self, context: TenantContext, thread_id: str, input_data: dict[str, Any]
@@ -595,8 +739,7 @@ class NovelOrchestrator(AgentOrchestrator):
                 self._interrupt_values(getattr(task, "interrupts", []))
             )
         next_nodes = list(getattr(state, "next", ()) or ())
-        key = self.execution_key(context, thread_id)
-        execution = dict(self._execution_snapshots.get(key, {}))
+        execution = self.get_execution_snapshot(context, thread_id)
         if not execution.get("active_node") and next_nodes:
             execution["active_node"] = next_nodes[0]
         last_activity = execution.get("last_activity_at")

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import axios from 'axios'
 import { parseSseStream, streamWorkflow, WorkflowRequestError } from './workflow'
 import type { WorkflowEvent } from '@/types/novel'
 import { useAuthStore } from '@/stores/authStore'
@@ -13,11 +14,13 @@ function responseFrom(parts: string[]): Response {
   }))
 }
 
+afterEach(() => {
+  vi.unstubAllGlobals()
+  vi.restoreAllMocks()
+  useAuthStore.getState().clear()
+})
+
 describe('parseSseStream', () => {
-  afterEach(() => {
-    vi.unstubAllGlobals()
-    useAuthStore.getState().clear()
-  })
   it('parses events split across transport chunks', async () => {
     const event: WorkflowEvent = {
       id: 1,
@@ -51,7 +54,9 @@ describe('parseSseStream', () => {
       }),
     )
   })
+})
 
+describe('workflow request recovery', () => {
   it('extracts a readable FastAPI detail instead of exposing raw JSON', async () => {
     const response = new Response(JSON.stringify({
       detail: {
@@ -67,5 +72,24 @@ describe('parseSseStream', () => {
       code: 'workflow_already_running',
       message: '该作品已有创作任务，请查看当前阶段或先结束任务',
     })
+  })
+
+  it('refreshes once after 401 and replays with the same idempotency key', async () => {
+    useAuthStore.setState({ accessToken: 'expired', refreshToken: 'refresh', currentTenantId: 'tenant-id' })
+    vi.spyOn(axios, 'post').mockResolvedValue({ data: {
+      access_token: 'fresh', refresh_token: 'next-refresh', token_type: 'bearer', expires_in: 3600,
+      user: { id: 'user-1', email: 'writer@example.com', is_platform_admin: false, status: 'active' },
+      tenants: [{ id: 'tenant-id', name: '编辑部', slug: 'desk', role: 'owner', status: 'active', ai_enabled: true, monthly_generation_limit: 30 }],
+    } })
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response('', { status: 401 }))
+      .mockResolvedValueOnce(responseFrom([]))
+    vi.stubGlobal('fetch', fetchMock)
+    await streamWorkflow('novel-id', { command: { retry: true } }, () => undefined, undefined, 'command-7')
+    const firstHeaders = fetchMock.mock.calls[0][1].headers
+    const secondHeaders = fetchMock.mock.calls[1][1].headers
+    expect(firstHeaders['Idempotency-Key']).toBe('command-7')
+    expect(secondHeaders['Idempotency-Key']).toBe('command-7')
+    expect(secondHeaders.Authorization).toBe('Bearer fresh')
   })
 })

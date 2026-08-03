@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql+asyncpg://localhost:5432/novel_writer"
     DATABASE_POOL_SIZE: int = 10
     DATABASE_MAX_OVERFLOW: int = 20
+    REDIS_URL: str = "redis://localhost:6379/0"
     CORS_ORIGINS: str = "http://localhost:5173,http://127.0.0.1:5173"
 
     JWT_SECRET: str = ""
@@ -43,6 +44,9 @@ class Settings(BaseSettings):
     LLM_MAX_RETRIES: int = 0
     WORKFLOW_TIMEOUT_SECONDS: float = 600.0
     SSE_HEARTBEAT_SECONDS: float = 15.0
+    WORKFLOW_IDEMPOTENCY_REQUIRED: bool = False
+    WORKFLOW_REVIEW_V3_ENABLED: bool = False
+    ADAPTIVE_COMPACTION_ENABLED: bool = False
 
     AGENT_MAX_CONTEXT_TOKENS: int = 128000
     MAX_TOOL_OUTPUT_CHARS: int = 10000

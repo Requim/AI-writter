@@ -1,4 +1,5 @@
 import { apiClient } from './client'
+import { createIdempotencyKey } from './idempotency'
 import type {
   ChapterDetail,
   ChapterSummary,
@@ -47,5 +48,9 @@ export const workflowApi = {
   state: (threadId: string) =>
     data<WorkflowSnapshot>(apiClient.get(`/v1/workflows/${threadId}/state`)),
   cancel: (threadId: string) =>
-    data<{ thread_id: string; status: string }>(apiClient.post(`/v1/workflows/${threadId}/cancel`)),
+    data<{ thread_id: string; status: string }>(apiClient.post(
+      `/v1/workflows/${threadId}/cancel`,
+      undefined,
+      { headers: { 'Idempotency-Key': createIdempotencyKey() } },
+    )),
 }

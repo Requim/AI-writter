@@ -12,6 +12,7 @@ from application.auth_service import AuthService
 from application.orchestrator import NovelOrchestrator
 from application.quota_service import QuotaService
 from config import settings
+from infrastructure.command_store import RedisWorkflowCommandStore
 from infrastructure.database.repository import PostgresNovelRepository
 from infrastructure.database.identity_repository import IdentityRepository
 from infrastructure.memory.postgres_memory import PostgresMemoryAdapter
@@ -32,6 +33,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     auth_service = AuthService(identity_repository, settings)
     quota_service = QuotaService(identity_repository)
     memory_service = PostgresMemoryAdapter(settings.DATABASE_URL, repository.async_session)
+    workflow_command_store = RedisWorkflowCommandStore(settings.REDIS_URL)
     orchestrator = NovelOrchestrator(
         repository=repository,
         memory_service=memory_service,
@@ -53,10 +55,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.quota_service = quota_service
     app.state.memory_service = memory_service
     app.state.orchestrator = orchestrator
+    app.state.workflow_command_store = workflow_command_store
     try:
         yield
     finally:
         await orchestrator.aclose()
+        await workflow_command_store.aclose()
         await repository.aclose()
 
 
@@ -71,7 +75,13 @@ app.add_middleware(
     allow_origins=settings.cors_origins,
     allow_credentials=False,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "Last-Event-ID", "X-Tenant-ID"],
+    allow_headers=[
+        "Authorization",
+        "Content-Type",
+        "Idempotency-Key",
+        "Last-Event-ID",
+        "X-Tenant-ID",
+    ],
 )
 app.include_router(novel_router.router, prefix="/api/v1/novels", tags=["Novels"])
 app.include_router(workflow_router.router, prefix="/api/v1/workflows", tags=["Workflows"])
@@ -91,6 +101,10 @@ async def readiness(request: Request) -> dict[str, str]:
         await request.app.state.repository.ping()
     except Exception as exc:
         raise HTTPException(status_code=503, detail="database unavailable") from exc
+    try:
+        await request.app.state.workflow_command_store.ping()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="redis unavailable") from exc
     return {"status": "ready"}
 
 

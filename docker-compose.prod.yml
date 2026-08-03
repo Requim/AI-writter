@@ -2,6 +2,9 @@ services:
   database:
     container_name: novel-writer-database
 
+  redis:
+    container_name: novel-writer-redis
+
   backend:
     container_name: novel-writer-backend
     ports: !reset []

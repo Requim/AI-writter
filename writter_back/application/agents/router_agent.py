@@ -16,6 +16,7 @@ RouterDestination = Literal[
     "memory_retrieval_node",
     "chapter_outline_node",
     "chapter_writer_node",
+    "chapter_compaction_node",
     "reflection_node",
 ]
 
@@ -38,6 +39,8 @@ def _route(state: NovelAgentState) -> tuple[str, str]:
     current_index = state.get("current_chapter_index", 0)
     chapter_number = current_index + 1
     content = state.get("current_chapter_content")
+    if content and state.get("compaction_checked") is False:
+        return "chapter_compaction_node", f"第{chapter_number}章正文已生成，检查篇幅与重复"
     if content:
         return "reflection_node", f"第{chapter_number}章正文已生成，进入质量审读"
 

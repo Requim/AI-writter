@@ -27,8 +27,9 @@ class LLMService(ABC):
     async def structured_generate(self, prompt: str, schema: Dict[str, Any], 
                                  system_prompt: Optional[str] = None,
                                  temperature: float = 0.3,
-                                 top_p: float = 1.0) -> Dict[str, Any]:
-        """结构化生成（用于生成细纲等）"""
+                                 top_p: float = 1.0,
+                                 max_attempts: int | None = None) -> Dict[str, Any]:
+        """结构化生成；max_attempts 可限制本次调用的总尝试次数。"""
         pass
     
     @abstractmethod

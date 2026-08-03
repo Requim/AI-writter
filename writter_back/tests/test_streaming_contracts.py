@@ -236,6 +236,20 @@ async def test_deepseek_structured_generation_discards_invalid_result():
 
 
 @pytest.mark.asyncio
+async def test_deepseek_structured_generation_honors_single_attempt_limit():
+    completions = SequentialStructuredCompletions(['{"title":123}'] * 3)
+    adapter = DeepSeekAdapter("test-key", "test-model", 1.0)
+    adapter.client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+
+    result = await adapter.structured_generate(
+        "prompt", {"title": "string"}, max_attempts=1
+    )
+
+    assert result == {}
+    assert completions.calls == 1
+
+
+@pytest.mark.asyncio
 async def test_anthropic_structured_generation_retries_incomplete_result():
     messages = SequentialAnthropicMessages([
         '{"rubric_scores":{}}',
@@ -325,11 +339,13 @@ def test_workflow_event_sse_does_not_embed_large_state():
         id=7,
         type="progress",
         thread_id="thread-1",
+        command_id="command-1",
         data={"percentage": 50},
     )
     frame = event.to_sse()
     payload = json.loads(next(line[6:] for line in frame.splitlines() if line.startswith("data: ")))
     assert payload["data"] == {"percentage": 50}
+    assert payload["command_id"] == "command-1"
     assert "current_chapter_content" not in frame
 
 

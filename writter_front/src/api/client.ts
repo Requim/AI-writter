@@ -1,6 +1,6 @@
-import axios, { type InternalAxiosRequestConfig } from 'axios'
+import axios, { type AxiosError, type InternalAxiosRequestConfig } from 'axios'
 import { useAuthStore } from '@/stores/authStore'
-import type { AuthSession } from '@/types/auth'
+import { redirectToLogin, refreshSession } from './session'
 
 interface RetryConfig extends InternalAxiosRequestConfig {
   _retry?: boolean
@@ -19,40 +19,28 @@ apiClient.interceptors.request.use((config) => {
   return config
 })
 
-let refreshPromise: Promise<AuthSession> | undefined
-
-async function refreshSession(): Promise<AuthSession> {
-  const refreshToken = useAuthStore.getState().refreshToken
-  if (!refreshToken) throw new Error('No refresh token')
-  refreshPromise ??= axios
-    .post<AuthSession>('/api/v1/auth/refresh', { refresh_token: refreshToken })
-    .then(({ data }) => {
-      useAuthStore.getState().setSession(data)
-      return data
-    })
-    .finally(() => { refreshPromise = undefined })
-  return refreshPromise
+async function retryAfterRefresh(error: AxiosError): Promise<unknown> {
+  const config = error.config as RetryConfig | undefined
+  if (!config || error.response?.status !== 401) return Promise.reject(error)
+  if (config._retry) {
+    redirectToLogin()
+    return Promise.reject(error)
+  }
+  if (config.url?.includes('/v1/auth/')) return Promise.reject(error)
+  config._retry = true
+  try {
+    const session = await refreshSession()
+    config.headers.Authorization = `Bearer ${session.access_token}`
+    return apiClient(config)
+  } catch (refreshError) {
+    redirectToLogin()
+    return Promise.reject(refreshError)
+  }
 }
 
 apiClient.interceptors.response.use(
   (response) => response,
-  async (error: unknown) => {
-    if (!axios.isAxiosError(error) || !error.config || error.response?.status !== 401) {
-      return Promise.reject(error)
-    }
-    const config = error.config as RetryConfig
-    if (config._retry || config.url?.includes('/v1/auth/')) {
-      return Promise.reject(error)
-    }
-    config._retry = true
-    try {
-      const session = await refreshSession()
-      config.headers.Authorization = `Bearer ${session.access_token}`
-      return apiClient(config)
-    } catch (refreshError) {
-      useAuthStore.getState().clear()
-      if (!window.location.pathname.startsWith('/login')) window.location.assign('/login')
-      return Promise.reject(refreshError)
-    }
-  },
+  (error: unknown) => axios.isAxiosError(error)
+    ? retryAfterRefresh(error)
+    : Promise.reject(error),
 )

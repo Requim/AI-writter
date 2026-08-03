@@ -4,7 +4,7 @@ import logging
 from typing import Any, Literal
 
 from langchain_core.runnables import RunnableConfig
-from langgraph.types import Command, interrupt
+from langgraph.types import Command
 
 from application.continuity import build_story_bible
 from application.errors import RetryableWorkflowError
@@ -19,6 +19,13 @@ from application.prompts.revision_prompts import (
     build_user_instruction_revision_prompt,
     classify_revision_mode,
     format_issues_for_prompt,
+)
+from application.proposals import (
+    proposal_update,
+    proposal_matches,
+    request_decision,
+    require_proposal,
+    unpack_decision,
 )
 from application.schemas.agent_state import NovelAgentState
 from application.streaming import collect_streamed_text, emit_workflow_event
@@ -170,7 +177,9 @@ async def _generate_refactor(
     return await _expand_if_needed(llm, revised, content, outline, context, bible, index)
 
 
-def _next_after_revision(state: NovelAgentState, revised: str, config: RunnableConfig) -> Command:
+def _next_after_revision(
+    state: NovelAgentState, revised: str, config: RunnableConfig
+) -> Command:
     if config["configurable"].get("auto_mode", False):
         attempts = state.get("revision_attempts", 0)
         history = (state.get("revision_history", []) or []) + [
@@ -180,27 +189,81 @@ def _next_after_revision(state: NovelAgentState, revised: str, config: RunnableC
             goto="reflection_node",
             update={"current_chapter_content": revised, "revision_attempts": attempts + 1, "revision_history": history},
         )
-    choice = interrupt(
-        {
-            "action": "confirm_revision", "message": "内容已修订，请确认是否满意",
-            "chapter_number": state.get("current_chapter_index", 0) + 1,
-            "revised_content_preview": revised[:500] + "...",
-        }
+    chapter_number = state.get("current_chapter_index", 0) + 1
+    update = proposal_update(
+        state,
+        "revision",
+        {"revised_content": revised, "preview": revised[:500]},
+        chapter_number,
     )
+    return Command(goto="revision_review_node", update=update)
+
+
+def _revision_review_fields(proposal: dict[str, Any]) -> dict[str, Any]:
+    payload = proposal.get("payload") or {}
+    preview = str(payload.get("preview") or "") if isinstance(payload, dict) else ""
+    return {
+        "action": "confirm_revision",
+        "message": "内容已修订，请确认是否满意",
+        "revised_content_preview": preview,
+    }
+
+
+async def revision_review_node(
+    state: NovelAgentState, config: RunnableConfig
+) -> Command[Literal["persist_node", "revision_node"]]:
+    """审核 checkpoint 中的修订提案，不再次调用模型。"""
+    del config
+    chapter_number = state.get("current_chapter_index", 0) + 1
+    proposal = require_proposal(state, "revision", chapter_number)
+    raw = request_decision(state, proposal, **_revision_review_fields(proposal))
+    choice = unpack_decision(raw, proposal)
+    payload = proposal.get("payload") or {}
+    revised = str(payload.get("revised_content") or "")
     if choice == "accept":
-        return Command(goto="persist_node", update={"current_chapter_content": revised})
-    if choice == "regenerate":
-        return Command(goto="chapter_writer_node")
-    return Command(
-        goto="revision_node",
-        update={"current_chapter_content": revised, "user_decision": {"action": "revise", "instructions": choice}},
-    )
+        gate = {
+            **(state.get("quality_gate") or {}),
+            "decision": "user_accepted_revision",
+        }
+        return Command(
+            goto="persist_node",
+            update={
+                "current_chapter_content": revised,
+                "quality_gate": gate,
+                "quality_results": [gate],
+                "pending_proposal": None,
+                "pending_proposal_decision": None,
+            },
+        )
+    instructions = choice if isinstance(choice, str) and choice != "regenerate" else None
+    update: dict[str, Any] = {
+        "pending_proposal": None,
+        "pending_proposal_decision": None,
+        "user_decision": {"action": "revise"},
+    }
+    if instructions:
+        update.update({
+            "current_chapter_content": revised,
+            "user_decision": {"action": "revise", "instructions": instructions},
+        })
+    return Command(goto="revision_node", update=update)
 
 
 async def revision_node(
     state: NovelAgentState, config: RunnableConfig
-) -> Command[Literal["chapter_writer_node", "persist_node", "reflection_node", "revision_node"]]:
+) -> Command[
+    Literal[
+        "chapter_writer_node",
+        "persist_node",
+        "reflection_node",
+        "revision_node",
+        "revision_review_node",
+    ]
+]:
     """根据服务端质量决策执行局部 Patch 或全文重构。"""
+    chapter = state.get("current_chapter_index", 0) + 1
+    if proposal_matches(state, "revision", chapter):
+        return Command(goto="revision_review_node")
     decision = state.get("user_decision", {}) or {}
     if decision.get("action") == "accept":
         return Command(goto="persist_node")
@@ -209,6 +272,10 @@ async def revision_node(
     llm = config["configurable"].get("llm_config", {}).get("llm_instance")
     if not llm:
         raise RetryableWorkflowError("章节修订失败：LLM 不可用")
+    emit_workflow_event(
+        "status", {"status": "started", "message": "正在生成正文修订提案"},
+        "revision_node",
+    )
     content = state.get("current_chapter_content", "")
     outline = state.get("chapter_outlines", [{}])[-1] if state.get("chapter_outlines") else {}
     total = state.get("total_outline", {})
