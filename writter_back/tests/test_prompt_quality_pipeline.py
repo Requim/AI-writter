@@ -171,6 +171,19 @@ def test_server_quality_gate_ignores_model_passed_and_uses_rubric() -> None:
     assert low_gate["decision"] == "human_review"
 
 
+@pytest.mark.parametrize(("raw_score", "expected_score"), [(8.4, 0.84), (84, 0.84)])
+def test_server_quality_gate_normalizes_model_rubric_scale(
+    raw_score: float, expected_score: float
+) -> None:
+    result = _review_result(4.2)
+    result["rubric_scores"] = _rubric(raw_score)
+
+    gate, _ = _quality_gate(result, "正文" * 1800)
+
+    assert gate["score"] == pytest.approx(expected_score)
+    assert gate["decision"] == "pass"
+
+
 def test_evidenced_hard_failure_routes_to_refactor() -> None:
     content = "主角明知门后有埋伏，却毫无理由地独自走了进去。" + "正文" * 1800
     issue = {

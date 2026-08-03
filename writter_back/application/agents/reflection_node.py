@@ -58,11 +58,11 @@ def _normalize_issues(value: object) -> list[dict]:
     return normalized
 
 
-def _parse_model_number(value: object, *, percentage_scale: bool = False) -> object:
+def _parse_model_number(value: object, *, percentage_scale: bool = False) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float, str)):
         raise ValueError("expected numeric value")
     if not isinstance(value, str):
-        return value
+        return float(value)
     normalized = value.strip().replace("％", "%")
     is_percentage = normalized.endswith("%")
     parsed = float(normalized[:-1].strip() if is_percentage else normalized)
@@ -75,6 +75,15 @@ def _parse_model_bool(value: object) -> bool:
     if isinstance(value, str) and value.strip().lower() in {"true", "false"}:
         return value.strip().lower() == "true"
     raise ValueError("expected boolean value")
+
+
+def _rubric_scale_factor(scores: list[float]) -> float:
+    """识别模型偶发返回的统一十分制或百分制评分。"""
+    if scores and all(5 < score <= 10 for score in scores):
+        return 2.0
+    if scores and all(10 < score <= 100 for score in scores):
+        return 20.0
+    return 1.0
 
 
 class _WordCountAnalysis(BaseModel):
@@ -102,10 +111,20 @@ class _RubricScores(BaseModel):
     prose_specificity: float = Field(ge=0, le=5)
     ending_effect: float = Field(ge=0, le=5)
 
-    @field_validator("*", mode="before")
+    @model_validator(mode="before")
     @classmethod
-    def parse_score(cls, value: object) -> object:
-        return _parse_model_number(value)
+    def normalize_score_scale(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        parsed = {
+            key: _parse_model_number(value.get(key))
+            for key in cls.model_fields
+        }
+        scores = list(parsed.values())
+        factor = _rubric_scale_factor(scores)
+        if factor > 1:
+            logger.warning("【反思检查节点】归一化模型评分量纲 | 除数=%s", factor)
+        return {key: score / factor for key, score in parsed.items()}
 
 
 class _ReflectionMetrics(BaseModel):
