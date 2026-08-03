@@ -4,6 +4,7 @@ import type { ChapterDetail, ChapterSummary, InterruptInfo } from '@/types/novel
 export function autoResumeValue(interrupt: InterruptInfo, novelType: string): unknown {
   switch (interrupt.action) {
     case 'require_novel_type': return novelType
+    case 'review_or_modify_creative_brief': return 'accept'
     case 'confirm_or_provide_title': return interrupt.ai_suggestions?.[0] || '未命名小说'
     case 'ready_for_next_chapter': return 'next'
     case 'review_reflection_issues': return 'revise'
@@ -24,6 +25,7 @@ export function shouldAutoResume(
   lastInterruptKey: string | undefined,
 ): boolean {
   if (!autoMode || !autoRunActive || !interrupt) return false
+  if (['quality_gate_exhausted', 'quality_gate_human_review'].includes(interrupt.action)) return false
   return interruptKey(interrupt) !== lastInterruptKey
 }
 

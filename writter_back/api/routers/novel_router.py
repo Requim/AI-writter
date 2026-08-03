@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from api.dependencies import get_tenant_context
 from application.checkpoint_reconciliation import reconcile_pending_checkpoint
-from application.errors import WorkflowBusyError
+from application.errors import QualityGateReviewRequired, WorkflowBusyError
 from application.orchestrator import NovelOrchestrator
 from application.quota_service import QuotaService
 from infrastructure.database.identity_repository import (
@@ -310,6 +310,8 @@ def _rewrite_config(
             "quota_service": quota,
             "quota_operation_pre_reserved": True,
             "auto_mode": True,
+            "direct_rewrite": True,
+            "max_reflection_loops": REWRITE_MAX_REVISION_ATTEMPTS,
             "discard_following_chapters": True,
             "llm_config": {"llm_instance": orchestrator._get_llm_instance()},
         }
@@ -350,7 +352,13 @@ async def _generate_rewritten_chapter(
 
     node_name = "reflection_node"
     for _ in range(REWRITE_MAX_NODE_STEPS):
-        goto = await _run_rewrite_node(node_name, state, config)
+        try:
+            goto = await _run_rewrite_node(node_name, state, config)
+        except QualityGateReviewRequired as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "quality_gate_not_met", "message": str(exc)},
+            ) from exc
         if node_name == "persist_node":
             return state
         allowed = {

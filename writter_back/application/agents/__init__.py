@@ -1,5 +1,6 @@
 """Agent节点模块"""
 from application.agents.type_confirmation_node import type_confirmation_node
+from application.agents.creative_brief_node import creative_brief_node
 from application.agents.title_generator_node import title_generator_node
 from application.agents.summary_generator_node import summary_generator_node
 from application.agents.outline_generator_node import outline_generator_node
@@ -14,6 +15,7 @@ from application.agents.router_agent import router_agent
 
 __all__ = [
     "type_confirmation_node",
+    "creative_brief_node",
     "title_generator_node",
     "summary_generator_node",
     "outline_generator_node",

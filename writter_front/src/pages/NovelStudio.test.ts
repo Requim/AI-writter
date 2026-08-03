@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { hasChapterChanges, rewindImpactText, shouldAutoResume } from './novelStudioUtils'
+import { autoResumeValue, hasChapterChanges, rewindImpactText, shouldAutoResume } from './novelStudioUtils'
 import type { InterruptInfo } from '@/types/novel'
 
 const interrupt: InterruptInfo = {
@@ -17,6 +17,23 @@ describe('shouldAutoResume', () => {
   it('continues a current auto run once for each interrupt', () => {
     expect(shouldAutoResume(true, true, interrupt, undefined)).toBe(true)
     expect(shouldAutoResume(true, true, interrupt, 'review_reflection_issues-3')).toBe(false)
+  })
+
+  it('stops automatic resume when the server requires human quality review', () => {
+    expect(shouldAutoResume(true, true, {
+      action: 'quality_gate_exhausted',
+      chapter_number: 3,
+    }, undefined)).toBe(false)
+    expect(shouldAutoResume(true, true, {
+      action: 'quality_gate_human_review',
+      chapter_number: 3,
+    }, undefined)).toBe(false)
+  })
+})
+
+describe('autoResumeValue', () => {
+  it('accepts a generated creative brief in automatic mode', () => {
+    expect(autoResumeValue({ action: 'review_or_modify_creative_brief' }, 'suspense')).toBe('accept')
   })
 })
 

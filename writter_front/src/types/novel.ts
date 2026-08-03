@@ -1,6 +1,24 @@
 export type JsonPrimitive = string | number | boolean | null
 export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue }
 
+export interface CreativeBrief {
+  core_premise?: string
+  protagonist_drive?: string
+  core_conflict?: string
+  theme_question?: string
+  reader_promise?: string
+  tone?: string
+  originality_anchor?: string
+  content_boundaries?: string | string[]
+}
+
+export interface TitleSuggestion {
+  title: string
+  hint?: string
+  category?: string
+  total_score?: number
+}
+
 export interface NovelOutline {
   story_background?: string
   main_characters?: Array<Record<string, JsonValue>>
@@ -8,6 +26,8 @@ export interface NovelOutline {
   chapters?: Array<Record<string, JsonValue>>
   writing_style?: string
   total_chapters?: number
+  creative_brief?: CreativeBrief
+  prompt_version?: string
 }
 
 export interface NovelCreateRequest {
@@ -51,11 +71,15 @@ export interface ChapterDetail extends ChapterSummary {
 }
 
 export interface ReflectionIssue {
+  issue_id?: string
   type?: string
   severity?: 'low' | 'medium' | 'high'
   location?: string
   description?: string
   suggestion?: string
+  evidence?: string
+  evidence_valid?: boolean
+  priority_action?: 'must_fix' | 'optional' | 'can_ignore'
 }
 
 export type WorkflowEventType =
@@ -84,9 +108,10 @@ export interface InterruptInfo {
   message?: string
   chapter_number?: number
   quality_score?: number
-  ai_suggestions?: string[]
+  ai_suggestions?: Array<string | TitleSuggestion>
   ai_generated_summary?: string
   ai_generated_outline?: Record<string, JsonValue>
+  ai_generated_creative_brief?: CreativeBrief
   issues?: ReflectionIssue[]
   [key: string]: unknown
 }

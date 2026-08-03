@@ -10,6 +10,7 @@
 import json
 
 from application.continuity import build_budgeted_context, compact_text
+from application.prompts.version import PROMPT_VERSION
 
 
 def _fmt_events(events) -> str:
@@ -66,12 +67,23 @@ def _build_scene_block(scene_num: int, scene: dict) -> str:
     sensory = _fmt_sensory(scene.get("sensory_details"))
     dialogue = _fmt_dialogue(scene.get("dialogue_targets"))
     purpose = scene.get("purpose", "未指定")
+    dramatic = {
+        "scene_goal": scene.get("scene_goal", ""),
+        "desire": scene.get("desire", ""),
+        "obstacle": scene.get("obstacle", ""),
+        "tactic": scene.get("tactic", ""),
+        "turn": scene.get("turn", ""),
+        "price_paid": scene.get("price_paid", ""),
+        "state_delta": scene.get("state_delta", ""),
+        "exit_hook": scene.get("exit_hook", ""),
+    }
     return (
         f"  【场景{scene_num}】{loc}\n"
         f"    人物与状态：{chars}\n"
         f"    情节阶段：\n{events}\n"
         f"    感官素材：\n{sensory}\n"
         f"    对话设计：\n{dialogue}\n"
+        f"    戏剧动作：{json.dumps(dramatic, ensure_ascii=False)}\n"
         f"    场景必要性：{purpose}"
     )
 
@@ -80,6 +92,15 @@ def _build_contract_block(chapter_outline: dict) -> str:
     """Format the continuity-critical subset of the chapter contract."""
     contract = {
         "chapter_goal": chapter_outline.get("chapter_goal", ""),
+        "pov_character": chapter_outline.get("pov_character", ""),
+        "dramatic_question": chapter_outline.get("dramatic_question", ""),
+        "desire": chapter_outline.get("desire", ""),
+        "obstacle": chapter_outline.get("obstacle", ""),
+        "tactics": chapter_outline.get("tactics", []),
+        "turn": chapter_outline.get("turn", ""),
+        "price_paid": chapter_outline.get("price_paid", ""),
+        "state_delta": chapter_outline.get("state_delta", ""),
+        "ending_mode": chapter_outline.get("ending_mode", ""),
         "entry_state": chapter_outline.get("entry_state", {}),
         "causal_chain": chapter_outline.get("causal_chain", []),
         "state_changes": chapter_outline.get("state_changes", []),
@@ -95,62 +116,16 @@ def _build_contract_block(chapter_outline: dict) -> str:
 # ─────────────────────────────────────────────
 
 _WRITING_INSTRUCTIONS = """
-╔═══════════════════════════════════════════════════════════╗
-║            【写作指令——严格遵循以下五点】                    ║
-╚═══════════════════════════════════════════════════════════╝
-
-一、信息密度与结构均衡（防"中途乏力"）
-  1. 每个场景的字数必须均匀分布。如果本章有3个场景，每个约1500-2000字；
-     有4个场景，每个约1000-1500字。严禁场景一洋洋洒洒、场景三草草结束。
-  2. 【信息密度原则】正文中不允许出现不推进情节或不传递情感的冗余描写。
-     每一段文字必须至少完成以下一项：
-     - 提供新信息（线索、反转、背景揭露）
-     - 传递情感波动（人物内心变化、关系张力）
-     - 推动情节发展（决策、行动、冲突升级）
-     ❌ 禁止为凑字数堆砌"无意义但优美的景物描写"——景物必须映射人物心理。
-  3. 描写配比参考：动作:对话:心理:环境 ≈ 3:3:2:2
-
-二、逻辑钩子强制执行
-  本章的伏笔回收（Callback）和新矛盾埋设（Setup）有严格的段落位置要求：
-  1. 【前10%必须体现对 Callback 的回收】
-     - 本章开篇就要触及前文伏笔，让读者产生"原来如此"的串联感
-     - 可以是一个细节、一句对话、一个物件，但必须明确点出前文的设局
-  2. 【后10%必须聚焦于 Setup 的埋设】
-     - 本章结尾处要埋下新的矛盾或悬念，确保读者有"必须翻到下一页"的冲动
-     - 可以是新的威胁、未解的疑问、人物关系的裂痕
-  3. 中间 80% 的内容中，logic_hooks 信息应自然融入情节，不额外强调。
-
-三、对话的非直接性（潜台词 + 动作辅助）
-  1. 对话严格遵循"不要直接说出意图"原则——用环境暗示、回避性回答、
-     或肢体语言替代直白表达。
-  2. 【动作穿插规则】严禁出现连续 3 句以上的纯对白。
-     每 2 句对话之间必须穿插一次人物的视觉焦点转移或手部动作描写
-     （如："他移开视线，手指在桌面轻轻敲了两下。"）。
-  3. 参考细纲中的 dialogue_targets，将"对话目的"转化为"角色真正说出口的话"，
-     保留 30% 的潜台词空间。
-     - 明线（explicit）：确保表面对话推进情节
-     - 暗线（implicit）：通过回避/反问/停顿来制造潜台词张力
-  4. 至少 2 处关键对话中，人物的口头表达与内心真实想法相反
-     （利用 internal_monologue 制造张力）。
-
-四、镜头感与描写配比
-  1. 关键冲突处使用『慢镜头』：将单行动作拆解为连续动态过程
-     （如"他拔出枪"→"他的手指触到枪柄冰凉的金属，拇指挑开皮套搭扣，
-      虎口卡住握把缓缓收紧……"）。
-  2. 每个场景必须包含人物的生理反应描写
-     （心跳加速、瞳孔收缩、冷汗、呼吸变浅等），不少于 3 处。
-  3. 环境描写须与人物心理形成映射
-     （如：焦虑 → 闷热的房间；决断 → 骤起的冷风）。
-
-五、分镜头扩写流程
-  请严格按以下步骤逐场景生成内容：
-  第1步「细节预演」：利用 sensory_details（视觉/听觉/嗅觉触觉），
-    将每个感官素材扩展为 50-100 字的描写段落。
-  第2步「情节填充」：按"入场→拉锯→结果"顺序展开 events，
-    确保每个阶段有足够的细节支撑，字数分配均匀。
-  第3步「对话生成」：根据 dialogue_targets 的明线+暗线设计，
-    写出符合人物状态的自然对话，遵守动作穿插规则。
-  第4步「转场过渡」：场景之间用 1-2 句环境/心理过渡，保持叙事流畅。
+【小说化执行原则】
+1. 先让 POV 人物为 desire 采取具体行动，再让 obstacle 主动反制；人物必须因受阻而改变 tactic。
+2. turn 必须由已发生的行动、误判或选择引起；price_paid 与 state_delta 要在正文中有可引用证据。
+3. 严守 POV 知识边界。叙述只能呈现视角人物能感知、回忆或合理推断的信息。
+4. 对话是否直白、动作是否穿插、描写快慢由场景目的决定。需要博弈时写潜台词，
+   需要决断时允许短而直接；禁止为了满足固定比例重复动作、生理反应或环境意象。
+5. 选择少量具体且有辨识度的细节，让细节参与冲突或暴露人物，不堆叠感官清单。
+6. 保持人物各自的词汇、句长、回避方式和情绪防御，不使用可互换的通用台词。
+7. 场景结束时完成自己的 state_delta，并把其后果交给下一场景；不得重述上一场景已确认的信息。
+8. 结尾服从 ending_mode 和本章行动后果。悬念、留白或收束按故事需要选择，不强制惊吓式断章。
 """
 
 _SYSTEM_PROMPT_EXTRA = (
@@ -214,8 +189,8 @@ def build_first_scene_prompt(
 {internal_monologue or "无特殊要求"}
 
 【本章伏笔与悬念】
-- 需回收的伏笔（Callback——须在本章前10%体现）：{callback_str}
-- 待埋设的新矛盾（Setup——须在本章后10%聚焦）：{setup_str}
+- 需自然回收的伏笔（Callback）：{callback_str}
+- 由行动后果埋设的新矛盾（Setup）：{setup_str}
 
 【前文衔接】
 （前文记忆分层：<S层故事状态> | <M层近期章节> | <L层历史章节摘录>）
@@ -223,7 +198,7 @@ def build_first_scene_prompt(
 
 【场景定位】
 - 这是本章的「开篇场景」，承担着承接前文、建立本章基调的任务。
-- 如果 callback 不为空，请在本场景中（或前10%内容中）体现 callback 的回收。
+- 如果 callback 与本场景因果相关，请在行动中自然回收；否则保留给更合适的场景。
 - 场景结尾须自然留出向下一场景过渡的空间。
 
 {_WRITING_INSTRUCTIONS}
@@ -252,6 +227,7 @@ def build_next_scene_prompt(
     internal_monologue: str,
     memory_context: str,
     story_bible: str = "",
+    scene_ledger: list[dict] | None = None,
 ) -> str:
     """生成后续场景的提示词（带前文摘要和动态校准）"""
     scene_block = _build_scene_block(scene_index, scene)
@@ -260,6 +236,7 @@ def build_next_scene_prompt(
     callback_str = logic_hooks.get("callback", "无")
     setup_str = logic_hooks.get("setup", "无")
     correction = f"\n【动态校准】{correction_note}" if correction_note else ""
+    ledger = compact_text(json.dumps(scene_ledger or [], ensure_ascii=False, indent=2), 2400)
 
     return f"""请接续上文，撰写第{chapter_num}章的下一个场景（场景{scene_index}/{total_scenes}）。
 
@@ -272,6 +249,9 @@ def build_next_scene_prompt(
 
 ↑ 上一场景核心脉要（Events.Result + 落点氛围）↓
 {prev_scene_digest}
+
+【已完成场景账本（均为正文已落地事实）】
+{ledger or "无"}
 
 【静态故事圣经（不可违背）】
 {compact_text(story_bible, 2200) if story_bible else "无"}
@@ -287,9 +267,8 @@ def build_next_scene_prompt(
 
 【本章伏笔与悬念】
 - 需回收的伏笔（Callback）：{callback_str}
-- 待埋设的新矛盾（Setup——须在本章后10%聚焦）：{setup_str}
-- 当前处于本章中部（场景{scene_index}/{total_scenes}），
-  情节应逐步推向高潮，为后10%的 Setup 埋设做准备。
+- 待埋设的新矛盾（Setup）：{setup_str}
+- 根据场景账本判断尚未履行的 turn、price_paid 和 state_delta，不得重复已完成事件。
 
 【前文衔接】
 （前文记忆分层：<S层故事状态> | <M层近期章节> | <L层历史章节摘录>）
@@ -319,10 +298,10 @@ def build_scene_continue_prompt(
     base = (
         f"当前场景内容字数 {word_count}，目标 {target_words} 字，字数不足。\n"
         f"请继续扩展本场景内容。优先补充：\n"
-        f"1. 关键冲突处的慢镜头扩写（生理反应 + 环境映射）\n"
-        f"2. 对话中的潜台词与动作穿插（每2句对话搭配一次视觉/动作描写）\n"
-        f"3. 环境细节与感官描写（视觉/听觉/嗅觉触觉）\n"
-        f"4. 人物心理活动的深入刻画\n\n"
+        f"1. 补全尚未完成的行动、反制、策略变化与后果\n"
+        f"2. 用人物选择和有辨识度的细节增加有效信息，而非重复情绪\n"
+        f"3. 让对话暴露关系或改变局势，并保持角色独有声音\n"
+        f"4. 保证新增内容与既有结尾自然衔接\n\n"
         f"已有内容（结尾部分）：\n{existing_content[-800:]}"
     )
     if correction_note:
@@ -391,8 +370,8 @@ def build_chapter_writer_prompt(
 {internal_monologue or "无特殊要求"}
 
 【伏笔与悬念】
-- 本章需回收的伏笔（Callback——须在前10%体现）：{logic_hooks.get("callback", "无")}
-- 为后文埋下的新矛盾（Setup——须在后10%聚焦）：{logic_hooks.get("setup", "无")}
+- 本章需自然回收的伏笔（Callback）：{logic_hooks.get("callback", "无")}
+- 由本章行动后果埋下的新矛盾（Setup）：{logic_hooks.get("setup", "无")}
 
 【前文衔接】
 （前文记忆分层：<S层故事状态> | <M层近期章节> | <L层历史章节摘录>）
@@ -413,10 +392,10 @@ def build_chapter_continue_prompt(word_count: int, existing_content: str) -> str
     return (
         f"当前章节内容字数 {word_count}，不足 3000 字。\n"
         f"请继续扩展内容。优先补充：\n"
-        f"1. 关键冲突处的慢镜头扩写（生理反应 + 环境映射）\n"
-        f"2. 对话中的潜台词与动作穿插（每2句对话搭配一次视觉/动作描写）\n"
-        f"3. 环境细节与感官描写（视觉/听觉/嗅觉触觉）\n"
-        f"4. 场景转场的过渡描写\n\n"
+        f"1. 补齐尚未完成的行动、反制、转折与代价\n"
+        f"2. 用新信息或人物选择扩展，不重复既有情绪和结论\n"
+        f"3. 保持 POV 知识边界与角色声音\n"
+        f"4. 让新增内容导向既定 state_delta 和 ending_mode\n\n"
         f"已有内容（结尾部分）：\n{existing_content[-800:]}"
     )
 
@@ -424,6 +403,7 @@ def build_chapter_continue_prompt(word_count: int, existing_content: str) -> str
 def build_chapter_system_prompt(novel_type: str) -> str:
     """章节写作的系统提示词"""
     return (
+        f"[PROMPT_VERSION:{PROMPT_VERSION}]"
         f"你是一位拥有 20 年经验的{novel_type}类型小说家，同时也是一位电影导演。"
         f"你擅用镜头语言写作——知道何时推进、何时慢放、何时留白。"
         f"你的文字没有废笔，每一段描写都服务于人物心理或情节推进。"

@@ -12,6 +12,7 @@ from application.prompts.outline_prompts import (
     validate_outline,
 )
 from application.schemas.agent_state import NovelAgentState
+from application.prompts.version import PROMPT_VERSION
 
 logger = logging.getLogger("uvicorn")
 
@@ -73,9 +74,20 @@ async def outline_generator_node(
         title,
         "是" if isinstance(existing, dict) and existing else "否",
     )
-    if isinstance(existing, dict) and existing:
-        logger.info("【宏观总纲节点】跳过 | 使用已有总纲")
-        return Command(goto="persist_node", update={"__next_node__": "progress_check_node"})
+    has_existing_outline = (
+        isinstance(existing, dict)
+        and bool(existing.get("story_background"))
+        and bool(existing.get("total_chapters"))
+    )
+    if has_existing_outline:
+        enriched = dict(existing)
+        enriched["creative_brief"] = state.get("creative_brief") or enriched.get("creative_brief", {})
+        enriched["prompt_version"] = PROMPT_VERSION
+        logger.info("【宏观总纲节点】跳过 | 使用已有总纲并补齐创作简报")
+        return Command(
+            goto="persist_node",
+            update={"total_outline": enriched, "__next_node__": "progress_check_node"},
+        )
 
     llm = config["configurable"].get("llm_config", {}).get("llm_instance")
     if not llm:
@@ -88,6 +100,7 @@ async def outline_generator_node(
             summary,
             target_total_chapters=target_total_chapters,
             requested_writing_style=requested_writing_style,
+            creative_brief=state.get("creative_brief"),
         ),
         schema=OUTLINE_SCHEMA,
         temperature=0.75,
@@ -107,6 +120,8 @@ async def outline_generator_node(
         ai_outline["source_title"] = title
     if summary:
         ai_outline["source_summary"] = summary
+    ai_outline["creative_brief"] = state.get("creative_brief") or {}
+    ai_outline["prompt_version"] = PROMPT_VERSION
     try:
         ai_outline["total_chapters"] = int(ai_outline.get("total_chapters", 0))
     except (TypeError, ValueError) as exc:
@@ -145,7 +160,10 @@ async def outline_generator_node(
     selected = ai_outline if user_decision == "accept" else user_decision
     if not isinstance(selected, dict):
         raise RuntimeError("宏观总纲生成失败：用户提交的总纲格式无效")
+    selected = dict(selected)
     selected.pop("chapters", None)
+    selected["creative_brief"] = state.get("creative_brief") or selected.get("creative_brief", {})
+    selected["prompt_version"] = PROMPT_VERSION
     return Command(
         goto="persist_node",
         update={"total_outline": selected, "__next_node__": "progress_check_node"},

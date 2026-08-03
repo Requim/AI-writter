@@ -3,6 +3,7 @@
 import json
 
 from application.continuity import build_budgeted_context, compact_text
+from application.prompts.version import PROMPT_VERSION
 
 
 CHUNK_SIZE = 2000
@@ -47,7 +48,7 @@ def build_chunk_reflection_prompt(
     story_bible: str = "",
 ) -> str:
     """分块检查提示词 — 只检查该块内的局部问题"""
-    return f"""
+    return f"""[PROMPT_VERSION:{PROMPT_VERSION}]
 你正在检查小说章节的第 {chunk_index + 1}/{total_chunks} 块（字符位置 {chunk_start}-{chunk_end}）。
 请只针对你看到的这段内容进行局部审核。
 
@@ -84,10 +85,11 @@ def build_chunk_reflection_prompt(
 {compact_text(story_bible, 1400) if story_bible else "无"}
 
 输出JSON格式：
-{{{{
+{{
     "issues": [
-        {{{{
+        {{
             "type": "consistency|character|padding|pacing|plot_hole",
+            "issue_id": "留空，由服务端生成",
             "severity": "low|medium|high",
             "priority_action": "must_fix|optional|can_ignore",
             "issue_resolved": false,
@@ -95,9 +97,9 @@ def build_chunk_reflection_prompt(
             "description": "问题的具体描述",
             "evidence": "体现问题的原句（30字内）",
             "suggestion": "修改建议"
-        }}}}
+        }}
     ]
-}}}}
+}}
 """
 
 
@@ -109,6 +111,7 @@ def build_aggregation_prompt(
     memory_context: str,
     content_length: int,
     story_bible: str = "",
+    previous_issues: list[dict] | None = None,
 ) -> str:
     """聚合 prompt — 综合所有分块的局部检查结果 + 做全局检查（逻辑链、伏笔、总体评分）"""
     chunks_summary = ""
@@ -121,7 +124,8 @@ def build_aggregation_prompt(
         else:
             chunks_summary += f"第{i + 1}块：无问题\n"
 
-    return f"""
+    previous = json.dumps(previous_issues or [], ensure_ascii=False)
+    return f"""[PROMPT_VERSION:{PROMPT_VERSION}]
 你现在是一名资深文学编辑，负责对整章内容进行最终审核。
 下面是分段检查的结果汇总，请结合这些局部信息和你对全文的理解，做全局判断。
 
@@ -133,7 +137,9 @@ def build_aggregation_prompt(
 2. 衔接压力：本章开头是否承接前文？结尾是否埋下钩子？
 3. 细纲覆盖率：所有细纲中的场景是否都已覆盖？
 4. 伏笔检查：细纲要求的伏笔是否在本章中被隐晦提及？
-5. 综合质量评分 0-1：综合考虑全文质量（不只看局部）。
+5. 按七项 rubric 分别给 0-5 分，不得用一个总体印象代替分项证据。
+6. hard_failures 只列力量体系违例、因果断裂、严重 OOC、知识越界或核心场景缺失。
+7. 每个问题必须引用正文中连续、可精确查找的 evidence；找不到原句就不要报该问题。
 
 【输入数据】
 完整章节正文（全局审核必须逐段核对，不得只依赖分块结论）：
@@ -151,19 +157,25 @@ def build_aggregation_prompt(
 静态故事圣经：
 {compact_text(story_bible, 2200) if story_bible else "无"}
 
+上一轮问题（沿用 issue_id，并判断是否已解决）：
+{previous}
+
 输出JSON格式。数值和布尔字段必须使用 JSON 原生类型，不要加引号：
-{{{{
-    "passed": true,
-    "overall_quality_score": 0.85,
-    "word_count_analysis": {{{{
+{{
+    "rubric_scores": {{
+        "causality": 0, "continuity": 0, "character": 0,
+        "scene_function": 0, "voice": 0, "prose_specificity": 0, "ending_effect": 0
+    }},
+    "hard_failures": [],
+    "word_count_analysis": {{
         "total_count": {content_length},
         "effective_density": 82,
         "is_valid_word_count": true
-    }}}},
+    }},
     "issues": "array（合并所有分块的 issues，加上全局发现的问题）",
     "logic_chain_status": "本章与前文的衔接情况",
     "foreshadowing_check": "伏笔是否已提及"
-}}}}
+}}
 """
 
 
@@ -174,11 +186,13 @@ def build_reflection_prompt(
     memory_context: str,
     content_length: int,
     story_bible: str = "",
+    previous_issues: list[dict] | None = None,
 ) -> str:
     """反思检查的提示词（地摊式逻辑审核）"""
-    return f"""
+    previous = json.dumps(previous_issues or [], ensure_ascii=False)
+    return f"""[PROMPT_VERSION:{PROMPT_VERSION}]
 你现在是一名资深文学编辑，负责对以下章节内容进行"地毯式"逻辑审核。
-请保持极高的批判性，拒绝任何平庸或自相矛盾的内容。
+请严格区分“个人偏好”和“有原文证据的问题”，不为显得严格而虚构缺陷。
 
 【审核基准】
 
@@ -229,6 +243,8 @@ def build_reflection_prompt(
 - issue_resolved=true：该问题已在本轮修正中解决
 - issue_resolved=false：该问题仍未解决
 - suggested_fix_text：针对 must_fix 问题，请提供具体的修改示例或模板，供修正节点直接使用
+- evidence 必须是正文中连续、可精确查找的 20-120 字原句；没有原句证据就不要输出 issue
+- 上一轮问题若仍存在，沿用 issue_id；已解决则 issue_resolved=true
 
 【输入数据】
 章节完整内容：
@@ -246,10 +262,21 @@ def build_reflection_prompt(
 静态故事圣经：
 {compact_text(story_bible, 2200) if story_bible else "无"}
 
+上一轮问题：
+{previous}
+
 输出JSON格式。数值和布尔字段必须使用 JSON 原生类型，不要加引号：
 {{
-    "passed": true,
-    "overall_quality_score": 0.85,
+    "rubric_scores": {{
+        "causality": 0,
+        "continuity": 0,
+        "character": 0,
+        "scene_function": 0,
+        "voice": 0,
+        "prose_specificity": 0,
+        "ending_effect": 0
+    }},
+    "hard_failures": ["只填对应 must_fix issue 的 issue_id；没有则为空数组"],
     "word_count_analysis": {{
         "total_count": {content_length},
         "effective_density": 82,
@@ -258,13 +285,14 @@ def build_reflection_prompt(
     "issues": [
         {{
             "type": "logic|consistency|plot_hole|character|padding|pacing|power_system|tension_gap",
+            "issue_id": "上一轮已有则沿用，否则留空",
             "severity": "low|medium|high",
             "priority_action": "must_fix|optional|can_ignore",
             "issue_resolved": false,
             "suggested_fix_text": "针对 must_fix 问题提供具体修改示例（如：将'xxx'改为'yyy'）",
             "location": "具体情节或对话段落",
             "description": "请指出具体哪里不符合逻辑或哪里在注水",
-            "evidence": "原文中体现该问题的具体短句（50字内）",
+            "evidence": "原文中可精确查找的连续原句（20-120字）",
             "suggestion": "如何修改能让冲突更激烈或逻辑更严密"
         }}
     ],
@@ -288,8 +316,8 @@ CHUNK_REFLECTION_SCHEMA = {
 }
 
 AGGREGATION_SCHEMA = {
-    "passed": "boolean",
-    "overall_quality_score": "number",
+    "rubric_scores": "object",
+    "hard_failures": "array",
     "word_count_analysis": {
         "total_count": "integer",
         "effective_density": "number",
@@ -301,8 +329,8 @@ AGGREGATION_SCHEMA = {
 }
 
 REFLECTION_SCHEMA = {
-    "passed": "boolean",
-    "overall_quality_score": "number",
+    "rubric_scores": "object",
+    "hard_failures": "array",
     "word_count_analysis": {
         "total_count": "integer",
         "effective_density": "number",

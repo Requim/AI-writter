@@ -1,249 +1,228 @@
-"""修正节点 - 根据用户决策或AI自动修正"""
+"""Apply evidence-scoped patches or full structural revisions."""
 
 import logging
+from typing import Any, Literal
 
-logger = logging.getLogger("uvicorn")
 from langchain_core.runnables import RunnableConfig
-from langgraph.types import interrupt, Command
-from typing import Literal
-from application.schemas.agent_state import NovelAgentState
+from langgraph.types import Command, interrupt
+
 from application.continuity import build_story_bible
-from application.streaming import collect_streamed_text, emit_workflow_event
+from application.errors import RetryableWorkflowError
 from application.prompts.revision_prompts import (
-    build_user_instruction_revision_prompt,
-    build_patch_revision_prompt,
-    build_refactor_revision_prompt,
-    build_expansion_prompt,
-    format_issues_for_prompt,
-    classify_revision_mode,
-    build_revision_system_prompt,
+    PATCH_SCHEMA,
     PATCH_TEMPERATURE,
     REFACTOR_TEMPERATURE,
+    build_expansion_prompt,
+    build_patch_revision_prompt,
+    build_refactor_revision_prompt,
+    build_revision_system_prompt,
+    build_user_instruction_revision_prompt,
+    classify_revision_mode,
+    format_issues_for_prompt,
 )
+from application.schemas.agent_state import NovelAgentState
+from application.streaming import collect_streamed_text, emit_workflow_event
+from service.ports.llm_service import LLMService
+
+logger = logging.getLogger("uvicorn")
+
+
+def _patch_ranges(content: str, edits: list[dict], allowed_ids: set[str]) -> list[tuple[int, int, str]]:
+    ranges = []
+    for edit in edits:
+        if not isinstance(edit, dict) or str(edit.get("issue_id", "")) not in allowed_ids:
+            raise RetryableWorkflowError("章节局部修订失败：修改项未对应审读问题")
+        anchor = edit.get("anchor")
+        replacement = edit.get("replacement")
+        if not isinstance(anchor, str) or not isinstance(replacement, str) or len(anchor) < 8:
+            raise RetryableWorkflowError("章节局部修订失败：原文锚点无效")
+        if content.count(anchor) != 1:
+            raise RetryableWorkflowError("章节局部修订失败：原文锚点不唯一")
+        start = content.index(anchor)
+        ranges.append((start, start + len(anchor), replacement))
+    ranges.sort(key=lambda item: item[0])
+    if any(current[0] < previous[1] for previous, current in zip(ranges, ranges[1:])):
+        raise RetryableWorkflowError("章节局部修订失败：修改范围重叠")
+    return ranges
+
+
+def apply_structured_patch(content: str, payload: Any, allowed_ids: set[str]) -> str:
+    """校验并原子应用结构化局部修改，任何一项无效则不改正文。"""
+    if not isinstance(payload, dict):
+        raise RetryableWorkflowError("章节局部修订失败：模型未返回有效 JSON")
+    unresolved = payload.get("unresolved_issue_ids", [])
+    if not isinstance(unresolved, list):
+        raise RetryableWorkflowError("章节局部修订失败：未解决问题列表格式无效")
+    if any(str(item) in allowed_ids for item in unresolved):
+        raise RetryableWorkflowError("章节局部修订失败：存在无法安全处理的问题")
+    edits = payload.get("edits", [])
+    if not isinstance(edits, list) or not edits:
+        raise RetryableWorkflowError("章节局部修订失败：没有可应用的修改")
+    if len(edits) > 12:
+        raise RetryableWorkflowError("章节局部修订失败：修改项超过安全上限")
+    ranges = _patch_ranges(content, edits, allowed_ids)
+    revised = content
+    for start, end, replacement in reversed(ranges):
+        revised = revised[:start] + replacement + revised[end:]
+    if not revised.strip() or len(revised) < len(content) * 0.8:
+        raise RetryableWorkflowError("章节局部修订失败：修改范围过大")
+    return revised
+
+
+def _history_text(state: NovelAgentState) -> str:
+    parts = []
+    for entry in state.get("revision_history", []) or []:
+        summary = "; ".join(
+            f"{issue.get('issue_id', '?')}:{issue.get('type', '?')}"
+            for issue in entry.get("issues_before", [])[:5]
+        )
+        parts.append(f"第{entry.get('attempt', 0)}次修订：{summary}")
+    return "\n".join(parts)
+
+
+def _full_revision_prompt(
+    state: NovelAgentState, content: str, outline: dict, context: str, bible: str
+) -> tuple[str, float, str]:
+    decision = state.get("user_decision", {}) or {}
+    instructions = decision.get("instructions")
+    if instructions:
+        prompt = build_user_instruction_revision_prompt(instructions, content, outline, context, bible)
+        return prompt, 0.5, "user_instruction"
+    issues = state.get("reflection_issues", []) or []
+    prompt = build_refactor_revision_prompt(
+        format_issues_for_prompt(issues), content, outline, _history_text(state), context, bible
+    )
+    return prompt, REFACTOR_TEMPERATURE, "refactor"
+
+
+async def _generate_full(
+    llm: LLMService, prompt: str, temperature: float, chapter_index: int
+) -> str:
+    emit_workflow_event(
+        "content_delta", {"chapter_index": chapter_index, "operation": "reset", "text": ""}, "revision_node"
+    )
+    revised = await collect_streamed_text(
+        llm, prompt, node="revision_node", chapter_index=chapter_index,
+        system_prompt=build_revision_system_prompt(), temperature=temperature,
+    )
+    if not revised.strip():
+        raise RetryableWorkflowError("章节修订失败：模型未返回正文")
+    return revised
+
+
+async def _generate_patch(
+    llm: LLMService,
+    state: NovelAgentState,
+    content: str,
+    outline: dict,
+    context: str,
+    bible: str,
+) -> str:
+    issues = [
+        issue for issue in state.get("reflection_issues", []) or []
+        if issue.get("priority_action") != "can_ignore" and issue.get("evidence_valid") is True
+    ]
+    allowed_ids = {str(issue.get("issue_id", "")) for issue in issues if issue.get("issue_id")}
+    prompt = build_patch_revision_prompt(
+        format_issues_for_prompt(issues), content, outline, _history_text(state), context, bible
+    )
+    payload = await llm.structured_generate(
+        prompt=prompt, schema=PATCH_SCHEMA, system_prompt=build_revision_system_prompt(),
+        temperature=PATCH_TEMPERATURE,
+    )
+    revised = apply_structured_patch(content, payload, allowed_ids)
+    chapter_index = state.get("current_chapter_index", 0)
+    emit_workflow_event(
+        "content_delta", {"chapter_index": chapter_index, "operation": "reset", "text": ""}, "revision_node"
+    )
+    emit_workflow_event(
+        "content_delta", {"chapter_index": chapter_index, "operation": "append", "text": revised}, "revision_node"
+    )
+    return revised
+
+
+async def _expand_if_needed(
+    llm: LLMService,
+    revised: str,
+    original: str,
+    outline: dict,
+    context: str,
+    bible: str,
+    index: int,
+) -> str:
+    if len(revised) >= len(original) * 0.8:
+        return revised
+    prompt = build_expansion_prompt(revised, outline, min(len(original), 7000), context, bible)
+    return await _generate_full(llm, prompt, REFACTOR_TEMPERATURE + 0.1, index)
+
+
+async def _generate_refactor(
+    llm: LLMService,
+    state: NovelAgentState,
+    content: str,
+    outline: dict,
+    context: str,
+    bible: str,
+) -> str:
+    index = state.get("current_chapter_index", 0)
+    prompt, temperature, _ = _full_revision_prompt(state, content, outline, context, bible)
+    revised = await _generate_full(llm, prompt, temperature, index)
+    return await _expand_if_needed(llm, revised, content, outline, context, bible, index)
+
+
+def _next_after_revision(state: NovelAgentState, revised: str, config: RunnableConfig) -> Command:
+    if config["configurable"].get("auto_mode", False):
+        attempts = state.get("revision_attempts", 0)
+        history = (state.get("revision_history", []) or []) + [
+            {"attempt": attempts + 1, "issues_before": state.get("reflection_issues", [])}
+        ]
+        return Command(
+            goto="reflection_node",
+            update={"current_chapter_content": revised, "revision_attempts": attempts + 1, "revision_history": history},
+        )
+    choice = interrupt(
+        {
+            "action": "confirm_revision", "message": "内容已修订，请确认是否满意",
+            "chapter_number": state.get("current_chapter_index", 0) + 1,
+            "revised_content_preview": revised[:500] + "...",
+        }
+    )
+    if choice == "accept":
+        return Command(goto="persist_node", update={"current_chapter_content": revised})
+    if choice == "regenerate":
+        return Command(goto="chapter_writer_node")
+    return Command(
+        goto="revision_node",
+        update={"current_chapter_content": revised, "user_decision": {"action": "revise", "instructions": choice}},
+    )
 
 
 async def revision_node(
-    state: NovelAgentState,
-    config: RunnableConfig,
-) -> Command[
-    Literal[
-        "chapter_writer_node",
-        "persist_node",
-        "reflection_node",
-        "revision_node",
-    ]
-]:
-    """
-    修正节点 - 根据用户决策或AI自动修正
-    用户决策优先，否则AI根据问题列表自动修正
-    """
-    current_content = state.get("current_chapter_content", "")
-    chapter_outline = (
-        state.get("chapter_outlines", [{}])[-1] if state.get("chapter_outlines") else {}
-    )
-    user_decision = state.get("user_decision", {})
-    action = user_decision.get("action", "revise")
-    instructions = user_decision.get("instructions")
-    issues = state.get("reflection_issues", [])
-    memory_context = state.get("memory_context", "")
-    total_outline_raw = state.get("total_outline", {})
-    total_outline = total_outline_raw if isinstance(total_outline_raw, dict) else {}
-    story_bible = build_story_bible(total_outline)
-
-    action_label = {
-        "accept": "接受(忽略问题)",
-        "regenerate": "重新生成",
-        "revise": "修正",
-    }.get(action, action)
-    logger.info(f"{'=' * 60}")
-    logger.info(f"【修正节点】进入 | 决策={action_label}, 问题数={len(issues)}")
-
-    # 从 config.configurable 获取 LLM 实例
-    llm_config = config["configurable"].get("llm_config", {})
-    llm = llm_config.get("llm_instance")
-
-    if action == "accept":
-        logger.info("【修正节点】用户选择忽略问题 -> 持久化节点")
-        logger.info(f"{'=' * 60}")
+    state: NovelAgentState, config: RunnableConfig
+) -> Command[Literal["chapter_writer_node", "persist_node", "reflection_node", "revision_node"]]:
+    """根据服务端质量决策执行局部 Patch 或全文重构。"""
+    decision = state.get("user_decision", {}) or {}
+    if decision.get("action") == "accept":
         return Command(goto="persist_node")
-
-    elif action == "regenerate":
-        logger.info("【修正节点】用户要求重新生成 -> 章节写作节点")
-        logger.info(f"{'=' * 60}")
+    if decision.get("action") == "regenerate":
         return Command(goto="chapter_writer_node")
-
+    llm = config["configurable"].get("llm_config", {}).get("llm_instance")
+    if not llm:
+        raise RetryableWorkflowError("章节修订失败：LLM 不可用")
+    content = state.get("current_chapter_content", "")
+    outline = state.get("chapter_outlines", [{}])[-1] if state.get("chapter_outlines") else {}
+    total = state.get("total_outline", {})
+    total = total if isinstance(total, dict) else {}
+    context = state.get("memory_context", "")
+    bible = build_story_bible(total)
+    gate_mode = (state.get("quality_gate", {}) or {}).get("decision")
+    mode = gate_mode if gate_mode in {"patch", "refactor"} else classify_revision_mode(state.get("reflection_issues", []))
+    if mode == "patch" and not decision.get("instructions"):
+        try:
+            revised = await _generate_patch(llm, state, content, outline, context, bible)
+        except RetryableWorkflowError as exc:
+            logger.warning("【修正节点】局部 Patch 无法安全应用，降级全文重构 | 原因=%s", exc)
+            revised = await _generate_refactor(llm, state, content, outline, context, bible)
     else:
-        # 有修正指令（用户决策优先）或AI自动修正
-        # 注意：两个 prompt 现在都接收完整的 chapter_outline 字典
-        if instructions:
-            revision_prompt = build_user_instruction_revision_prompt(
-                instructions=instructions,
-                current_content=current_content,
-                chapter_outline=chapter_outline,
-                continuity_context=memory_context,
-                story_bible=story_bible,
-            )
-            temperature = 0.5
-            mode = "user_instruction"
-        else:
-            # 构建修正历史文本（供 prompt 参考）
-            revision_history = state.get("revision_history", [])
-            history_text = ""
-            if revision_history:
-                history_parts = []
-                for h_entry in revision_history:
-                    att = h_entry.get("attempt", 0)
-                    iss = h_entry.get("issues_before", [])
-                    iss_summary = "; ".join(
-                        [
-                            f"{i.get('type', '?')}({i.get('priority_action', '?')})"
-                            for i in iss[:5]
-                        ]
-                    )
-                    history_parts.append(f"第{att}次修正处理: {iss_summary}")
-                history_text = "\n".join(history_parts)
-
-            # 根据问题类型判断修正模式
-            mode = classify_revision_mode(issues)
-            if mode == "patch":
-                revision_prompt = build_patch_revision_prompt(
-                    issues_text=format_issues_for_prompt(issues),
-                    current_content=current_content,
-                    chapter_outline=chapter_outline,
-                    revision_history=history_text,
-                    continuity_context=memory_context,
-                    story_bible=story_bible,
-                )
-                temperature = PATCH_TEMPERATURE
-            else:
-                revision_prompt = build_refactor_revision_prompt(
-                    issues_text=format_issues_for_prompt(issues),
-                    current_content=current_content,
-                    chapter_outline=chapter_outline,
-                    revision_history=history_text,
-                    continuity_context=memory_context,
-                    story_bible=story_bible,
-                )
-                temperature = REFACTOR_TEMPERATURE
-
-        if llm:
-            mode_label = {
-                "patch": "Patch局部修正",
-                "refactor": "Refactor全文重构",
-                "user_instruction": "用户指令修正",
-            }.get(mode, mode)
-            logger.info(
-                f"【修正节点】正在{'按用户指令' if instructions else 'AI自动'}修正内容... 模式={mode_label}, temperature={temperature}"
-            )
-            chapter_index = state.get("current_chapter_index", 0)
-            emit_workflow_event(
-                "content_delta",
-                {"chapter_index": chapter_index, "operation": "reset", "text": ""},
-                "revision_node",
-            )
-            revised_content = await collect_streamed_text(
-                llm,
-                revision_prompt,
-                node="revision_node",
-                chapter_index=chapter_index,
-                system_prompt=build_revision_system_prompt(),
-                temperature=temperature,
-            )
-            if not revised_content.strip():
-                raise RuntimeError("章节修订失败：模型未返回正文")
-            original_len = len(current_content)
-            revised_len = len(revised_content)
-            logger.info(
-                f"【修正节点】修正完成 | 原长度={original_len}字, 修正后={revised_len}字"
-            )
-
-            # 字数缩减超过 20% 时，自动触发扩写
-            if revised_len < original_len * 0.8:
-                logger.info(
-                    f"【修正节点】⚠️ 字数缩减超过20% ({original_len}→{revised_len})，正在自动扩充细节..."
-                )
-                target = min(original_len, 7000)
-                expansion_prompt = build_expansion_prompt(
-                    current_content=revised_content,
-                    chapter_outline=chapter_outline,
-                    target_words=target,
-                    continuity_context=memory_context,
-                    story_bible=story_bible,
-                )
-                emit_workflow_event(
-                    "content_delta",
-                    {"chapter_index": chapter_index, "operation": "reset", "text": ""},
-                    "revision_node",
-                )
-                revised_content = await collect_streamed_text(
-                    llm,
-                    expansion_prompt,
-                    node="revision_node",
-                    chapter_index=chapter_index,
-                    system_prompt=build_revision_system_prompt(),
-                    temperature=REFACTOR_TEMPERATURE + 0.1,
-                )
-                if not revised_content.strip():
-                    raise RuntimeError("章节修订扩写失败：模型未返回正文")
-                logger.info(f"【修正节点】扩充后字数: {len(revised_content)}字")
-        else:
-            logger.info("【修正节点】LLM不可用，保留原内容")
-            revised_content = current_content
-
-        # 自动模式：修正后走回 reflection_node 再次检查（循环修正）
-        auto_mode = config["configurable"].get("auto_mode", False)
-        if auto_mode:
-            attempts = state.get("revision_attempts", 0)
-            # 记录本轮修正历史
-            revision_history = state.get("revision_history", [])
-            revision_history = revision_history + [
-                {
-                    "attempt": attempts + 1,
-                    "issues_before": issues,
-                }
-            ]
-            logger.info(
-                f"【修正节点】自动模式 | 修正完成 -> 反思节点复查 (第{attempts + 1}次修正)"
-            )
-            logger.info(f"{'=' * 60}")
-            return Command(
-                goto="reflection_node",
-                update={
-                    "current_chapter_content": revised_content,
-                    "revision_attempts": attempts + 1,
-                    "revision_history": revision_history,
-                },
-            )
-
-        # 修正后再次暂停，让用户确认修正结果
-        user_confirmation = interrupt(
-            {
-                "action": "confirm_revision",
-                "message": "内容已修正，请确认是否满意",
-                "chapter_number": state.get("current_chapter_index", 0) + 1,
-                "revised_content_preview": revised_content[:500] + "...",
-                "note": "您可以：1) 接受修正（回复'accept'）2) 继续修改（提供新的修正指令）3) 重新生成（回复'regenerate'）",
-            }
-        )
-
-        if user_confirmation == "accept":
-            logger.info("【修正节点】用户确认修正结果 -> 持久化节点")
-            logger.info(f"{'=' * 60}")
-            return Command(
-                goto="persist_node", update={"current_chapter_content": revised_content}
-            )
-        elif user_confirmation == "regenerate":
-            logger.info("【修正节点】用户要求重新生成 -> 章节写作节点")
-            logger.info(f"{'=' * 60}")
-            return Command(goto="chapter_writer_node")
-        else:
-            logger.info("【修正节点】用户提供了新的修正指令，继续修正")
-            return Command(
-                goto="revision_node",
-                update={
-                    "user_decision": {
-                        "action": "revise",
-                        "instructions": user_confirmation,
-                    }
-                },
-            )
+        revised = await _generate_refactor(llm, state, content, outline, context, bible)
+    return _next_after_revision(state, revised, config)

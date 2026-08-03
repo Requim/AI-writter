@@ -4,6 +4,7 @@ from langgraph.graph import END, StateGraph
 from application.schemas.agent_state import NovelAgentState
 from application.agents import (
     type_confirmation_node,
+    creative_brief_node,
     title_generator_node,
     summary_generator_node,
     outline_generator_node,
@@ -19,6 +20,7 @@ from application.agents import (
 
 WORKFLOW_NODES = {
     "type_confirmation": type_confirmation_node,
+    "creative_brief_node": creative_brief_node,
     "title_node": title_generator_node,
     "summary_node": summary_generator_node,
     "outline_node": outline_generator_node,
@@ -62,11 +64,9 @@ def create_novel_workflow(checkpointer=None):
     # ========= 设置入口 =========
     workflow.set_entry_point("type_confirmation")
     
-    # ========= 第一阶段：小说设定（线性流程） =========
-    workflow.add_edge("type_confirmation", "title_node")
-    workflow.add_edge("title_node", "summary_node")
-    workflow.add_edge("summary_node", "outline_node")
-    workflow.add_edge("outline_node", "persist_node")
+    # ========= 第一阶段：小说设定 =========
+    # 设定节点包含重生成/自循环分支，全部由 Command.goto 单路由。
+    # 不再叠加静态边，避免一次节点执行同时触发默认路径和重生成路径。
     workflow.add_edge("persist_node", "progress_check_node")
     
     # ========= 进度检查分支 =========

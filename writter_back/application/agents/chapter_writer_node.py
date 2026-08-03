@@ -1,8 +1,8 @@
 """章节内容填充节点 - 场景队列生成 + 动态字数校准
 
 策略：
-1. 场景数 >= 3 → 场景队列生成：逐个场景生成，上下文透传 + 动态校准
-2. 场景数 < 3 → 降级到传统单次生成
+1. 场景数 >= 2 → 场景队列生成：逐个场景生成，上下文透传 + 动态校准
+2. 场景数 < 2 → 降级到传统单次生成
 """
 
 import logging
@@ -32,7 +32,7 @@ TRUNCATE_TRIGGER = 7500  # 超过此值触发截断（给语义截断留缓冲�
 TARGET_CHAPTER_WORDS = 5000  # 整章理想字数
 
 # 场景队列生成参数
-SCENE_QUEUE_MIN_SCENES = 3  # 至少3个场景才启用队列生成
+SCENE_QUEUE_MIN_SCENES = 2  # 2-5 个场景均使用累计账本的队列生成
 FIRST_SCENE_WEIGHT = 1.1  # 第一场景字数权重（略多）
 MAX_SCENE_WORDS_RATIO = 1.5  # 单场景最大倍数（相对目标）
 
@@ -103,6 +103,24 @@ def _build_prev_scene_digest(scene_outline: dict, generated_content: str) -> str
     return generated_content[-700:].strip() if generated_content else ""
 
 
+def _build_scene_ledger_entry(
+    scene_index: int, scene_outline: dict, generated_content: str
+) -> dict:
+    """记录计划义务与真实正文结尾，供后续场景判断已发生事实。"""
+    events = scene_outline.get("events", {})
+    planned_result = events.get("result", "") if isinstance(events, dict) else ""
+    paragraphs = [item.strip() for item in generated_content.splitlines() if item.strip()]
+    return {
+        "scene_index": scene_index,
+        "planned_result": planned_result,
+        "planned_turn": scene_outline.get("turn", ""),
+        "planned_price_paid": scene_outline.get("price_paid", ""),
+        "planned_state_delta": scene_outline.get("state_delta", ""),
+        "actual_ending": paragraphs[-1][-500:] if paragraphs else generated_content[-500:],
+        "actual_character_count": len(generated_content),
+    }
+
+
 def _calibrate_next_scene(
     prev_word_count: int,
     prev_target: int,
@@ -154,7 +172,7 @@ async def _scene_queue_generate(
     chapter_index: int,
     prev_chapter_tail: str = "",
     story_bible: str = "",
-) -> str:
+) -> tuple[str, list[dict]]:
     """场景队列生成：逐个场景生成，每步上下文透传 + 动态校准"""
     chapter_num = chapter_outline.get("chapter_number", "?")
     ch_title = chapter_outline.get("title", "")
@@ -167,6 +185,7 @@ async def _scene_queue_generate(
     logger.info(f"【场景队列】{num_scenes}个场景，字数目标分配: {targets}")
 
     scene_contents: list[str] = []
+    scene_ledger: list[dict] = []
     adjusted_targets: list[int] = []
 
     for i, scene in enumerate(scenes):
@@ -227,6 +246,7 @@ async def _scene_queue_generate(
                 internal_monologue=internal_monologue,
                 memory_context=memory_context,
                 story_bible=story_bible,
+                scene_ledger=scene_ledger,
             )
             target = adjusted_target
 
@@ -280,6 +300,7 @@ async def _scene_queue_generate(
             )
 
         scene_contents.append(content)
+        scene_ledger.append(_build_scene_ledger_entry(i + 1, scene, content))
         adjusted_targets.append(target)
 
     # 2. 拼接所有场景
@@ -287,7 +308,7 @@ async def _scene_queue_generate(
     full_content = "\n\n".join(scene_contents)
     logger.info(f"【场景队列】拼接后总字数: {len(full_content)}字")
 
-    return full_content
+    return full_content, scene_ledger
 
 
 async def _final_word_check(
@@ -355,7 +376,7 @@ async def chapter_writer_node(
 ) -> Command[Literal["router_agent"]]:
     """
     章节内容填充节点 - 场景队列生成 + 动态字数校准
-    当细纲 scenes >= 3 时启用场景队列，否则降级到单次生成。
+    当细纲 scenes >= 2 时启用场景队列，否则降级到单次生成。
     """
     chapter_outline = state.get("chapter_outlines", [{}])[-1]
     novel_type = state.get("novel_type", "")
@@ -410,12 +431,13 @@ async def chapter_writer_node(
     )
     prev_tail = await _get_prev_chapter_tail(config, novel_id, current_idx)
 
+    scene_ledger: list[dict] = []
     if use_scene_queue:
         logger.info(
             f"【章节写作节点】场景队列模式 | {len(scenes)}个场景",
         )
         # 场景队列模式下，prev_tail 传给第一个场景 prompt
-        content = await _scene_queue_generate(
+        content, scene_ledger = await _scene_queue_generate(
             scenes=scenes,
             chapter_outline=chapter_outline,
             novel_type=novel_type,
@@ -459,5 +481,6 @@ async def chapter_writer_node(
         update={
             "current_chapter_content": content,
             "revision_attempts": 0,  # 新章节重置修正计数器
+            "scene_ledger": scene_ledger,
         },
     )

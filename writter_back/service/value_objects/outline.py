@@ -13,6 +13,8 @@ class Outline:
     writing_style: str = ""                       # 写作风格指导
     total_chapters: int = 0                       # 总章节数
     volumes: List[Dict[str, Any]] = field(default_factory=list)  # 卷结构规划（可选）
+    creative_brief: Dict[str, Any] = field(default_factory=dict)  # 全流程共用创作简报
+    prompt_version: str = ""                    # 生成该总纲的提示词契约版本
     
     def get_chapter_plan(self, index: int) -> Optional[Dict[str, Any]]:
         """获取指定章节的规划"""

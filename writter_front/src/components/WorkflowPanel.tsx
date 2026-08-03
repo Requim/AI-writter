@@ -14,6 +14,7 @@ import type { WorkflowViewState } from '@/hooks/useWorkflowStream'
 
 const nodeLabels: Record<string, string> = {
   type_confirmation: '确认题材',
+  creative_brief_node: '凝练创作简报',
   title_node: '推敲书名',
   summary_node: '撰写简介',
   outline_node: '搭建总纲',
@@ -29,6 +30,7 @@ const nodeLabels: Record<string, string> = {
 
 const nodeDescriptions: Record<string, string> = {
   type_confirmation: '正在确认作品题材和基础约束。',
+  creative_brief_node: '正在明确故事母题、核心冲突与读者体验。',
   title_node: '正在生成或确认小说名称。',
   summary_node: '正在整理故事简介与核心卖点。',
   outline_node: '正在构建世界观、角色、主线和分卷结构。',
@@ -95,10 +97,12 @@ function emptyTimelineLabel(status: WorkflowViewState['status']): string {
 }
 
 function primaryResumeLabel(action?: string): string {
+  if (action === 'review_or_modify_creative_brief') return '确认创作简报'
   if (action === 'review_or_provide_chapter_outline') return '使用细纲，生成正文'
   if (action === 'review_reflection_issues') return '接受本章'
   if (action === 'ready_for_next_chapter') return '生成下一章'
   if (action === 'confirm_revision') return '接受修订'
+  if (action === 'quality_gate_exhausted' || action === 'quality_gate_human_review') return '人工接受本章'
   return '接受并继续'
 }
 
@@ -148,8 +152,37 @@ export function WorkflowPanel({
   const outlineEvents = Array.isArray(aiOutline?.key_events)
     ? aiOutline.key_events.filter((item): item is string => typeof item === 'string').slice(0, 4)
     : []
+  const titleSuggestions = Array.isArray(interrupt?.ai_suggestions)
+    ? interrupt.ai_suggestions.map((item) => typeof item === 'string' ? { title: item } : item)
+    : []
+  const generatedSummary = typeof interrupt?.ai_generated_summary === 'string'
+    ? interrupt.ai_generated_summary
+    : undefined
+  const aiCreativeBrief = interrupt?.action === 'review_or_modify_creative_brief'
+    ? interrupt.ai_generated_creative_brief
+    : undefined
+  const creativeBriefRows = aiCreativeBrief
+    ? [
+        ['核心设想', aiCreativeBrief.core_premise],
+        ['主角驱动力', aiCreativeBrief.protagonist_drive],
+        ['核心冲突', aiCreativeBrief.core_conflict],
+        ['主题命题', aiCreativeBrief.theme_question],
+        ['读者体验', aiCreativeBrief.reader_promise],
+      ].filter((row): row is [string, string] => typeof row[1] === 'string' && Boolean(row[1].trim()))
+    : []
   const canRegenerate = interrupt?.action !== 'ready_for_next_chapter'
   const canProvideInstruction = !['ready_for_next_chapter', 'require_novel_type'].includes(interrupt?.action ?? '')
+  const requiresHumanReview = ['quality_gate_exhausted', 'quality_gate_human_review']
+    .includes(interrupt?.action ?? '')
+  const acceptedValue = interrupt?.action === 'review_or_modify_creative_brief' && aiCreativeBrief
+    ? aiCreativeBrief
+    : interrupt?.action === 'confirm_or_provide_title' && titleSuggestions[0]
+      ? titleSuggestions[0]
+      : interrupt?.action === 'confirm_or_provide_summary' && generatedSummary
+        ? generatedSummary
+        : ['review_or_modify_outline', 'review_or_provide_chapter_outline'].includes(interrupt?.action ?? '') && aiOutline
+          ? aiOutline
+          : 'accept'
   const statusMeta = {
     running: { label: '执行中', color: 'processing' as const, icon: <LoadingOutlined /> },
     paused: { label: '待确认', color: 'warning' as const, icon: <PauseCircleOutlined /> },
@@ -250,7 +283,7 @@ export function WorkflowPanel({
         </section>
       )}
 
-      {interrupt && !autoMode && (
+      {interrupt && (!autoMode || requiresHumanReview) && (
         <section className="interrupt-block">
           <div className="interrupt-title"><PauseCircleOutlined /> 需要你的决定</div>
           <p>{interrupt.message || '请审阅当前结果后继续。'}</p>
@@ -264,8 +297,35 @@ export function WorkflowPanel({
               )}
             </div>
           )}
+          {titleSuggestions.length > 0 && (
+            <div className="outline-review title-suggestions">
+              <span>书名候选</span>
+              {titleSuggestions.slice(0, 8).map((item) => (
+                <Button key={item.title} type="text" block onClick={() => onResume(item)}>
+                  <strong>{item.title}</strong>
+                  {item.hint && <small>{item.hint}</small>}
+                </Button>
+              ))}
+            </div>
+          )}
+          {generatedSummary && (
+            <div className="outline-review">
+              <span>简介提案</span>
+              <p>{generatedSummary}</p>
+            </div>
+          )}
+          {creativeBriefRows.length > 0 && (
+            <div className="outline-review creative-brief-review">
+              <span>创作简报</span>
+              <dl>
+                {creativeBriefRows.map(([label, value]) => (
+                  <div key={label}><dt>{label}</dt><dd>{value}</dd></div>
+                ))}
+              </dl>
+            </div>
+          )}
           <div className="interrupt-actions">
-            <Button type="primary" onClick={() => onResume('accept')}>{primaryResumeLabel(interrupt.action)}</Button>
+            <Button type="primary" onClick={() => onResume(acceptedValue)}>{primaryResumeLabel(interrupt.action)}</Button>
             {canRegenerate && <Button onClick={() => onResume('regenerate')}>重新生成</Button>}
           </div>
           {canProvideInstruction && (

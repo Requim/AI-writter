@@ -8,6 +8,7 @@ from fastapi import HTTPException
 from langgraph.types import Command
 
 from api.routers.novel_router import _generate_rewritten_chapter
+from application.errors import QualityGateReviewRequired
 
 
 def _patch_rewrite_nodes(monkeypatch, writer, reflection, revision, persist):
@@ -73,3 +74,22 @@ async def test_rewrite_rejects_non_converging_node_loop(monkeypatch):
         await _generate_rewritten_chapter({}, {})
 
     persist.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rewrite_returns_quality_gate_error_instead_of_interrupt_failure(monkeypatch):
+    writer = AsyncMock(
+        return_value=Command(
+            goto="router_agent", update={"current_chapter_content": "初稿"}
+        )
+    )
+    reflection = AsyncMock(side_effect=QualityGateReviewRequired("仍未通过质量门禁"))
+    revision = AsyncMock()
+    persist = AsyncMock()
+    _patch_rewrite_nodes(monkeypatch, writer, reflection, revision, persist)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await _generate_rewritten_chapter({}, {})
+
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.detail["code"] == "quality_gate_not_met"

@@ -46,11 +46,14 @@ export const initialWorkflowState: WorkflowViewState = {
 
 const interruptNodes: Record<string, string> = {
   require_novel_type: 'type_confirmation',
+  review_or_modify_creative_brief: 'creative_brief_node',
   confirm_or_provide_title: 'title_node',
   confirm_or_provide_summary: 'summary_node',
   review_or_modify_outline: 'outline_node',
   review_or_provide_chapter_outline: 'chapter_outline_node',
   review_reflection_issues: 'reflection_node',
+  quality_gate_exhausted: 'reflection_node',
+  quality_gate_human_review: 'reflection_node',
   confirm_revision: 'revision_node',
   ready_for_next_chapter: 'progress_check_node',
 }

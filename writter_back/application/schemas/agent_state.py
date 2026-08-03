@@ -13,6 +13,8 @@ class NovelAgentState(TypedDict):
     summary: Optional[str]                    # 简介（用户优先，空则AI生成）
     target_total_chapters: Optional[int]      # 用户计划章节数（约束AI生成总纲）
     requested_writing_style: Optional[str]    # 用户指定写作风格（约束AI生成总纲）
+    creative_brief: Optional[Dict]            # 创作简报（母题、冲突、读者承诺与内容边界）
+    creative_brief_feedback: Optional[str]    # 用户对创作简报的修改要求
     total_outline: Optional[Dict]            # 总纲领（用户优先，空则AI生成）
     chapter_outlines_input: Optional[Dict]    # 用户提供的章节细纲（优先使用）
     
@@ -24,6 +26,7 @@ class NovelAgentState(TypedDict):
     current_chapter_index: int                # 当前处理的章节索引
     chapter_outlines: Annotated[List[Dict], add]   # 最终使用的章节细纲列表
     current_chapter_content: Optional[str]    # 当前章节内容
+    scene_ledger: Optional[List[Dict]]         # 已生成场景的累计执行账本
     completed_chapters: Annotated[List[Dict], add]
     
     # ========== 长期记忆 ==========
@@ -35,6 +38,8 @@ class NovelAgentState(TypedDict):
     user_decision: Optional[Dict]             # 用户决策
     revision_instructions: Optional[str]       # 用户提供的修正指令（优先），否则AI自动修正
     revision_attempts: int                    # 自动模式修正重试次数，用于循环修正防死循环
+    revision_history: Optional[List[Dict]]    # 自动修订的审读问题历史
+    quality_gate: Optional[Dict]              # 服务端计算的质量判定与分项评分
     
     # ========== 进度控制 ==========
     progress_percentage: float
@@ -44,6 +49,7 @@ class NovelAgentState(TypedDict):
     # ========== LLM配置（注入用） ==========
     llm_config: Optional[Dict]                # LLM配置，用于节点中获取LLM实例
     workflow_run_id: Optional[str]            # 配额幂等键，恢复时沿用
+    prompt_version: Optional[str]              # 本轮使用的提示词契约版本
 
     # ========== 内部路由 ==========
     __next_node__: Optional[str]               # persist_node 设定阶段的目标节点

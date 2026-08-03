@@ -79,6 +79,15 @@ export default function CreateNovel() {
               <Form.Item label="故事简介" name="summary">
                 <Input.TextArea rows={5} maxLength={1200} placeholder="一句冲突、一个人物，或完全留空" showCount />
               </Form.Item>
+              <Form.Item label="核心设想（可选）" name="core_premise">
+                <Input.TextArea rows={3} maxLength={800} placeholder="这个故事最独特的处境、矛盾或反常识设定" showCount />
+              </Form.Item>
+              <Form.Item label="读者体验（可选）" name="reader_promise">
+                <Input size="large" maxLength={160} placeholder="例如：持续解谜，并在真相揭晓时获得情感回响" />
+              </Form.Item>
+              <Form.Item label="内容边界（可选）" name="content_boundaries">
+                <Input.TextArea rows={2} maxLength={400} placeholder="不希望出现的情节、尺度或表达方式" showCount />
+              </Form.Item>
               <div className="form-row">
                 <Form.Item
                   label="计划章节"

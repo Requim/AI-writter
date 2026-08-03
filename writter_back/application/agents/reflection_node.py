@@ -1,55 +1,60 @@
-"""反思检查节点 - 检查逻辑问题，报告给用户，由用户决策"""
+"""Evidence-based chapter review with a server-owned quality gate."""
 
+import hashlib
+import json
 import logging
-from typing import Literal
+from typing import Any, Literal, Self
 
-logger = logging.getLogger("uvicorn")
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command, interrupt
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
-from application.schemas.agent_state import NovelAgentState
 from application.continuity import build_story_bible
-from application.errors import RetryableWorkflowError
-from application.streaming import emit_workflow_event
+from application.errors import QualityGateReviewRequired, RetryableWorkflowError
 from application.prompts.reflection_prompts import (
-    build_reflection_prompt,
-    build_chunk_reflection_prompt,
-    build_aggregation_prompt,
-    split_into_chunks,
-    REFLECTION_SCHEMA,
-    CHUNK_REFLECTION_SCHEMA,
     AGGREGATION_SCHEMA,
+    CHUNK_REFLECTION_SCHEMA,
+    REFLECTION_SCHEMA,
+    build_aggregation_prompt,
+    build_chunk_reflection_prompt,
+    build_reflection_prompt,
+    split_into_chunks,
 )
+from application.schemas.agent_state import NovelAgentState
+from application.streaming import emit_workflow_event
+from service.ports.llm_service import LLMService
+
+logger = logging.getLogger("uvicorn")
+REVIEW_CHUNK_THRESHOLD = 8000
+QUALITY_PASS_SCORE = 0.8
+MIN_EFFECTIVE_DENSITY = 70.0
+HARD_FAILURE_TYPES = {"logic", "power_system", "character", "consistency"}
 
 
 def _normalize_issues(value: object) -> list[dict]:
+    """Sanitize untrusted nested issue values before set/dict operations."""
     if isinstance(value, dict):
         candidates = [value]
     elif isinstance(value, list):
-        candidates = [issue for issue in value if isinstance(issue, dict)]
+        candidates = [item for item in value if isinstance(item, dict)]
     else:
         return []
-
     normalized = []
     for issue in candidates:
-        clean_issue = dict(issue)
-        if "location" in clean_issue:
-            location = clean_issue["location"]
-            if isinstance(location, list):
-                location = "；".join(
-                    item for item in location if isinstance(item, str)
-                )
-            clean_issue["location"] = location if isinstance(location, str) else ""
-        if "severity" in clean_issue:
-            severity = clean_issue["severity"]
-            clean_issue["severity"] = (
+        clean = dict(issue)
+        location = clean.get("location")
+        if isinstance(location, list):
+            location = "；".join(item for item in location if isinstance(item, str))
+        if "location" in clean:
+            clean["location"] = location if isinstance(location, str) else ""
+        severity = clean.get("severity")
+        if "severity" in clean:
+            clean["severity"] = (
                 severity
-                if isinstance(severity, str)
-                and severity in {"high", "medium", "low"}
+                if isinstance(severity, str) and severity in {"high", "medium", "low"}
                 else "low"
             )
-        normalized.append(clean_issue)
+        normalized.append(clean)
     return normalized
 
 
@@ -60,9 +65,7 @@ def _parse_model_number(value: object, *, percentage_scale: bool = False) -> obj
         return value
     normalized = value.strip().replace("％", "%")
     is_percentage = normalized.endswith("%")
-    if is_percentage:
-        normalized = normalized[:-1].strip()
-    parsed = float(normalized)
+    parsed = float(normalized[:-1].strip() if is_percentage else normalized)
     return parsed / 100 if is_percentage and percentage_scale else parsed
 
 
@@ -90,20 +93,42 @@ class _WordCountAnalysis(BaseModel):
         return _parse_model_bool(value)
 
 
+class _RubricScores(BaseModel):
+    causality: float = Field(ge=0, le=5)
+    continuity: float = Field(ge=0, le=5)
+    character: float = Field(ge=0, le=5)
+    scene_function: float = Field(ge=0, le=5)
+    voice: float = Field(ge=0, le=5)
+    prose_specificity: float = Field(ge=0, le=5)
+    ending_effect: float = Field(ge=0, le=5)
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def parse_score(cls, value: object) -> object:
+        return _parse_model_number(value)
+
+
 class _ReflectionMetrics(BaseModel):
-    passed: bool
-    overall_quality_score: float = Field(ge=0, le=1)
+    passed: bool | None = None
+    overall_quality_score: float | None = Field(default=None, ge=0, le=1)
+    rubric_scores: _RubricScores | None = None
     word_count_analysis: _WordCountAnalysis
 
     @field_validator("passed", mode="before")
     @classmethod
-    def parse_passed(cls, value: object) -> bool:
-        return _parse_model_bool(value)
+    def parse_passed(cls, value: object) -> bool | None:
+        return None if value is None else _parse_model_bool(value)
 
     @field_validator("overall_quality_score", mode="before")
     @classmethod
     def parse_quality_score(cls, value: object) -> object:
-        return _parse_model_number(value, percentage_scale=True)
+        return None if value is None else _parse_model_number(value, percentage_scale=True)
+
+    @model_validator(mode="after")
+    def require_score_source(self) -> Self:
+        if self.rubric_scores is None and self.overall_quality_score is None:
+            raise ValueError("rubric_scores or overall_quality_score is required")
+        return self
 
 
 def _validate_reflection_metrics(result: dict) -> _ReflectionMetrics:
@@ -112,296 +137,241 @@ def _validate_reflection_metrics(result: dict) -> _ReflectionMetrics:
     except ValidationError as exc:
         fields = [".".join(str(part) for part in error["loc"]) for error in exc.errors()]
         logger.warning("【反思检查节点】评分字段格式无效 | 字段=%s", ",".join(fields))
-        raise RetryableWorkflowError(
-            "章节质量审读失败：模型返回的评分字段格式无效"
-        ) from exc
+        raise RetryableWorkflowError("章节质量审读失败：模型返回的评分字段格式无效") from exc
+
+
+def _quality_score(metrics: _ReflectionMetrics) -> float:
+    if metrics.rubric_scores is None:
+        return float(metrics.overall_quality_score or 0)
+    values = metrics.rubric_scores.model_dump().values()
+    return sum(values) / (len(values) * 5)
+
+
+def _issue_id(issue: dict) -> str:
+    supplied = issue.get("issue_id")
+    if isinstance(supplied, str) and supplied.strip():
+        return supplied.strip()[:80]
+    source = "|".join(str(issue.get(key, "")) for key in ("type", "evidence", "location"))
+    return f"issue-{hashlib.sha1(source.encode('utf-8')).hexdigest()[:12]}"
+
+
+def _annotate_issues(issues: list[dict], content: str) -> list[dict]:
+    annotated = []
+    for raw in issues:
+        issue = dict(raw)
+        severity = issue.get("severity", "low")
+        if not isinstance(severity, str) or severity not in {"high", "medium", "low"}:
+            severity = "low"
+        issue_type = issue.get("type", "unknown")
+        if not isinstance(issue_type, str) or not issue_type.strip():
+            issue_type = "unknown"
+        priority = issue.get("priority_action")
+        if not isinstance(priority, str) or priority not in {"must_fix", "optional", "can_ignore"}:
+            priority = {"high": "must_fix", "medium": "optional"}.get(severity, "can_ignore")
+        evidence = str(issue.get("evidence", "") or "").strip()
+        issue.update(
+            issue_id=_issue_id(issue),
+            type=issue_type,
+            severity=severity,
+            priority_action=priority,
+            issue_resolved=issue.get("issue_resolved") is True,
+            evidence=evidence,
+            evidence_valid=bool(evidence and evidence in content),
+        )
+        annotated.append(issue)
+    return annotated
+
+
+async def _review_chunks(
+    llm: LLMService, content: str, context: dict[str, Any]
+) -> list[dict]:
+    chunks = split_into_chunks(content)
+    results = []
+    for chunk in chunks:
+        prompt = build_chunk_reflection_prompt(
+            chunk["text"], chunk["chunk_index"], len(chunks), chunk["start"], chunk["end"],
+            context["chapter_outline"], context["main_characters"], context["memory_context"],
+            context["story_bible"],
+        )
+        result = await llm.structured_generate(prompt, CHUNK_REFLECTION_SCHEMA, temperature=0.1)
+        issues = _normalize_issues(result.get("issues") if isinstance(result, dict) else None)
+        for issue in issues:
+            issue.update(_chunk=chunk["chunk_index"], _chunk_range=f"{chunk['start']}-{chunk['end']}")
+        results.append({**chunk, "issues": issues})
+    return results
+
+
+def _merge_issues(primary: object, chunks: list[dict]) -> list[dict]:
+    merged = _normalize_issues(primary)
+    seen = {str(issue.get("evidence") or issue.get("location") or "") for issue in merged}
+    for chunk in chunks:
+        for issue in chunk.get("issues", []):
+            key = str(issue.get("evidence") or issue.get("location") or "")
+            if key and key not in seen:
+                merged.append(issue)
+                seen.add(key)
+    return merged
+
+
+async def _review_content(
+    llm: LLMService,
+    content: str,
+    context: dict[str, Any],
+    previous: list[dict],
+) -> dict:
+    if len(content) <= REVIEW_CHUNK_THRESHOLD:
+        prompt = build_reflection_prompt(
+            content, context["chapter_outline"], context["main_characters"],
+            context["memory_context"], len(content), context["story_bible"], previous,
+        )
+        result = await llm.structured_generate(prompt, REFLECTION_SCHEMA, temperature=0.1)
+    else:
+        chunks = await _review_chunks(llm, content, context)
+        prompt = build_aggregation_prompt(
+            chunks, content, context["chapter_outline"], context["main_characters"],
+            context["memory_context"], len(content), context["story_bible"], previous,
+        )
+        result = await llm.structured_generate(prompt, AGGREGATION_SCHEMA, temperature=0.1)
+        if isinstance(result, dict):
+            result["issues"] = _merge_issues(result.get("issues"), chunks)
+    if not isinstance(result, dict) or not result:
+        raise RetryableWorkflowError("章节质量审读失败：模型未返回有效结果")
+    return result
+
+
+def _quality_gate(result: dict, content: str) -> tuple[dict, list[dict]]:
+    metrics = _validate_reflection_metrics(result)
+    issues = _annotate_issues(_normalize_issues(result.get("issues")), content)
+    score = _quality_score(metrics)
+    hard_failures = result.get("hard_failures", [])
+    if not isinstance(hard_failures, list):
+        hard_failures = []
+    hard_ids = {item.strip() for item in hard_failures if isinstance(item, str) and item.strip()}
+    blocking = [
+        issue for issue in issues
+        if issue["priority_action"] == "must_fix" and not issue["issue_resolved"] and issue["evidence_valid"]
+    ]
+    hard = any(issue["issue_id"] in hard_ids or issue.get("type") in HARD_FAILURE_TYPES for issue in blocking)
+    words = metrics.word_count_analysis
+    passed = score >= QUALITY_PASS_SCORE and words.effective_density >= MIN_EFFECTIVE_DENSITY
+    passed = passed and words.is_valid_word_count and not blocking
+    if passed:
+        decision = "pass"
+    elif not blocking:
+        decision = "human_review"
+    else:
+        decision = "refactor" if hard or score < 0.55 or words.effective_density < 50 else "patch"
+    gate = {
+        "decision": decision, "score": score,
+        "rubric_scores": metrics.rubric_scores.model_dump() if metrics.rubric_scores else {},
+        "word_count_analysis": words.model_dump(), "hard_failures": sorted(hard_ids),
+    }
+    return gate, issues
+
+
+def _choice_command(choice: Any, issues: list[dict], gate: dict) -> Command:
+    if choice == "accept":
+        return Command(goto="persist_node", update={"quality_gate": {**gate, "decision": "user_accepted"}})
+    if choice == "regenerate":
+        return Command(goto="chapter_writer_node")
+    instructions = choice if isinstance(choice, str) and choice not in {"revise", ""} else None
+    return Command(
+        goto="revision_node",
+        update={
+            "quality_gate": gate,
+            "reflection_issues": issues,
+            "user_decision": {"action": "revise", "instructions": instructions},
+        },
+    )
+
+
+def _review_payload(action: str, state: NovelAgentState, gate: dict, issues: list[dict]) -> dict:
+    exhausted = action == "quality_gate_exhausted"
+    needs_evidence = action == "quality_gate_human_review"
+    message = "质量证据与分项评分不一致，请人工复核" if needs_evidence else "质量闸门未通过，请审阅证据后决定"
+    if exhausted:
+        message = "自动修订已达上限，请人工决定接受、重写或继续修订"
+    return {
+        "action": action,
+        "message": message,
+        "chapter_number": state.get("current_chapter_index", 0) + 1,
+        "quality_score": gate["score"],
+        "rubric_scores": gate["rubric_scores"],
+        "word_count_analysis": gate["word_count_analysis"],
+        "quality_decision": gate["decision"],
+        "issues": issues,
+    }
+
+
+def _direct_rewrite_revision(gate: dict, issues: list[dict]) -> Command:
+    labels = {
+        "causality": "因果链",
+        "continuity": "连续性",
+        "character": "人物一致性",
+        "scene_function": "场景功能",
+        "voice": "叙事声音",
+        "prose_specificity": "语言具体度",
+        "ending_effect": "结尾效力",
+    }
+    scores = gate.get("rubric_scores", {})
+    weakest = sorted(
+        ((key, value) for key, value in scores.items() if isinstance(value, (int, float))),
+        key=lambda item: item[1],
+    )[:3]
+    focus = "、".join(f"{labels.get(key, key)}（{value:.1f}/5）" for key, value in weakest)
+    instruction = "本章质量门禁未通过且缺少可安全局修的原文证据，请进行全文质量重构。"
+    if focus:
+        instruction += f"优先提升：{focus}。"
+    return Command(
+        goto="revision_node",
+        update={
+            "quality_gate": {**gate, "decision": "refactor", "source_decision": gate["decision"]},
+            "reflection_issues": issues,
+            "user_decision": {"action": "revise", "instructions": instruction},
+        },
+    )
 
 
 async def reflection_node(
     state: NovelAgentState, config: RunnableConfig
-) -> Command[Literal["persist_node", "revision_node"]]:
-    """
-    反思检查节点 - 检查逻辑问题，报告给用户，由用户决策如何修正
-    """
-    current_chapter_content = state.get("current_chapter_content", "")
-    chapter_outline = (
-        state.get("chapter_outlines", [{}])[-1] if state.get("chapter_outlines") else {}
-    )
-    total_outline_raw = state.get("total_outline", {})
-    if isinstance(total_outline_raw, str):
-        import json
-
+) -> Command[Literal["persist_node", "revision_node", "chapter_writer_node"]]:
+    """审读正文并由服务端基于证据执行质量闸门。"""
+    content = state.get("current_chapter_content", "")
+    outline = state.get("chapter_outlines", [{}])[-1] if state.get("chapter_outlines") else {}
+    total_raw = state.get("total_outline", {})
+    if isinstance(total_raw, str):
         try:
-            total_outline_raw = json.loads(total_outline_raw)
-        except Exception:
-            total_outline_raw = {}
-    total_outline = total_outline_raw if isinstance(total_outline_raw, dict) else {}
-    memory_context = state.get("memory_context", "")
-    story_bible = build_story_bible(total_outline)
-
-    chapter_title = chapter_outline.get("title", "未知")
-    content_len = len(current_chapter_content)
-    logger.info(f"{'=' * 60}")
-    logger.info(
-        f"【反思检查节点】进入 | 章节标题={chapter_title}, 内容长度={content_len}字"
-    )
-
-    # 从 config.configurable 获取 LLM 实例
-    llm_config = config["configurable"].get("llm_config", {})
-    llm = llm_config.get("llm_instance")
-
+            total_raw = json.loads(total_raw)
+        except ValueError:
+            total_raw = {}
+    total = total_raw if isinstance(total_raw, dict) else {}
+    llm = config["configurable"].get("llm_config", {}).get("llm_instance")
     if not llm:
-        logger.info("【反思检查节点】LLM不可用，跳过检查 -> 持久化节点")
-        logger.info(f"{'=' * 60}")
-        return Command(goto="persist_node")
-
-    # AI 进行反思检查（分块 + 聚合）
-    content_len = len(current_chapter_content)
-    main_chars = total_outline.get("main_characters", [])
-
-    # 正常章节一次性全章审读。只有异常超长稿才分块，避免 5-6 个模型请求串行等待。
-    if content_len > 12000:
-        # ----- 分块检查 -----
-        chunks = split_into_chunks(current_chapter_content)
-        logger.info(
-            f"【反思检查节点】分块检查 | {len(chunks)}块, 每块{2000}字, 重叠{200}字"
-        )
-
-        chunk_results = []
-        for chunk in chunks:
-            chunk_prompt = build_chunk_reflection_prompt(
-                chunk_text=chunk["text"],
-                chunk_index=chunk["chunk_index"],
-                total_chunks=len(chunks),
-                chunk_start=chunk["start"],
-                chunk_end=chunk["end"],
-                chapter_outline=chapter_outline,
-                main_characters=main_chars,
-                memory_context=memory_context,
-                story_bible=story_bible,
-            )
-            chunk_result = await llm.structured_generate(
-                prompt=chunk_prompt,
-                schema=CHUNK_REFLECTION_SCHEMA,
-                temperature=0.1,
-            )
-            chunk_issues = _normalize_issues(
-                chunk_result.get("issues") if chunk_result else None
-            )
-            # 标记每个 issue 出自哪一块
-            for iss in chunk_issues:
-                iss["_chunk"] = chunk["chunk_index"]
-                iss["_chunk_range"] = f"{chunk['start']}-{chunk['end']}"
-            chunk_results.append(
-                {
-                    "start": chunk["start"],
-                    "end": chunk["end"],
-                    "chunk_index": chunk["chunk_index"],
-                    "issues": chunk_issues,
-                }
-            )
-            logger.info(
-                f"【反思检查节点】块{chunk['chunk_index'] + 1}/{len(chunks)} 检查完成 | 发现{len(chunk_issues)}个问题"
-            )
-
-        # ----- 聚合检查 -----
-        agg_prompt = build_aggregation_prompt(
-            chunk_results=chunk_results,
-            chapter_content=current_chapter_content,
-            chapter_outline=chapter_outline,
-            main_characters=main_chars,
-            memory_context=memory_context,
-            content_length=content_len,
-            story_bible=story_bible,
-        )
-        reflection_result = await llm.structured_generate(
-            prompt=agg_prompt,
-            schema=AGGREGATION_SCHEMA,
-            temperature=0.1,
-        )
-        if not isinstance(reflection_result, dict) or not reflection_result:
-            raise RetryableWorkflowError("章节质量审读失败：模型未返回有效结果")
-
-        # 合并：聚合结果中的 issues + 所有分块中的 issues
-        all_issues = _normalize_issues(
-            reflection_result.get("issues") if reflection_result else None
-        )
-        seen_locations = set()
-        for iss in all_issues:
-            loc = iss.get("location", "")
-            if loc:
-                seen_locations.add(loc)
-        for cr in chunk_results:
-            for iss in cr.get("issues", []):
-                loc = iss.get("location", "")
-                if loc not in seen_locations:
-                    all_issues.append(iss)
-                    seen_locations.add(loc)
-        reflection_result["issues"] = all_issues
-        logger.info(f"【反思检查节点】聚合完成 | 总计{len(all_issues)}个问题")
-    else:
-        # 短章节：单次检查即可
-        reflection_prompt = build_reflection_prompt(
-            chapter_content=current_chapter_content,
-            chapter_outline=chapter_outline,
-            main_characters=main_chars,
-            memory_context=memory_context,
-            content_length=content_len,
-            story_bible=story_bible,
-        )
-        reflection_result = await llm.structured_generate(
-            prompt=reflection_prompt,
-            schema=REFLECTION_SCHEMA,
-            temperature=0.1,
-        )
-        if not isinstance(reflection_result, dict) or not reflection_result:
-            raise RetryableWorkflowError("章节质量审读失败：模型未返回有效结果")
-
-    # 解析结构化输出
-    reflection_result["issues"] = _normalize_issues(reflection_result.get("issues"))
-    metrics = _validate_reflection_metrics(reflection_result)
-    quality_score = metrics.overall_quality_score
-    word_analysis = metrics.word_count_analysis.model_dump()
-    effective_density = metrics.word_count_analysis.effective_density
-    is_valid_words = metrics.word_count_analysis.is_valid_word_count
-    reflection_result["overall_quality_score"] = quality_score
-    reflection_result["word_count_analysis"] = word_analysis
-    reflection_result["passed"] = metrics.passed
-    logic_chain_status = reflection_result.get("logic_chain_status", "")
-    foreshadowing_check = reflection_result.get("foreshadowing_check", "")
-
-    # 检查通过条件：passed + 质量分>=0.8 + 字数合规 + 有效密度>=70%
-    passed = metrics.passed
-    density_ok = effective_density >= 70
-    quality_ok = quality_score >= 0.8
+        raise RetryableWorkflowError("章节质量审读失败：LLM 不可用")
+    context = {
+        "chapter_outline": outline, "main_characters": total.get("main_characters", []),
+        "memory_context": state.get("memory_context", ""), "story_bible": build_story_bible(total),
+    }
+    result = await _review_content(llm, content, context, state.get("reflection_issues", []))
+    gate, issues = _quality_gate(result, content)
     emit_workflow_event(
-        "quality",
-        {
-            "score": quality_score,
-            "issues": reflection_result.get("issues", []),
-            "attempt": state.get("revision_attempts", 0),
-            "max_attempts": config["configurable"].get("max_reflection_loops", 5),
-        },
-        "reflection_node",
+        "quality", {**gate, "issues": issues, "attempt": state.get("revision_attempts", 0)}, "reflection_node"
     )
-
-    if passed and quality_ok and is_valid_words and density_ok:
-        logger.info(
-            f"【反思检查节点】检查通过! 质量评分={quality_score}, "
-            f"有效密度={effective_density}%, 字数合格={is_valid_words} -> 持久化节点"
-        )
-        logger.info(f"{'=' * 60}")
-        return Command(goto="persist_node")
-
-    # 检查未通过，向用户报告问题
-    issues = reflection_result.get("issues", [])
-    # 确保每个 issue 有 priority_action 和 issue_resolved 字段
-    for issue in issues:
-        if "priority_action" not in issue:
-            sev = issue.get("severity", "low")
-            issue["priority_action"] = {
-                "high": "must_fix",
-                "medium": "optional",
-                "low": "can_ignore",
-            }.get(sev, "optional")
-        if "issue_resolved" not in issue:
-            issue["issue_resolved"] = False
-    fail_reasons = []
-    if not quality_ok:
-        fail_reasons.append(f"质量评分不足({quality_score}<0.8)")
-    if not density_ok:
-        fail_reasons.append(f"有效密度不足({effective_density}%<70%)")
-    if not is_valid_words:
-        fail_reasons.append("字数不合规")
-    if not passed:
-        fail_reasons.append("LLM判定未通过")
-    logger.info(
-        f"【反思检查节点】检查未通过! {'; '.join(fail_reasons)}, "
-        f"问题数={len(issues)} -> 修正节点"
-    )
-
-    # 自动模式：发现问题时自动走 AI 修正（动态收敛循环）
+    if gate["decision"] == "pass":
+        return Command(goto="persist_node", update={"quality_gate": gate, "reflection_issues": issues})
     auto_mode = config["configurable"].get("auto_mode", False)
-    if auto_mode:
-        attempts = state.get("revision_attempts", 0)
-        MAX_REVISION_ATTEMPTS = 5  # 上限放大到 5 次
-
-        # 提前收敛条件：高优问题全部解决且质量分 > 0.85
-        has_high_unresolved = any(
-            issue.get("priority_action") == "must_fix"
-            and not issue.get("issue_resolved", False)
-            for issue in issues
-        )
-        if not has_high_unresolved and quality_score > 0.85:
-            logger.info(
-                f"【反思检查节点】自动模式 | 高优问题已全部解决且质量分>{quality_score}>0.85，提前通过 -> 持久化节点"
-            )
-            return Command(goto="persist_node")
-
-        if attempts >= MAX_REVISION_ATTEMPTS:
-            logger.info(
-                f"【反思检查节点】自动模式 | 已修正{attempts}次仍未通过，降级放行 -> 持久化节点"
-            )
-            return Command(goto="persist_node")
-        logger.info(
-            f"【反思检查节点】自动模式 | 走AI自动修正 (第{attempts + 1}次, 上限{MAX_REVISION_ATTEMPTS}次)"
-        )
-        return Command(
-            goto="revision_node",
-            update={
-                "reflection_issues": issues,
-                "user_decision": {
-                    "action": "revise",
-                    "instructions": None,  # AI 根据问题列表自动修正
-                },
-            },
-        )
-
-    user_decision = interrupt(
-        {
-            "action": "review_reflection_issues",
-            "message": "章节内容检查发现问题，请审阅并决定修正方式",
-            "chapter_number": state.get("current_chapter_index", 0) + 1,
-            "quality_score": quality_score,
-            "word_count_analysis": word_analysis,
-            "issues": issues,
-            "chapter_content_preview": current_chapter_content[:500] + "...",
-            "logic_chain_status": logic_chain_status,
-            "foreshadowing_check": foreshadowing_check,
-            "note": "请选择处理方式：\n"
-            "1) 'accept' - 忽略问题，直接使用\n"
-            "2) 'revise' - 根据问题列表自动修正\n"
-            "3) 提供具体修正指令（字符串）- 按您的指示修正\n"
-            "4) 'regenerate' - 重新生成本章内容",
-        }
-    )
-
-    logger.info("【反思检查节点】准备前往 -> 修正节点 (等待用户决策)")
-
-    # 解析用户决策
-    if user_decision == "accept":
-        decision_action = "accept"
-        decision_instructions = None
-    elif user_decision == "regenerate":
-        decision_action = "regenerate"
-        decision_instructions = None
-    elif user_decision == "revise":
-        decision_action = "revise"
-        decision_instructions = None  # AI 根据问题列表自动修正
-    elif isinstance(user_decision, str) and user_decision.strip():
-        decision_action = "revise"
-        decision_instructions = user_decision  # 用户提供的自定义修正指令
+    attempts = state.get("revision_attempts", 0)
+    max_attempts = config["configurable"].get("max_reflection_loops", 5)
+    if auto_mode and gate["decision"] in {"patch", "refactor"} and attempts < max_attempts:
+        return _choice_command("revise", issues, gate)
+    direct_rewrite = config["configurable"].get("direct_rewrite", False)
+    if direct_rewrite:
+        if attempts < max_attempts:
+            return _direct_rewrite_revision(gate, issues)
+        raise QualityGateReviewRequired("章节重写已达到自动修订上限，且仍未通过质量门禁")
+    if auto_mode and gate["decision"] == "human_review":
+        action = "quality_gate_human_review"
     else:
-        decision_action = "revise"
-        decision_instructions = None
-
-    return Command(
-        goto="revision_node",
-        update={
-            "reflection_issues": issues,
-            "user_decision": {
-                "action": decision_action,
-                "instructions": decision_instructions,
-            },
-        },
-    )
+        action = "quality_gate_exhausted" if auto_mode else "review_reflection_issues"
+    choice = interrupt(_review_payload(action, state, gate, issues))
+    return _choice_command(choice, issues, gate)

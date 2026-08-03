@@ -1,25 +1,41 @@
 """简介生成提示词"""
 
+import json
+from typing import Any
 
-def build_summary_prompt(novel_type: str, title: str, story_hint: str = "") -> str:
+from application.prompts.version import PROMPT_VERSION
+
+
+def build_summary_prompt(
+    novel_type: str,
+    title: str,
+    story_hint: str = "",
+    creative_brief: dict[str, Any] | None = None,
+) -> str:
     """
     优化后的简介生成提示词：结构化四段式 + 一句话简介 + 拒绝废话
     story_hint 由书名生成节点联动传入，形成"类型→书名→简介→总纲"的闭环
     """
     hint_section = f"\n【书名核心卖点】\n书名背后的故事线提示：{story_hint}" if story_hint else ""
 
-    return f"""
+    brief = json.dumps(creative_brief or {}, ensure_ascii=False, indent=2)
+    return f"""[PROMPT_VERSION:{PROMPT_VERSION}]
 你是一位擅长创作爆款网文的策划人。请根据以下信息，撰写一段 300 字左右的精炼简介。
 
 【基础信息】
 书名：《{title}》
 类型：{novel_type}{hint_section}
 
+【创作简报（不可改写）】
+{brief}
+
 【撰写结构要求】（请依次完成以下四个模块）：
 1. 背景设定（World Building）：用一句话交代独特的世界观底色或当前面临的剧变。
 2. 主角身份与困境（Identity & Conflict）：主角是谁？他正面临什么"不得不解决"的生死危机或利益冲突？
 3. 核心卖点（The Hook）：点出书名中暗示的独特金手指、特殊能力或反常规设定。
 4. 剧情张力（Escalation）：展示多方势力的对垒或命运的不可预测性，拒绝平铺直叙。
+5. 简介必须同时兑现 core_premise、core_conflict、reader_promise 和 originality_anchor，
+   但不要把 theme_question 直接回答出来。
 
 【风格引导】
 - 拒绝废话：严禁使用"在XX的世界里"、"他能否成就传奇"、"这一次，他要夺回属于自己的一切"等万金油废话。

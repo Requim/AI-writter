@@ -1,48 +1,47 @@
-"""书名生成提示词"""
+"""Premise-grounded title generation prompts."""
+
+import json
+from typing import Any
+
+from application.prompts.version import PROMPT_VERSION
 
 
-def build_title_prompt(novel_type: str) -> str:
-    """
-    针对"根据书名反推内容"场景优化的提示词
-    """
-    return f"""
-你是一位深谙网文流行趋势、擅长"一句话抓人"的金牌策划。
-现在需要为类型为「{novel_type}」的小说生成 10 个优质书名。
-
-【核心任务】
-由于后续需要根据书名扩写简介和全书大纲，请确保每个书名都自带"故事内核"与"冲突感"，
-能够让人一眼看出故事的大致走向或独特卖点。
-
-【书名分类生成要求】
-请按以下五个维度各生成 2 个书名（共 10 个）：
-
-1. 【反差/反套路类】：设定与常理相悖
-   例：「{novel_type}」《死者请在留言板签字》、《我在仙界收废铁》
-
-2. 【强悬念/钩子类】：抛出一个必须解开的疑问
-   例：《谁动了我的心脏》、《师父死后的第九十九天》
-
-3. 【独特金手指/设定类】：直接点出故事的核心趣味点
-   例：《我能看到万物的保质期》、《签到百年我被全国直播了》
-
-4. 【大格局/宿命类】：体现史诗感或沉重感
-   例：《崩坏纪元：最后的炼气士》、《诸界末日在即》
-
-5. 【直白爽文类】：清晰展示主角的身份或极度优势
-   例：《重案组的首席侧写师》、《从小镇做题家到诺奖得主》
-
-【禁令】
-- 严禁使用没有任何信息量的虚词组合（如：逆天XX、XX传奇、破灭XX）
-- 严禁书名短于 4 个字
-- 名字必须体现"冲突感"（弱例子：寂灭修仙录；强例子：修仙从斩断因果开始）
-
-【输出格式】
-每行一个书名，格式为：
-书名 | 一句话卖点说明
-
-不要在书名中加编号，不要输出其他内容。
-"""
+TITLE_CANDIDATES_SCHEMA = {"candidates": "array"}
 
 
-TITLE_TEMPERATURE = 1.0
-TITLE_TOP_P = 0.95
+def build_title_prompt(novel_type: str, creative_brief: dict[str, Any] | None = None) -> str:
+    """Generate scored title candidates that preserve the creative promise."""
+    brief = json.dumps(creative_brief or {}, ensure_ascii=False, indent=2)
+    return f"""[PROMPT_VERSION:{PROMPT_VERSION}]
+你是一名小说命名策划。请基于创作简报，为「{novel_type}」小说生成 8 个书名候选。
+
+【创作简报】
+{brief}
+
+【命名要求】
+1. 每个书名必须指向 core_conflict、originality_anchor 或 protagonist_drive 中至少一项。
+2. 候选需覆盖：反差、悬念、独特机制、人物关系四类，每类至少一个。
+3. 禁止“逆天、传奇、纪元、归来”等可替换式词组，禁止照搬同类畅销书句式。
+4. title 为 4-16 个汉字；hint 用一句话说明该书名承诺的具体故事。
+5. 分别以 0-10 评价 specificity、conflict、originality、audience_fit；total_score 为四项总和。
+6. 评分必须拉开差距，不能全部高分；候选顺序不代表优先级。
+
+只输出以下 JSON，不要 Markdown 或解释：
+{{
+  "candidates": [
+    {{
+      "title": "",
+      "hint": "",
+      "category": "反差|悬念|独特机制|人物关系",
+      "specificity": 0,
+      "conflict": 0,
+      "originality": 0,
+      "audience_fit": 0,
+      "total_score": 0
+    }}
+  ]
+}}"""
+
+
+TITLE_TEMPERATURE = 0.85
+TITLE_TOP_P = 0.92

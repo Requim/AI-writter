@@ -76,6 +76,10 @@ def _seed_initial_input(input_data: dict[str, Any], novel: Novel) -> None:
     outline = novel.total_outline
     if outline is None:
         return
+    if outline.creative_brief:
+        input_data.setdefault("creative_brief", outline.creative_brief)
+    if outline.prompt_version:
+        input_data.setdefault("prompt_version", outline.prompt_version)
     if outline.story_background and outline.main_plot and outline.volumes:
         outline_data = asdict(outline)
         if novel.title:

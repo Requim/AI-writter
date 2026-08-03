@@ -50,6 +50,13 @@ def test_chapter_contract_requires_causal_and_rolling_plan() -> None:
     valid_contract = {
         "chapter_number": 3,
         "chapter_goal": "找到证人",
+        "dramatic_question": "能否在对手前找到证人",
+        "desire": "说服证人开口",
+        "obstacle": "对手正在转移证人",
+        "tactics": ["查档案", "赶往码头"],
+        "turn": "证人主动提出交换条件",
+        "price_paid": "主角暴露调查方向",
+        "state_delta": "证人从躲避变为有限合作",
         "key_events": ["发现地址", "见到证人"],
         "scenes": [{}, {}, {}],
         "entry_state": {"location": "警局"},

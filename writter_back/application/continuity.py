@@ -78,10 +78,12 @@ def build_story_bible(total_outline: dict[str, Any], max_chars: int = 3200) -> s
     bible = {
         "source_title": total_outline.get("source_title", ""),
         "source_summary": total_outline.get("source_summary", ""),
+        "creative_brief": total_outline.get("creative_brief", {}),
         "world_rules": total_outline.get("story_background", ""),
         "main_characters": total_outline.get("main_characters", []),
         "main_plot": total_outline.get("main_plot", {}),
         "writing_style": total_outline.get("writing_style", ""),
+        "prompt_version": total_outline.get("prompt_version", ""),
     }
     return compact_text(
         json.dumps(bible, ensure_ascii=False, indent=2),
@@ -112,6 +114,15 @@ def normalize_chapter_contract(
     normalized = dict(outline)
     normalized["chapter_number"] = chapter_number
     normalized.setdefault("chapter_goal", "推进当前卷核心冲突")
+    normalized.setdefault("pov_character", "")
+    normalized.setdefault("dramatic_question", "本章冲突将如何改变当前局势")
+    normalized.setdefault("desire", "推进当前目标")
+    normalized.setdefault("obstacle", "对手或局势主动阻止目标达成")
+    normalized.setdefault("tactics", ["延续既定行动", "受阻后调整策略"])
+    normalized.setdefault("turn", "行动导致局势发生变化")
+    normalized.setdefault("price_paid", "目标推进伴随真实代价")
+    normalized.setdefault("state_delta", "人物、关系、信息或资源状态发生变化")
+    normalized.setdefault("ending_mode", "decision")
     normalized.setdefault("key_events", [])
     normalized.setdefault("entry_state", {})
     normalized.setdefault("exit_state", {})
@@ -124,6 +135,7 @@ def normalize_chapter_contract(
     normalized.setdefault("scenes", [])
     for field in (
         "key_events",
+        "tactics",
         "causal_chain",
         "state_changes",
         "knowledge_boundaries",
@@ -157,14 +169,19 @@ def validate_chapter_contract(
     if len(outline.get("key_events", []) or []) < 2:
         issues.append("key_events 少于 2 个")
     scenes = outline.get("scenes", [])
-    if not isinstance(scenes, list) or len(scenes) < 3:
-        issues.append("scenes 少于 3 个")
+    if not isinstance(scenes, list) or not 2 <= len(scenes) <= 5:
+        issues.append("scenes 数量必须为 2-5 个")
     if not outline.get("entry_state"):
         issues.append("entry_state 为空")
     if not outline.get("exit_state"):
         issues.append("exit_state 为空")
     if len(outline.get("causal_chain", []) or []) < 2:
         issues.append("causal_chain 少于 2 步")
+    for field in ("dramatic_question", "desire", "obstacle", "turn", "price_paid", "state_delta"):
+        if not str(outline.get(field, "")).strip():
+            issues.append(f"{field} 为空")
+    if len(outline.get("tactics", []) or []) < 2:
+        issues.append("tactics 少于 2 个")
     if not rolling_plan_covers(outline.get("rolling_plan"), chapter_number):
         issues.append("rolling_plan 未覆盖当前章节")
     return issues

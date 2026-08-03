@@ -62,6 +62,8 @@ async def persist_node(
                     "writing_style",
                     "total_chapters",
                     "volumes",
+                    "creative_brief",
+                    "prompt_version",
                 }
                 filtered = {k: v for k, v in outline_raw.items() if k in outline_fields}
                 try:
@@ -264,5 +266,7 @@ async def persist_node(
             "reflection_issues": [],
             "user_decision": {},
             "memory_context": "",
+            "scene_ledger": [],
+            "revision_history": [],
         },
     )

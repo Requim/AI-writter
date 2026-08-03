@@ -1,6 +1,10 @@
 """Prompts and validation for the macro novel outline."""
 
+import json
+
 from typing import Any
+
+from application.prompts.version import PROMPT_VERSION
 
 
 OUTLINE_SCHEMA: dict[str, str] = {
@@ -22,6 +26,7 @@ def build_outline_prompt(
     summary: str,
     target_total_chapters: int | None = None,
     requested_writing_style: str | None = None,
+    creative_brief: dict[str, Any] | None = None,
 ) -> str:
     """Build a bounded macro-outline prompt without per-chapter output."""
     chapter_requirement = (
@@ -34,7 +39,9 @@ def build_outline_prompt(
         if requested_writing_style
         else "明确叙事视角、节奏、语言基调、对话风格和氛围。"
     )
-    return f"""请根据以下信息生成小说的宏观总纲。这里只规划全书结构，不生成逐章列表；
+    brief = json.dumps(creative_brief or {}, ensure_ascii=False, indent=2)
+    return f"""[PROMPT_VERSION:{PROMPT_VERSION}]
+请根据以下信息生成小说的宏观总纲。这里只规划全书结构，不生成逐章列表；
 每一章的详细细纲会在后续工作流中按章生成。
 
 【基础信息】
@@ -42,11 +49,15 @@ def build_outline_prompt(
 书名：{title}
 简介：{summary}
 
+【创作简报（最高优先级）】
+{brief}
+
 【用户设定优先级】
 - 书名和简介是用户确认的正史事实，不是供改写的灵感素材。
 - 必须保留简介中出现的全部人名、人物关系、时代背景和核心故事方向。
 - 简介较短时只能围绕已有事实扩展，不得替换主角、关系、题材或另起故事。
 - 后续的世界设定、人物表、主线和分卷必须能够直接追溯到这份简介。
+- 每卷冲突升级必须持续兑现 creative_brief 的 reader_promise，并从不同角度逼问 theme_question。
 
 【总纲要求】
 1. story_background（600-1000字）：世界规则、核心限制或力量代价、主要势力、

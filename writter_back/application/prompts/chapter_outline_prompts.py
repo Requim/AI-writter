@@ -1,10 +1,17 @@
-"""Compact per-chapter continuity contract prompts."""
+"""Per-chapter dramatic and continuity contract prompts."""
 
 import json
-import random
 
 from application.continuity import build_budgeted_context, build_story_bible
 from application.prompts.outline_prompts import volume_for_chapter
+from application.prompts.version import PROMPT_VERSION
+
+
+def _deterministic_word_target(chapter_number: int, total_chapters: int) -> int:
+    """Return a reproducible target while reserving room for structural peaks."""
+    if chapter_number in {1, total_chapters}:
+        return 4800
+    return 4200 + (chapter_number % 3) * 200
 
 
 def build_chapter_outline_prompt(
@@ -15,20 +22,18 @@ def build_chapter_outline_prompt(
     memory_context: str,
     validation_issues: list[str] | None = None,
 ) -> str:
-    """Generate a compact causal contract that can be returned before proxy timeout."""
+    """Generate a bounded dramatic contract before prose generation."""
     context = build_budgeted_context(memory_context, max_chars=2800)
-    story_bible = build_story_bible(total_outline, max_chars=2400)
-    volume = volume_for_chapter(total_outline, chapter_index)
-    volume_json = json.dumps(volume, ensure_ascii=False)
-    word_target = random.randint(3500, 5000)
+    story_bible = build_story_bible(total_outline, max_chars=2600)
+    volume_json = json.dumps(volume_for_chapter(total_outline, chapter_index), ensure_ascii=False)
+    total = int(total_outline.get("total_chapters", 0) or 0)
+    word_target = _deterministic_word_target(chapter_index, total)
     retry_block = ""
     if validation_issues:
-        retry_block = (
-            "\n【上一版未通过校验，必须修复】\n- "
-            + "\n- ".join(validation_issues)
-        )
+        retry_block = "\n【上一版未通过校验】\n- " + "\n- ".join(validation_issues)
 
-    return f"""请为《{title}》生成第 {chapter_index} 章的紧凑剧情契约，类型为 {novel_type}。
+    return f"""[PROMPT_VERSION:{PROMPT_VERSION}]
+请为《{title}》生成第 {chapter_index} 章的剧情执行契约，类型为 {novel_type}。
 只输出一个 JSON 对象，不要解释、Markdown 或思考过程。
 
 【本卷目标】
@@ -38,66 +43,74 @@ def build_chapter_outline_prompt(
 {story_bible}
 
 【前文连续性记忆】
-{context}
-{retry_block}
+{context}{retry_block}
 
-【硬性规则】
-1. 本章必须推进本卷 core_conflict 或 main_character_arc，不得提前完成 climax_event。
-2. 固定输出 3 个场景。每个文本字段控制在 80 个汉字以内，避免空泛描写。
-3. causal_chain 至少 3 步，必须形成“因为 A → 所以 B → 导致 C”的因果关系。
-4. entry_state 必须继承前文；exit_state、state_changes 必须能在正文中验证。
-5. knowledge_boundaries 明确角色已知和未知，禁止角色获得作者视角信息。
-6. callback 回收已有伏笔；setup 新建伏笔时给出稳定 ID 和预计回收章节。
-7. rolling_plan 输出从当前章开始、最多 5 章的轻量节拍，不得超过全书第
-   {total_outline.get('total_chapters', '?')} 章；已有 P 层规划没有冲突时应继续沿用。
-8. 正文字数目标约 {word_target} 字，三个场景承担不同事件，禁止重复同一信息。
+【戏剧契约】
+1. 本章只设一个 dramatic_question，并在结尾给出不可逆的阶段答案。
+2. desire 是 POV 人物当下可行动的目标；obstacle 必须主动反制，不是天气或心情。
+3. tactics 至少两次变化；turn 由行动引发，禁止依靠巧合或新角色突然解围。
+4. price_paid 是本章真实支付的代价；state_delta 写清关系、信息、资源或立场的变化。
+5. 依据本章复杂度选择 2-5 个场景，不固定数量；每个场景必须产生不同的转折或代价。
+6. entry_state 继承前文；knowledge_boundaries 禁止角色获得作者视角信息。
+7. callback 与 setup 只在因果需要的位置出现，不按固定百分比机械安放。
+8. rolling_plan 从当前章开始，最多 5 章，不得超过全书第 {total or '?'} 章。
+9. ending_mode 从 revelation、decision、reversal、arrival、deadline、emotional_shift 中选择，
+   结尾必须来自本章行动后果，不得凭空制造悬念。
 
 【JSON 结构】
 {{
   "chapter_number": {chapter_index},
   "title": "章节标题",
-  "chapter_goal": "本章唯一推进目标",
-  "key_events": ["事件1", "事件2", "事件3"],
+  "chapter_goal": "本章在全书中的唯一功能",
+  "pov_character": "本章视角人物",
+  "dramatic_question": "本章结束前必须回答的问题",
+  "desire": "视角人物当下目标",
+  "obstacle": "主动阻碍及其目标",
+  "tactics": ["第一次策略", "受阻后的新策略"],
+  "turn": "改变局势或理解的关键转折",
+  "price_paid": "为推进目标真实失去的东西",
+  "state_delta": "与入场相比不可逆的状态变化",
+  "ending_mode": "revelation|decision|reversal|arrival|deadline|emotional_shift",
+  "key_events": ["事件1", "事件2"],
   "entry_state": {{"time": "", "location": "", "characters": [], "open_conflicts": []}},
   "causal_chain": ["因为...", "所以...", "导致..."],
   "state_changes": [{{"subject": "", "before": "", "after": "", "evidence_event": ""}}],
   "knowledge_boundaries": [{{"character": "", "known": [], "unknown": []}}],
-  "continuity_constraints": ["不可违反事实1", "不可违反事实2", "不可违反事实3"],
+  "continuity_constraints": ["不可违反的既有事实"],
   "scenes": [
     {{
-      "location": "",
-      "characters": ["人物及进入场景时的状态"],
+      "location": "", "characters": ["人物及入场状态"],
+      "scene_goal": "本场景可验证目标", "desire": "", "obstacle": "", "tactic": "",
       "events": {{"entry": "", "struggle": "", "result": ""}},
+      "turn": "", "price_paid": "", "state_delta": "", "exit_hook": "",
       "sensory_details": {{"visual": "", "auditory": "", "olfactory_tactile": ""}},
       "dialogue_targets": {{"explicit": "", "implicit": ""}},
-      "purpose": "该场景产生的不可逆变化"
+      "purpose": "本场景为何不可删除"
     }}
   ],
-  "internal_monologue": "主角心理变化：起点 → 转折 → 终点",
-  "logic_hooks": {{
-    "callback": "伏笔ID/来源章节/本章如何回收；没有则写无",
-    "setup": "新伏笔ID/内容/预计回收章节；没有则写无"
-  }},
-  "exit_state": {{
-    "time": "", "location": "", "characters": [],
-    "last_action": "", "next_pressure": ""
-  }},
-  "rolling_plan": [
-    {{
-      "chapter_number": {chapter_index}, "goal": "", "required_event": "",
-      "state_delta": "", "callback_ids": [], "exit_hook": ""
-    }}
-  ],
+  "internal_monologue": "视角人物的认知变化：起点 → 触发 → 新认知",
+  "logic_hooks": {{"callback": "已有伏笔及自然回收方式", "setup": "新伏笔及预计回收章节"}},
+  "exit_state": {{"time": "", "location": "", "characters": [], "last_action": "", "next_pressure": ""}},
+  "rolling_plan": [{{"chapter_number": {chapter_index}, "goal": "", "required_event": "", "state_delta": "", "callback_ids": [], "exit_hook": ""}}],
   "estimated_word_count": {word_target}
 }}
 
-scenes 数组必须恰好包含 3 个完整对象；rolling_plan 每章只写一个核心事件。"""
+scenes 必须包含 2-5 个完整对象；每个文本字段尽量控制在 100 个汉字内。"""
 
 
 CHAPTER_OUTLINE_SCHEMA = {
     "chapter_number": "integer",
     "title": "string",
     "chapter_goal": "string",
+    "pov_character": "string",
+    "dramatic_question": "string",
+    "desire": "string",
+    "obstacle": "string",
+    "tactics": "array",
+    "turn": "string",
+    "price_paid": "string",
+    "state_delta": "string",
+    "ending_mode": "string",
     "key_events": "array",
     "entry_state": "object",
     "causal_chain": "array",

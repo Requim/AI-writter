@@ -34,7 +34,12 @@ async def summary_generator_node(
     
     # AI 生成简介（联动书名卖点，形成类型→书名→简介→总纲的闭环）
     story_hint = state.get("title_story_hint", "")
-    prompt = build_summary_prompt(novel_type, title, story_hint)
+    prompt = build_summary_prompt(
+        novel_type,
+        title,
+        story_hint,
+        state.get("creative_brief"),
+    )
     ai_summary = await llm.generate(prompt, temperature=SUMMARY_TEMPERATURE, top_p=SUMMARY_TOP_P)
     
     # 自动模式：直接接受

@@ -3,10 +3,17 @@
 import json
 
 from application.continuity import build_budgeted_context, compact_text
+from application.prompts.version import PROMPT_VERSION
+
+
+PATCH_SCHEMA = {
+    "edits": "array",
+    "unresolved_issue_ids": "array",
+}
 
 
 def _continuity_block(continuity_context: str, story_bible: str) -> str:
-    return f"""
+    return f"""[PROMPT_VERSION:{PROMPT_VERSION}]
 【连续性硬约束】
 静态故事圣经：
 {compact_text(story_bible, 2400) if story_bible else "无"}
@@ -103,7 +110,7 @@ def build_patch_revision_prompt(
         else ""
     )
 
-    return f"""
+    return f"""[PROMPT_VERSION:{PROMPT_VERSION}]
 你现在是一名精益求精的资深编辑。请针对提供的【问题列表】，对章节内容进行精准局部修正。
 
 【核心修正原则】
@@ -113,13 +120,13 @@ def build_patch_revision_prompt(
    - 禁止新增支线
    - 禁止修改角色核心性格
    - 禁止改变章节节奏结构
-3. 局部操作：只允许修改 issue 涉及段落前后 300 字范围内的内容，禁止重写整章。
+3. anchor 必须逐字复制原文中唯一出现的一段连续文本，长度 20-300 字；禁止概括定位。
 4. 类型驱动修正：每种问题类型对应不同的修改策略：
    - type=consistency / character → 修改角色行为或心理描写，保证人设前后一致
    - type=padding → 替换注水内容为有效情节，而非简单删除
    - type=pacing / tension_gap → 调整段落节奏
    - type=plot_hole → 修补逻辑漏洞
-5. 优先级顺序：严格按照 priority_action 依次处理：must_fix → optional → can_ignore{history_block}
+5. 每个 edit 只处理一个 issue_id；can_ignore 不生成 edit。无法安全局修时把 ID 放入 unresolved_issue_ids。{history_block}
 
 【待修正资料】
 问题列表：
@@ -134,9 +141,16 @@ def build_patch_revision_prompt(
 {_continuity_block(continuity_context, story_bible)}
 
 【输出要求】
-- 直接输出修正后的全文（未修改部分原文保留）。
-- 只改问题段落及其前后衔接，其他内容一字不动。
-- 不用写任何说明或标记。
+- 只输出 JSON，不输出整章正文、Markdown 或说明。
+- replacement 是 anchor 的完整替换文本，需自带前后衔接。
+- 不同 edit 的 anchor 不得重叠。
+
+{{
+  "edits": [
+    {{"issue_id": "", "anchor": "原文唯一连续片段", "replacement": "替换后的完整片段", "rationale": ""}}
+  ],
+  "unresolved_issue_ids": []
+}}
 """
 
 
@@ -155,7 +169,7 @@ def build_refactor_revision_prompt(
         else ""
     )
 
-    return f"""
+    return f"""[PROMPT_VERSION:{PROMPT_VERSION}]
 你现在是一名顶级小说主编。本章存在严重的结构性问题（力量体系崩坏/主线逻辑断裂/大规模 OOC），需要进行全文重构。
 
 【核心修正原则】
@@ -203,9 +217,10 @@ def format_issues_for_prompt(issues: list) -> str:
         fix_text = issue.get("suggested_fix_text", "")
         fix_block = f"\n    修改示例: {fix_text}" if fix_text else ""
         lines.append(
-            f"- {tag}[{issue.get('type', 'unknown')}]({severity}) "
+            f"- {tag}[ID={issue.get('issue_id', '')}][{issue.get('type', 'unknown')}]({severity}) "
             f"{issue.get('location', '')}: "
             f"{issue.get('description', '')} "
+            f"(原文证据: {issue.get('evidence', '')}) "
             f"(建议: {issue.get('suggestion', '')}){fix_block}"
         )
     return "\n".join(lines)
@@ -226,7 +241,7 @@ def build_expansion_prompt(
     story_bible: str = "",
 ) -> str:
     """字数不足时的扩写提示词 — 感官填充 + 逻辑缝合"""
-    return f"""
+    return f"""[PROMPT_VERSION:{PROMPT_VERSION}]
 你现在是一名精益求精的资深编辑。以下章节在修正后字数严重缩水，请对其进行深度扩写。
 
 【扩写原则】
