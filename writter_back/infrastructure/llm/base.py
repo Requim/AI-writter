@@ -1,13 +1,74 @@
 """LLM适配器基类"""
-import logging
-logger = logging.getLogger("uvicorn")
 import json
+import logging
 import re
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 from json_repair import repair_json
 
 from service.ports.llm_service import LLMService
+
+logger = logging.getLogger("uvicorn")
+STRUCTURED_OUTPUT_ATTEMPTS = 3
+
+
+def _matches_schema_type(value: object, expected: str) -> bool:
+    """判断模型字段是否符合轻量 schema 类型。"""
+    if expected == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if expected == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    expected_types = {
+        "object": dict,
+        "array": list,
+        "string": str,
+        "boolean": bool,
+    }
+    expected_type = expected_types.get(expected)
+    return expected_type is None or isinstance(value, expected_type)
+
+
+def _collect_schema_errors(
+    value: object, schema: object, path: str, errors: list[str]
+) -> None:
+    if isinstance(schema, str):
+        if not _matches_schema_type(value, schema):
+            errors.append(f"{path} 应为 {schema}")
+        return
+    if not isinstance(schema, dict):
+        return
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            _collect_schema_errors(item, schema, f"{path}[{index}]", errors)
+        return
+    if not isinstance(value, dict):
+        errors.append(f"{path} 应为 object")
+        return
+    for key, child_schema in schema.items():
+        child_path = f"{path}.{key}" if path else key
+        if key not in value:
+            errors.append(f"{child_path} 缺失")
+            continue
+        _collect_schema_errors(value[key], child_schema, child_path, errors)
+
+
+def structured_result_errors(
+    result: object, schema: Dict[str, Any]
+) -> list[str]:
+    """返回结构化模型结果相对 schema 的字段错误。"""
+    errors: list[str] = []
+    _collect_schema_errors(result, schema, "", errors)
+    return errors
+
+
+def structured_retry_instruction(errors: list[str]) -> str:
+    """生成不携带业务数据的结构化输出纠错提示。"""
+    detail = "；".join(errors[:12]) or "JSON 为空或无法解析"
+    return (
+        "上一次输出不符合要求，请重新输出且只输出完整 JSON。"
+        f"具体问题：{detail}。"
+        "必须包含 schema 的全部字段并保持字段类型正确；压缩说明文字，确保数组、对象完整闭合。"
+    )
 
 
 def _repair_json(raw: str) -> str:

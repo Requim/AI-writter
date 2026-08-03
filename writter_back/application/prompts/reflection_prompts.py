@@ -315,8 +315,18 @@ CHUNK_REFLECTION_SCHEMA = {
     },
 }
 
+RUBRIC_SCHEMA = {
+    "causality": "number",
+    "continuity": "number",
+    "character": "number",
+    "scene_function": "number",
+    "voice": "number",
+    "prose_specificity": "number",
+    "ending_effect": "number",
+}
+
 AGGREGATION_SCHEMA = {
-    "rubric_scores": "object",
+    "rubric_scores": RUBRIC_SCHEMA,
     "hard_failures": "array",
     "word_count_analysis": {
         "total_count": "integer",
@@ -329,7 +339,7 @@ AGGREGATION_SCHEMA = {
 }
 
 REFLECTION_SCHEMA = {
-    "rubric_scores": "object",
+    "rubric_scores": RUBRIC_SCHEMA,
     "hard_failures": "array",
     "word_count_analysis": {
         "total_count": "integer",

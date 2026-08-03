@@ -4,7 +4,13 @@ import logging
 
 import openai
 from typing import Any, AsyncIterator, Dict, List, Optional
-from .base import BaseLLMAdapter, safe_json_parse
+from .base import (
+    STRUCTURED_OUTPUT_ATTEMPTS,
+    BaseLLMAdapter,
+    safe_json_parse,
+    structured_result_errors,
+    structured_retry_instruction,
+)
 
 
 logger = logging.getLogger("uvicorn")
@@ -78,48 +84,35 @@ class OpenAIAdapter(BaseLLMAdapter):
                                  system_prompt: Optional[str] = None,
                                  temperature: float = 0.3,
                                  top_p: float = 1.0) -> Dict[str, Any]:
-        """Stream JSON and retry once when the compatible gateway returns invalid output."""
+        """流式生成 JSON，并自动纠正不完整或类型错误的结果。"""
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
-        best_result: Dict[str, Any] = {}
-        expected_keys = set(schema)
-        for attempt in range(2):
+        retry_errors: list[str] = []
+        for attempt in range(STRUCTURED_OUTPUT_ATTEMPTS):
             request_messages = list(messages)
             if attempt:
                 request_messages.append({
                     "role": "user",
-                    "content": (
-                        "上一次输出不是完整的JSON。请重新输出且只输出JSON；"
-                        "必须包含schema全部顶层字段，压缩说明文字并确保数组和对象完整闭合。"
-                    ),
+                    "content": structured_retry_instruction(retry_errors),
                 })
-            try:
-                raw, finish_reason = await self._stream_structured_response(
-                    request_messages,
-                    temperature=temperature,
-                    top_p=top_p,
-                )
-                result = safe_json_parse(raw)
-                if result:
-                    best_result = result
-                if result and expected_keys.issubset(result):
-                    return result
-                logger.warning(
-                    "【OpenAI结构化输出】结果不完整 | 尝试=%s/2, 长度=%s, finish_reason=%s, 缺少字段=%s",
-                    attempt + 1,
-                    len(raw),
-                    finish_reason or "unknown",
-                    sorted(expected_keys - set(result)),
-                )
-            except Exception:
-                if best_result and attempt:
-                    logger.exception("【OpenAI结构化输出】重试请求失败，使用首次可修复结果")
-                    return best_result
-                raise
-        return best_result
+            raw, finish_reason = await self._stream_structured_response(
+                request_messages,
+                temperature=temperature,
+                top_p=top_p,
+            )
+            result = safe_json_parse(raw)
+            retry_errors = structured_result_errors(result, schema)
+            if not retry_errors:
+                return result
+            logger.warning(
+                "【OpenAI结构化输出】结果不合格 | 尝试=%s/%s, 长度=%s, finish_reason=%s, 问题=%s",
+                attempt + 1, STRUCTURED_OUTPUT_ATTEMPTS, len(raw),
+                finish_reason or "unknown", retry_errors[:12],
+            )
+        return {}
 
     async def _stream_structured_response(
         self,

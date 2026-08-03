@@ -11,7 +11,7 @@ from application.agents.chapter_outline_node import chapter_outline_node
 from application.events import WorkflowEvent
 from application.orchestrator import NovelOrchestrator
 from infrastructure.llm.anthropic_adapter import AnthropicAdapter
-from infrastructure.llm.base import safe_json_parse
+from infrastructure.llm.base import safe_json_parse, structured_result_errors
 from infrastructure.llm.deepseek_adapter import DeepSeekAdapter
 from infrastructure.llm.openai_adapter import OpenAIAdapter
 from service.entities.identity import TenantContext
@@ -61,7 +61,7 @@ class OpenAIRetryStructuredCompletions:
         if self.calls == 1:
             return AsyncChunks([
                 SimpleNamespace(choices=[SimpleNamespace(
-                    delta=SimpleNamespace(content='{\"unexpected\":true}'),
+                    delta=SimpleNamespace(content='{\"title\":123}'),
                     finish_reason="stop",
                 )]),
             ])
@@ -132,6 +132,29 @@ class OpenAINonRetryableStructuredCompletions:
         )
 
 
+class SequentialStructuredCompletions:
+    def __init__(self, contents):
+        self.contents = iter(contents)
+        self.calls = 0
+
+    async def create(self, **_kwargs):
+        self.calls += 1
+        content = next(self.contents)
+        message = SimpleNamespace(content=content)
+        return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+
+class SequentialAnthropicMessages:
+    def __init__(self, contents):
+        self.contents = iter(contents)
+        self.calls = 0
+
+    async def create(self, **_kwargs):
+        self.calls += 1
+        content = SimpleNamespace(text=next(self.contents))
+        return SimpleNamespace(content=[content])
+
+
 class AnthropicStream:
     text_stream = AsyncChunks(["第一", "章"])
 
@@ -172,7 +195,7 @@ async def test_openai_structured_generation_streams_json():
 
 
 @pytest.mark.asyncio
-async def test_openai_structured_generation_retries_missing_schema_keys():
+async def test_openai_structured_generation_retries_wrong_schema_type():
     completions = OpenAIRetryStructuredCompletions()
     adapter = OpenAIAdapter("test-key", "test-model", 1.0)
     adapter.client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
@@ -181,6 +204,52 @@ async def test_openai_structured_generation_retries_missing_schema_keys():
 
     assert result == {"title": "第一章"}
     assert completions.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_deepseek_structured_generation_retries_incomplete_result():
+    completions = SequentialStructuredCompletions([
+        '{"rubric_scores":{"causality":4.2}}',
+        '{"rubric_scores":{"causality":4.2},"issues":[]}',
+    ])
+    adapter = DeepSeekAdapter("test-key", "test-model", 1.0)
+    adapter.client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+
+    result = await adapter.structured_generate(
+        "prompt", {"rubric_scores": {"causality": "number"}, "issues": "array"}
+    )
+
+    assert result["issues"] == []
+    assert completions.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_deepseek_structured_generation_discards_invalid_result():
+    completions = SequentialStructuredCompletions(['{"title":123}'] * 3)
+    adapter = DeepSeekAdapter("test-key", "test-model", 1.0)
+    adapter.client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+
+    result = await adapter.structured_generate("prompt", {"title": "string"})
+
+    assert result == {}
+    assert completions.calls == 3
+
+
+@pytest.mark.asyncio
+async def test_anthropic_structured_generation_retries_incomplete_result():
+    messages = SequentialAnthropicMessages([
+        '{"rubric_scores":{}}',
+        '{"rubric_scores":{"causality":4.2}}',
+    ])
+    adapter = AnthropicAdapter("test-key", "test-model", 1.0)
+    adapter.client = SimpleNamespace(messages=messages)
+
+    result = await adapter.structured_generate(
+        "prompt", {"rubric_scores": {"causality": "number"}}
+    )
+
+    assert result["rubric_scores"]["causality"] == 4.2
+    assert messages.calls == 2
 
 
 @pytest.mark.asyncio
@@ -230,6 +299,17 @@ def test_safe_json_parse_repairs_truncated_reflection_output():
     assert result["passed"] is False
     assert result["overall_quality_score"] == 0.74
     assert result["issues"][0]["type"] == "pacing"
+
+
+def test_structured_result_errors_rejects_nested_missing_and_wrong_types():
+    errors = structured_result_errors(
+        {"rubric_scores": {"causality": "high"}, "issues": {}},
+        {"rubric_scores": {"causality": "number", "voice": "number"}, "issues": "array"},
+    )
+
+    assert "rubric_scores.causality 应为 number" in errors
+    assert "rubric_scores.voice 缺失" in errors
+    assert "issues 应为 array" in errors
 
 
 @pytest.mark.asyncio

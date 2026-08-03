@@ -1,7 +1,17 @@
 """Anthropic适配器"""
+import logging
+
 import anthropic
 from typing import Any, AsyncIterator, Dict, List, Optional
-from .base import BaseLLMAdapter, safe_json_parse
+from .base import (
+    STRUCTURED_OUTPUT_ATTEMPTS,
+    BaseLLMAdapter,
+    safe_json_parse,
+    structured_result_errors,
+    structured_retry_instruction,
+)
+
+logger = logging.getLogger("uvicorn")
 
 
 class AnthropicAdapter(BaseLLMAdapter):
@@ -62,24 +72,34 @@ class AnthropicAdapter(BaseLLMAdapter):
                                  system_prompt: Optional[str] = None,
                                  temperature: float = 0.3,
                                  top_p: float = 1.0) -> Dict[str, Any]:
-        """结构化生成"""
+        """结构化生成，并自动纠正缺字段或类型错误的 JSON。"""
         combined_system = "You must respond with valid JSON matching the requested schema."
         if system_prompt:
             combined_system = f"{system_prompt}\n\n{combined_system}"
 
-        kwargs = {
-            "model": self.model,
-            "max_tokens": 4096,
-            "temperature": temperature,
-            "top_p": top_p,
-            "messages": [{"role": "user", "content": prompt}],
-        }
-        if combined_system:
-            kwargs["system"] = combined_system
-
-        response = await self.client.messages.create(**kwargs)
-        content = response.content[0].text
-        return safe_json_parse(content)
+        messages = [{"role": "user", "content": prompt}]
+        retry_errors: list[str] = []
+        for attempt in range(STRUCTURED_OUTPUT_ATTEMPTS):
+            request_messages = list(messages)
+            if attempt:
+                request_messages.append({
+                    "role": "user",
+                    "content": structured_retry_instruction(retry_errors),
+                })
+            response = await self.client.messages.create(
+                model=self.model, max_tokens=8192, temperature=temperature,
+                top_p=top_p, messages=request_messages, system=combined_system,
+            )
+            content = response.content[0].text or ""
+            result = safe_json_parse(content)
+            retry_errors = structured_result_errors(result, schema)
+            if not retry_errors:
+                return result
+            logger.warning(
+                "【Anthropic结构化输出】结果不合格 | 尝试=%s/%s, 长度=%s, 问题=%s",
+                attempt + 1, STRUCTURED_OUTPUT_ATTEMPTS, len(content), retry_errors[:12],
+            )
+        return {}
 
     async def chat(self, messages: List[Dict[str, str]], temperature: float = 0.7, top_p: float = 1.0) -> str:
         """对话生成"""
