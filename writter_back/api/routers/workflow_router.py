@@ -244,6 +244,15 @@ def _seed_initial_input(input_data: dict[str, Any], novel: Novel) -> None:
         return
     if outline.creative_brief:
         input_data.setdefault("creative_brief", outline.creative_brief)
+    if outline.main_characters:
+        input_data.setdefault(
+            "character_design",
+            {
+                "naming_policy": outline.creative_brief.get("naming_policy", {}),
+                "characters": outline.main_characters,
+                "relationships": [],
+            },
+        )
     if outline.prompt_version:
         input_data.setdefault("prompt_version", outline.prompt_version)
     if outline.story_background and outline.main_plot and outline.volumes:
@@ -281,10 +290,7 @@ async def _prepare_request(
     auto_mode = command.pop("_auto_mode", input_data.pop("_auto_mode", False))
     orchestrator.set_auto_mode(context, thread_id, bool(auto_mode))
     if not is_resume and not is_retry:
-        input_data.setdefault(
-            "workflow_schema_version",
-            3 if settings.WORKFLOW_REVIEW_V3_ENABLED else 2,
-        )
+        input_data.setdefault("workflow_schema_version", 4)
         if novel is not None:
             _seed_initial_input(input_data, novel)
         existing_run_id = await orchestrator.get_workflow_run_id(context, thread_id)

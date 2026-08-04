@@ -3,6 +3,7 @@
 import logging
 from dataclasses import dataclass, field
 
+from application.continuity import build_story_bible
 from application.prompts.chapter_writer_prompts import (
     CHAPTER_WRITER_TEMPERATURE,
     build_chapter_system_prompt,
@@ -29,6 +30,7 @@ class SceneQueueContext:
     chapter_index: int
     previous_tail: str = ""
     story_bible: str = ""
+    total_outline: dict = field(default_factory=dict)
     targets: list[int] = field(default_factory=list)
     contents: list[str] = field(default_factory=list)
     ledger: list[dict] = field(default_factory=list)
@@ -92,6 +94,15 @@ def _calibrate_target(previous_count: int, previous_target: int, target: int) ->
 
 def _scene_prompt(context: SceneQueueContext, index: int, target: int) -> tuple[str, int]:
     outline = context.chapter_outline
+    related = {
+        "pov_character": outline.get("pov_character", ""),
+        "scene": context.scenes[index],
+    }
+    story_bible = (
+        build_story_bible(context.total_outline, related_context=related)
+        if context.total_outline
+        else context.story_bible
+    )
     common = {
         "scene": context.scenes[index], "chapter_outline": outline,
         "novel_type": context.novel_type, "title": context.title,
@@ -103,7 +114,7 @@ def _scene_prompt(context: SceneQueueContext, index: int, target: int) -> tuple[
     if index == 0:
         return build_first_scene_prompt(
             **common, target_words=target, memory_context=context.memory_context,
-            prev_chapter_tail=context.previous_tail, story_bible=context.story_bible,
+            prev_chapter_tail=context.previous_tail, story_bible=story_bible,
         ), target
     previous_target = context.ledger[-1].get("target_character_count", context.targets[index - 1])
     adjusted, note = _calibrate_target(len(context.contents[-1]), previous_target, target)
@@ -111,7 +122,7 @@ def _scene_prompt(context: SceneQueueContext, index: int, target: int) -> tuple[
         **common, scene_index=index + 1,
         prev_scene_digest=build_previous_scene_digest(context.scenes[index - 1], context.contents[-1]),
         prev_word_count=len(context.contents[-1]), correction_note=note,
-        memory_context=context.memory_context, story_bible=context.story_bible,
+        memory_context=context.memory_context, story_bible=story_bible,
         scene_ledger=context.ledger, target_words=adjusted,
     ), adjusted
 

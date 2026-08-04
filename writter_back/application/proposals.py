@@ -11,6 +11,7 @@ from application.schemas.agent_state import NovelAgentState, PendingProposal
 
 PROPOSAL_KINDS = {
     "creative_brief",
+    "character_design",
     "title",
     "summary",
     "outline",
@@ -56,7 +57,7 @@ def proposal_update(
 ) -> dict[str, Any]:
     """返回写入 checkpoint 所需的标准状态更新。"""
     proposal, versions = create_proposal(state, kind, payload, chapter_number)
-    schema_version = int(state.get("workflow_schema_version") or 3)
+    schema_version = max(4, int(state.get("workflow_schema_version") or 4))
     return {
         "pending_proposal": proposal,
         "proposal_versions": versions,

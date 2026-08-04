@@ -56,6 +56,12 @@ def _resolve_choice(choice: Any, candidates: list[dict[str, Any]]) -> dict[str, 
     return {"title": fallback["title"], "hint": str(fallback.get("hint", ""))}
 
 
+def _confirmed_characters(state: NovelAgentState) -> list[dict[str, Any]]:
+    design = state.get("character_design")
+    characters = design.get("characters") if isinstance(design, dict) else []
+    return characters if isinstance(characters, list) else []
+
+
 async def title_generator_node(
     state: NovelAgentState, config: RunnableConfig
 ) -> Command[Literal["summary_node", "title_review_node", "metadata_persist_node"]]:
@@ -72,7 +78,11 @@ async def title_generator_node(
         "title_node",
     )
     result = await llm.structured_generate(
-        build_title_prompt(state.get("novel_type", ""), state.get("creative_brief")),
+        build_title_prompt(
+            state.get("novel_type", ""),
+            state.get("creative_brief"),
+            _confirmed_characters(state),
+        ),
         TITLE_CANDIDATES_SCHEMA,
         temperature=TITLE_TEMPERATURE,
         top_p=TITLE_TOP_P,

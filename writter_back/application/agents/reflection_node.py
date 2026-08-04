@@ -9,7 +9,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
-from application.continuity import build_story_bible
+from application.continuity import build_story_bible, related_character_cards
 from application.errors import QualityGateReviewRequired, RetryableWorkflowError
 from application.prompts.reflection_prompts import (
     AGGREGATION_SCHEMA,
@@ -18,6 +18,7 @@ from application.prompts.reflection_prompts import (
     build_aggregation_prompt,
     build_chunk_reflection_prompt,
     build_reflection_prompt,
+    build_score_contract,
     split_into_chunks,
 )
 from application.prompts.version import PROMPT_VERSION
@@ -42,15 +43,6 @@ RUBRIC_FIELDS = (
     "prose_specificity", "ending_effect",
 )
 SUPPORTED_SCORE_SCALES = {5, 10, 100}
-REVIEW_SCORE_CONTRACT = """
-【评分契约】
-- causality、continuity、character、scene_function、voice、prose_specificity、ending_effect
-  七项必须全部使用 0-5 的 JSON 数值，禁止百分制、十分制、字符串或混合量纲。
-- score_scale 必须是 JSON 整数 5，用于声明七项评分采用同一量纲。
-- 合法示例：{"causality": 4.2, "continuity": 3.8, "character": 4.0,
-  "scene_function": 3.6, "voice": 4.1, "prose_specificity": 3.9,
-  "ending_effect": 4.3, "score_scale": 5}。
-"""
 
 
 def _normalize_issues(value: object) -> list[dict]:
@@ -330,14 +322,14 @@ async def _review_content(
         prompt = build_reflection_prompt(
             content, context["chapter_outline"], context["main_characters"],
             context["memory_context"], len(content), context["story_bible"], previous,
-        ) + REVIEW_SCORE_CONTRACT
+        ) + build_score_contract()
         result = await _generate_valid_review(llm, prompt, REFLECTION_SCHEMA)
     else:
         chunks = await _review_chunks(llm, content, context)
         prompt = build_aggregation_prompt(
             chunks, content, context["chapter_outline"], context["main_characters"],
             context["memory_context"], len(content), context["story_bible"], previous,
-        ) + REVIEW_SCORE_CONTRACT
+        ) + build_score_contract()
         result = await _generate_valid_review(llm, prompt, AGGREGATION_SCHEMA)
         result["issues"] = _merge_issues(result.get("issues"), chunks)
     return result
@@ -464,11 +456,12 @@ def _review_context(state: NovelAgentState) -> tuple[str, dict[str, Any]]:
         except ValueError:
             total_raw = {}
     total = total_raw if isinstance(total_raw, dict) else {}
+    related = {"chapter_outline": outline, "chapter_content": content}
     context = {
         "chapter_outline": outline,
-        "main_characters": total.get("main_characters", []),
+        "main_characters": related_character_cards(total, related),
         "memory_context": state.get("memory_context", ""),
-        "story_bible": build_story_bible(total),
+        "story_bible": build_story_bible(total, related_context=related),
     }
     return content, context
 

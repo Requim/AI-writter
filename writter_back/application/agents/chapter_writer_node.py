@@ -50,6 +50,7 @@ class ChapterDraftContext:
     story_bible: str
     chapter_index: int
     previous_tail: str
+    total_outline: dict
 
 
 async def _final_word_check(
@@ -88,14 +89,17 @@ async def _get_prev_chapter_tail(
 def _draft_context(state: NovelAgentState, previous_tail: str) -> ChapterDraftContext:
     outline = (state.get("chapter_outlines") or [{}])[-1]
     total = state.get("total_outline")
+    outline = outline if isinstance(outline, dict) else {}
+    total = total if isinstance(total, dict) else {}
     return ChapterDraftContext(
-        outline=outline if isinstance(outline, dict) else {},
+        outline=outline,
         novel_type=str(state.get("novel_type") or ""),
         title=str(state.get("title") or ""),
         memory_context=str(state.get("memory_context") or ""),
-        story_bible=build_story_bible(total if isinstance(total, dict) else {}),
+        story_bible=build_story_bible(total, related_context=outline),
         chapter_index=state.get("current_chapter_index", 0),
         previous_tail=previous_tail,
+        total_outline=total,
     )
 
 
@@ -134,6 +138,7 @@ async def _generate_draft(
             memory_context=context.memory_context, llm=llm,
             chapter_index=context.chapter_index, previous_tail=context.previous_tail,
             story_bible=context.story_bible,
+            total_outline=context.total_outline,
         )
         return await generate_scene_queue(queue)
     return await _conservative_generate(context, llm), []

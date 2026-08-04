@@ -11,6 +11,8 @@ const briefLabels: Array<[string, string]> = [
   ['核心设想', 'core_premise'], ['主角驱动力', 'protagonist_drive'], ['核心冲突', 'core_conflict'],
   ['主题命题', 'theme_question'], ['读者体验', 'reader_promise'], ['基调', 'tone'],
   ['原创锚点', 'originality_anchor'], ['内容边界', 'content_boundaries'],
+  ['时代与地域', 'setting_context'], ['命名偏好', 'naming_preference'],
+  ['文风指纹', 'style_fingerprint'], ['母题契约', 'trope_contract'],
 ]
 
 export function CreativeBriefReview({ interrupt }: ReviewProps) {

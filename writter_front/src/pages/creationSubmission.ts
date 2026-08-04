@@ -7,22 +7,35 @@ export interface CreationForm {
   core_premise?: string
   reader_promise?: string
   content_boundaries?: string
+  setting_era?: string
+  setting_region?: string
+  naming_preference?: string
   total_chapters: number
   writing_style?: string
 }
 
-export function buildCreationSubmission(values: CreationForm) {
-  const title = values.title?.trim() || undefined
-  const summary = values.summary?.trim() || undefined
-  const writingStyle = values.writing_style?.trim() || undefined
-  const corePremise = values.core_premise?.trim() || undefined
-  const readerPromise = values.reader_promise?.trim() || undefined
-  const contentBoundaries = values.content_boundaries?.trim() || undefined
-  const creativeBrief = {
-    ...(corePremise ? { core_premise: corePremise } : {}),
-    ...(readerPromise ? { reader_promise: readerPromise } : {}),
-    ...(contentBoundaries ? { content_boundaries: contentBoundaries } : {}),
+function trimmed(value?: string): string | undefined {
+  return value?.trim() || undefined
+}
+
+function creativeBriefFrom(values: CreationForm) {
+  const era = trimmed(values.setting_era)
+  const region = trimmed(values.setting_region)
+  const settingContext = { ...(era ? { era } : {}), ...(region ? { region } : {}) }
+  return {
+    ...(trimmed(values.core_premise) ? { core_premise: trimmed(values.core_premise) } : {}),
+    ...(trimmed(values.reader_promise) ? { reader_promise: trimmed(values.reader_promise) } : {}),
+    ...(trimmed(values.content_boundaries) ? { content_boundaries: trimmed(values.content_boundaries) } : {}),
+    ...(Object.keys(settingContext).length ? { setting_context: settingContext } : {}),
+    ...(trimmed(values.naming_preference) ? { naming_preference: trimmed(values.naming_preference) } : {}),
   }
+}
+
+export function buildCreationSubmission(values: CreationForm) {
+  const title = trimmed(values.title)
+  const summary = trimmed(values.summary)
+  const writingStyle = trimmed(values.writing_style)
+  const creativeBrief = creativeBriefFrom(values)
   const hasCreativeBrief = Object.keys(creativeBrief).length > 0
   const payload: NovelCreateRequest = {
     novel_type: values.novel_type,

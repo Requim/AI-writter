@@ -1,4 +1,6 @@
-import type { InterruptInfo, JsonValue, PendingProposal, TitleSuggestion } from '@/types/novel'
+import type {
+  CharacterDesignProposal, InterruptInfo, JsonValue, PendingProposal, TitleSuggestion,
+} from '@/types/novel'
 
 export type JsonRecord = Record<string, JsonValue>
 
@@ -27,6 +29,14 @@ export function outlineFrom(interrupt: InterruptInfo): JsonRecord | undefined {
   const payload = proposalPayload(interrupt)
   const direct = ['outline', 'chapter_outline'].includes(proposal?.kind ?? '') ? payload : undefined
   return asRecord(payload?.outline) || direct || interrupt.ai_generated_outline
+}
+
+export function characterDesignFrom(interrupt: InterruptInfo): CharacterDesignProposal | undefined {
+  const payload = proposalPayload(interrupt)
+  const source = interrupt.action === 'review_or_modify_character_design'
+    ? payload || interrupt.ai_generated_character_design : undefined
+  if (!source || !Array.isArray(source.core_roles)) return undefined
+  return source as unknown as CharacterDesignProposal
 }
 
 export function titleCandidates(interrupt: InterruptInfo): TitleSuggestion[] {

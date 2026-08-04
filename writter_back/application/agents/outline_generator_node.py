@@ -6,6 +6,7 @@ from typing import Any, Literal
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
 
+from application.character_design import backfill_character_design
 from application.prompts.outline_prompts import (
     OUTLINE_SCHEMA,
     build_outline_prompt,
@@ -78,7 +79,14 @@ def _prepare_outline(state: NovelAgentState, generated: dict[str, Any]) -> dict[
     planning_summary = state.get("editorial_summary") or state.get("summary", "")
     if planning_summary:
         outline["source_summary"] = planning_summary
-    outline["creative_brief"] = state.get("creative_brief") or {}
+    design = state.get("character_design") if isinstance(state.get("character_design"), dict) else {}
+    characters = design.get("characters") if isinstance(design.get("characters"), list) else []
+    if characters:
+        outline["main_characters"] = characters
+    brief = dict(state.get("creative_brief") or {})
+    if isinstance(design.get("naming_policy"), dict):
+        brief["naming_policy"] = design["naming_policy"]
+    outline["creative_brief"] = brief
     outline["prompt_version"] = PROMPT_VERSION
     try:
         outline["total_chapters"] = int(outline.get("total_chapters", 0))
@@ -104,16 +112,55 @@ def _reuse_existing_outline(
         "creative_brief", {}
     )
     enriched["prompt_version"] = PROMPT_VERSION
+    design = backfill_character_design(
+        enriched.get("main_characters"),
+        enriched.get("creative_brief", {}).get("naming_policy", {}),
+    )
     return Command(
         goto="persist_node",
-        update={"total_outline": enriched, "__next_node__": "progress_check_node"},
+        update={
+            "total_outline": enriched, "character_design": design,
+            "__next_node__": "progress_check_node",
+        },
     )
+
+
+def _needs_character_design(state: NovelAgentState) -> bool:
+    design = state.get("character_design")
+    return not isinstance(design, dict) or not design.get("characters")
+
+
+async def _generate_outline_proposal(
+    state: NovelAgentState, config: RunnableConfig, title: str,
+) -> dict[str, Any]:
+    llm = config["configurable"].get("llm_config", {}).get("llm_instance")
+    if not llm:
+        raise RuntimeError("宏观总纲生成失败：LLM 不可用")
+    emit_workflow_event(
+        "status", {"status": "started", "message": "正在生成宏观总纲提案"},
+        "outline_node",
+    )
+    design = state.get("character_design") or {}
+    planning_summary = state.get("editorial_summary") or state.get("summary", "")
+    generated = await llm.structured_generate(
+        prompt=build_outline_prompt(
+            state.get("novel_type", ""), title, planning_summary,
+            target_total_chapters=state.get("target_total_chapters"),
+            requested_writing_style=state.get("requested_writing_style"),
+            creative_brief=state.get("creative_brief"),
+            main_characters=design.get("characters", []),
+        ),
+        schema=OUTLINE_SCHEMA, temperature=0.75, top_p=0.9,
+    )
+    if not generated:
+        raise RuntimeError("宏观总纲生成失败：模型未返回有效 JSON")
+    return generated
 
 
 async def outline_generator_node(
     state: NovelAgentState,
     config: RunnableConfig,
-) -> Command[Literal["persist_node", "outline_review_node"]]:
+) -> Command[Literal["character_design_node", "persist_node", "outline_review_node"]]:
     """生成宏观总纲并保存提案，不执行人工审核。"""
     title = state.get("title", "")
     if proposal_matches(state, "outline"):
@@ -122,29 +169,12 @@ async def outline_generator_node(
     if existing_command:
         logger.info("【宏观总纲节点】跳过 | 使用已有总纲并补齐创作简报")
         return existing_command
-    llm = config["configurable"].get("llm_config", {}).get("llm_instance")
-    if not llm:
-        raise RuntimeError("宏观总纲生成失败：LLM 不可用")
-    emit_workflow_event(
-        "status", {"status": "started", "message": "正在生成宏观总纲提案"},
-        "outline_node",
-    )
-    planning_summary = state.get("editorial_summary") or state.get("summary", "")
-    generated = await llm.structured_generate(
-        prompt=build_outline_prompt(
-            state.get("novel_type", ""),
-            title,
-            planning_summary,
-            target_total_chapters=state.get("target_total_chapters"),
-            requested_writing_style=state.get("requested_writing_style"),
-            creative_brief=state.get("creative_brief"),
-        ),
-        schema=OUTLINE_SCHEMA,
-        temperature=0.75,
-        top_p=0.9,
-    )
-    if not generated:
-        raise RuntimeError("宏观总纲生成失败：模型未返回有效 JSON")
+    if _needs_character_design(state):
+        return Command(
+            goto="character_design_node",
+            update={"character_design_return_to": "outline_node"},
+        )
+    generated = await _generate_outline_proposal(state, config, title)
     ai_outline = _prepare_outline(state, generated)
     if config["configurable"].get("auto_mode", False):
         return Command(

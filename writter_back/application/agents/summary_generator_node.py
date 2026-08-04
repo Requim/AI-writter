@@ -33,6 +33,12 @@ def _normalize_summary(value: Any) -> dict[str, str]:
     return {"reader_blurb": reader, "editorial_brief": editorial or reader}
 
 
+def _confirmed_characters(state: NovelAgentState) -> list[dict[str, Any]]:
+    design = state.get("character_design")
+    characters = design.get("characters") if isinstance(design, dict) else []
+    return characters if isinstance(characters, list) else []
+
+
 def _accept_summary(summary: dict[str, str]) -> Command:
     if not summary["reader_blurb"] or not summary["editorial_brief"]:
         raise RuntimeError("简介生成失败：简介内容不完整")
@@ -71,6 +77,7 @@ async def summary_generator_node(
             state.get("title") or "",
             state.get("title_story_hint") or "",
             state.get("creative_brief"),
+            _confirmed_characters(state),
         ),
         SUMMARY_SCHEMA,
         temperature=SUMMARY_TEMPERATURE,

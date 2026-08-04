@@ -281,7 +281,8 @@ async def revision_node(
     total = state.get("total_outline", {})
     total = total if isinstance(total, dict) else {}
     context = state.get("memory_context", "")
-    bible = build_story_bible(total)
+    related = {"chapter_outline": outline, "chapter_content": content}
+    bible = build_story_bible(total, related_context=related)
     gate_mode = (state.get("quality_gate", {}) or {}).get("decision")
     mode = gate_mode if gate_mode in {"patch", "refactor"} else classify_revision_mode(state.get("reflection_issues", []))
     if mode == "patch" and not decision.get("instructions"):

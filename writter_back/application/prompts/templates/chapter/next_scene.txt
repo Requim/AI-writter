@@ -1,0 +1,44 @@
+[PROMPT_VERSION:$PROMPT_VERSION]
+请接续上文，撰写第$chapter_num章的下一个场景（场景$scene_index/$total_scenes）。
+
+【基本信息】
+小说类型：$novel_type
+书名：$title
+章节标题：$chapter_title
+当前场景：场景$scene_index（共$total_scenes个）
+本场景目标字数：$target_words字
+
+【上一场景核心脉要与落点氛围】
+$previous_digest
+
+【已完成场景账本（均为正文已落地事实）】
+$ledger
+
+【静态故事圣经（不可违背）】
+$story_bible
+
+【本章状态契约与剩余义务】
+$contract
+
+【本场景细纲】
+$scene_block
+
+【本章主角心理轨迹】
+$internal_monologue
+
+【本章伏笔与悬念】
+- 需回收的伏笔（Callback）：$callback
+- 待埋设的新矛盾（Setup）：$setup
+- 根据场景账本判断尚未履行的 turn、price_paid 和 state_delta，不得重复已完成事件。
+
+【前文衔接】
+（前文记忆分层：<S层故事状态> | <M层近期章节> | <L层历史章节摘录>）
+$memory_context$correction
+
+$writing_principles
+
+【输出要求】
+- 直接输出正文，不要写“场景$scene_index”等标签。
+- 本场景目标字数约 $target_words 字。
+- 与上一场景自然衔接，禁止重复上一场景已经确认的信息。
+- 字数可上下浮动，但不超过目标字数的 120%。

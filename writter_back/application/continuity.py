@@ -20,6 +20,15 @@ _SECTION_WEIGHTS = {
     "M层近期章节": 0.31,
     "L层历史章节摘录": 0.15,
 }
+_CHARACTER_NAME_KEYS = ("name", "姓名", "character_name", "角色名")
+_CHARACTER_ROLE_KEYS = (
+    "role_type",
+    "role",
+    "identity",
+    "身份",
+    "角色定位",
+    "定位",
+)
 
 
 def compact_text(text: str, budget: int, *, tail_ratio: float = 0.35) -> str:
@@ -73,23 +82,104 @@ def extract_story_state(memory_context: str) -> str:
     return split_memory_sections(memory_context).get("S层故事状态", "")
 
 
-def build_story_bible(total_outline: dict[str, Any], max_chars: int = 3200) -> str:
-    """Create a stable, deterministic canon block from the macro outline."""
-    bible = {
+def _character_value(character: dict[str, Any], keys: tuple[str, ...]) -> str:
+    profile = character.get("profile")
+    sources = (character, profile) if isinstance(profile, dict) else (character,)
+    for source in sources:
+        for key in keys:
+            value = str(source.get(key) or "").strip()
+            if value:
+                return value
+    return ""
+
+
+def _main_characters(total_outline: dict[str, Any]) -> list[dict[str, Any]]:
+    characters = total_outline.get("main_characters", [])
+    if not isinstance(characters, list):
+        return []
+    return [item for item in characters if isinstance(item, dict)]
+
+
+def related_character_cards(
+    total_outline: dict[str, Any], related_context: Any
+) -> list[dict[str, Any]]:
+    """返回在当前场景、细纲或正文中被提及的完整角色卡。"""
+    characters = _main_characters(total_outline)
+    if not related_context:
+        return []
+    context_text = json.dumps(related_context, ensure_ascii=False, default=str)
+    return [
+        character
+        for character in characters
+        if (name := _character_value(character, _CHARACTER_NAME_KEYS))
+        and name in context_text
+    ]
+
+
+def _global_story_rules(total_outline: dict[str, Any]) -> dict[str, Any]:
+    return {
         "source_title": total_outline.get("source_title", ""),
         "source_summary": total_outline.get("source_summary", ""),
         "creative_brief": total_outline.get("creative_brief", {}),
         "world_rules": total_outline.get("story_background", ""),
-        "main_characters": total_outline.get("main_characters", []),
         "main_plot": total_outline.get("main_plot", {}),
         "writing_style": total_outline.get("writing_style", ""),
         "prompt_version": total_outline.get("prompt_version", ""),
     }
-    return compact_text(
-        json.dumps(bible, ensure_ascii=False, indent=2),
-        max_chars,
+
+
+def _character_index(
+    characters: list[dict[str, Any]], active_ids: set[int]
+) -> str:
+    lines = []
+    for character in characters:
+        if id(character) in active_ids:
+            continue
+        name = _character_value(character, _CHARACTER_NAME_KEYS) or "未命名角色"
+        role = _character_value(character, _CHARACTER_ROLE_KEYS) or "未标注身份"
+        lines.append(f"- {name} | {role}")
+    return "\n".join(lines) or "无"
+
+
+def build_story_bible(
+    total_outline: dict[str, Any],
+    max_chars: int = 3200,
+    *,
+    related_context: Any = None,
+) -> str:
+    """按全局规则、相关角色完整卡和其他角色索引构建正史上下文。"""
+    characters = _main_characters(total_outline)
+    active = related_character_cards(total_outline, related_context)
+    active_text = json.dumps(active, ensure_ascii=False, indent=2) if active else "无"
+    index_text = _character_index(characters, {id(item) for item in active})
+    fixed_size = len(active_text) + len(index_text) + 80
+    global_budget = max(400, max_chars - fixed_size)
+    global_text = compact_text(
+        json.dumps(_global_story_rules(total_outline), ensure_ascii=False, indent=2),
+        global_budget,
         tail_ratio=0.25,
     )
+    return (
+        f"<全局规则>\n{global_text}\n\n"
+        f"<当前场景角色卡>\n{active_text}\n\n"
+        f"<其他角色索引>\n{index_text}"
+    )
+
+
+def compact_story_bible(story_bible: str, budget: int) -> str:
+    """仅压缩全局规则，保证角色卡和角色索引不会从中间被截断。"""
+    clean = str(story_bible or "").strip()
+    if not clean or len(clean) <= budget:
+        return clean
+    sections = split_memory_sections(clean)
+    active = sections.get("当前场景角色卡")
+    index = sections.get("其他角色索引")
+    if active is None or index is None:
+        return compact_text(clean, budget, tail_ratio=0.25)
+    fixed = f"<当前场景角色卡>\n{active}\n\n<其他角色索引>\n{index}"
+    global_budget = max(0, budget - len(fixed) - len("<全局规则>\n\n\n"))
+    global_rules = compact_text(sections.get("全局规则", ""), global_budget)
+    return f"<全局规则>\n{global_rules or '无'}\n\n{fixed}"
 
 
 def rolling_plan_covers(plan: Any, chapter_number: int) -> bool:

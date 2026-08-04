@@ -9,6 +9,10 @@ class Outline:
     story_background: str = ""                    # 故事背景设定
     main_characters: List[Dict[str, Any]] = field(default_factory=list)  # 主要人物
     main_plot: Dict[str, Any] = field(default_factory=dict)             # 主线剧情
+    antagonist_plan: str = ""                    # 对手主动计划
+    truth_reveal_ladder: List[Dict[str, Any]] = field(default_factory=list)  # 真相揭示阶梯
+    cost_curve: List[Dict[str, Any]] = field(default_factory=list)      # 代价升级曲线
+    relationship_turns: List[Dict[str, Any]] = field(default_factory=list)  # 关系转折
     chapters: List[Dict[str, Any]] = field(default_factory=list)        # 章节规划
     writing_style: str = ""                       # 写作风格指导
     total_chapters: int = 0                       # 总章节数

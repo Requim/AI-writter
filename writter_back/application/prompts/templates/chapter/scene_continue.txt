@@ -1,0 +1,14 @@
+[PROMPT_VERSION:$PROMPT_VERSION]
+$correction_note
+当前场景内容字数 $word_count，目标 $target_words 字，字数不足。请从已有结尾继续扩展本场景。
+
+$writing_principles
+
+【续写边界】
+1. 只补全尚未完成的行动、反制、信息增量与不可逆代价。
+2. 不增加纯环境描写、重复情绪、闲聊或规则复述来凑字数。
+3. 让新增段落改变人物策略、关系或局势。
+4. 保证新增内容与既有结尾自然衔接，不改写已有正文。
+
+已有内容（结尾部分）：
+$existing_tail

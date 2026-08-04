@@ -1,0 +1,8 @@
+
+【评分契约】
+- causality、continuity、character、scene_function、voice、prose_specificity、ending_effect
+  七项必须全部使用 0-5 的 JSON 数值，禁止百分制、十分制、字符串或混合量纲。
+- score_scale 必须是 JSON 整数 5，用于声明七项评分采用同一量纲。
+- 合法示例：{"causality": 4.2, "continuity": 3.8, "character": 4.0,
+  "scene_function": 3.6, "voice": 4.1, "prose_specificity": 3.9,
+  "ending_effect": 4.3, "score_scale": 5}。

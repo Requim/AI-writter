@@ -139,10 +139,14 @@ async def _assert_review_cycle(generator, reviewer, state, expected_goto: str) -
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("generator", "reviewer", "state", "expected_goto"), [
-    (creative_brief_node, creative_brief_review_node, {"novel_type": "suspense"}, "title_node"),
+    (creative_brief_node, creative_brief_review_node, {"novel_type": "suspense"}, "character_design_node"),
     (title_generator_node, title_review_node, {"novel_type": "suspense", "creative_brief": _creative_brief()}, "metadata_persist_node"),
     (summary_generator_node, summary_review_node, {"novel_type": "suspense", "title": "雨夜回信", "creative_brief": _creative_brief()}, "metadata_persist_node"),
-    (outline_generator_node, outline_review_node, {"novel_type": "suspense", "title": "雨夜回信", "summary": "读者简介", "editorial_summary": "规划简介", "creative_brief": _creative_brief()}, "persist_node"),
+    (outline_generator_node, outline_review_node, {
+        "novel_type": "suspense", "title": "雨夜回信", "summary": "读者简介",
+        "editorial_summary": "规划简介", "creative_brief": _creative_brief(),
+        "character_design": {"characters": _macro_outline()["main_characters"]},
+    }, "persist_node"),
     (chapter_outline_node, chapter_outline_review_node, {"novel_type": "suspense", "title": "雨夜回信", "total_outline": _macro_outline(), "current_chapter_index": 0}, "router_agent"),
 ])
 async def test_each_review_accepts_without_regeneration(

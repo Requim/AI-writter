@@ -1,0 +1,64 @@
+[PROMPT_VERSION:$PROMPT_VERSION]
+请根据以下信息生成小说的宏观总纲。这里只规划全书结构，不生成逐章列表；
+每一章的详细细纲会在后续工作流中按章生成。
+
+【基础信息】
+类型：$novel_type
+书名：$title
+简介：$summary
+
+【创作简报（最高优先级）】
+$creative_brief
+
+【角色设计】
+$main_characters
+$character_requirement
+
+【用户设定优先级】
+- 书名和简介是用户确认的正史事实，不是供改写的灵感素材；创作简报与已确认角色同样属于正史约束。
+- 已提供角色时，不得修改其姓名、身份、目标、限制、道德红线、语言指纹和关系。
+- 简介较短时只能围绕已有事实扩展，不得替换主角、关系、题材或另起故事。
+- 后续世界设定、主线和分卷必须能直接追溯到简介、创作简报与角色设计。
+- 每卷冲突升级必须持续兑现 reader_promise，并从不同角度逼问 theme_question。
+
+【总纲要求】
+1. story_background（600-1000字）：世界规则、核心限制或力量代价、主要势力、社会矛盾和故事导火索。
+2. main_characters：$character_requirement
+3. main_plot：使用“起、承、转、合”描述全书主线、关键反转和最终收束。
+4. antagonist_plan：写清对手如何主动推进目标、调整策略，以及计划与主角目标为何不能同时成立。
+5. truth_reveal_ladder：按顺序列出真相揭示阶梯，每一步写明证据、误导与认知变化。
+6. cost_curve：写清主角每阶段付出的关系、资源、身份或道德代价，必须逐步升级且不可轻易复原。
+7. relationship_turns：列出核心关系的关键转折、触发行动与不可逆后果。
+8. writing_style（150-300字）：$style_requirement
+9. total_chapters：$chapter_requirement
+10. volumes：规划 4-6 卷，连续覆盖第1章到 total_chapters。每卷包含 volume_name、volume_number、start_chapter、end_chapter、core_conflict、main_character_arc、climax_event、next_volume_hook。
+
+【重要边界】
+- 禁止输出 chapters 字段或逐章事件列表。
+- 总纲只负责全局约束和分卷方向，当前章节细纲由后续节点结合前文记忆生成。
+- 输出必须是一个完整、可解析的 JSON 对象，不要使用 Markdown 代码块。
+
+【JSON格式】
+{
+  "story_background": "...",
+  "main_characters": $main_characters_json,
+  "main_plot": {"起": "", "承": "", "转": "", "合": ""},
+  "antagonist_plan": "...",
+  "truth_reveal_ladder": [{"stage": 1, "evidence": "", "misdirection": "", "knowledge_delta": ""}],
+  "cost_curve": [{"stage": 1, "cost": "", "irreversible_effect": ""}],
+  "relationship_turns": [{"characters": [], "trigger": "", "before": "", "after": ""}],
+  "writing_style": "...",
+  "total_chapters": 150,
+  "volumes": [
+    {
+      "volume_name": "第一卷 ...",
+      "volume_number": 1,
+      "start_chapter": 1,
+      "end_chapter": 30,
+      "core_conflict": "...",
+      "main_character_arc": "...",
+      "climax_event": "...",
+      "next_volume_hook": "..."
+    }
+  ]
+}

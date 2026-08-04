@@ -1,0 +1,13 @@
+[PROMPT_VERSION:$PROMPT_VERSION]
+当前章节内容字数 $word_count，不足 3000 字。请从已有结尾继续扩展内容。
+
+$writing_principles
+
+【续写边界】
+1. 补齐尚未完成的行动、反制、转折与代价。
+2. 用新信息或人物选择扩展，不重复既有情绪和结论。
+3. 保持 POV 知识边界与角色声音。
+4. 让新增内容导向既定 state_delta 和 ending_mode，不改写已有正文。
+
+已有内容（结尾部分）：
+$existing_tail

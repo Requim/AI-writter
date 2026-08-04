@@ -2,7 +2,8 @@ import type { WorkflowViewState } from '@/hooks/useWorkflowStream'
 
 export const nodeLabels: Record<string, string> = {
   type_confirmation: '确认题材', creative_brief_node: '凝练创作简报',
-  creative_brief_review_node: '审阅创作简报', title_node: '推敲书名',
+  creative_brief_review_node: '审阅创作简报', character_design_node: '设计核心角色',
+  character_design_review_node: '审阅角色设计', title_node: '推敲书名',
   title_review_node: '选择书名', summary_node: '撰写简介', summary_review_node: '审阅简介',
   outline_node: '搭建总纲', outline_review_node: '审阅总纲', memory_retrieval_node: '检索前文',
   chapter_outline_node: '设计细纲', chapter_outline_review_node: '细纲待审阅',
@@ -14,7 +15,8 @@ export const nodeLabels: Record<string, string> = {
 
 export const nodeDescriptions: Record<string, string> = {
   type_confirmation: '正在确认作品题材和基础约束。', creative_brief_node: '正在明确故事母题、核心冲突与读者体验。',
-  creative_brief_review_node: '创作简报已经生成，正在等待你的决定。', title_node: '正在生成或确认小说名称。',
+  creative_brief_review_node: '创作简报已经生成，正在等待你的决定。', character_design_node: '正在设计人物动机、关系与典故姓名。',
+  character_design_review_node: '角色与姓名候选已经生成，正在等待你的决定。', title_node: '正在生成或确认小说名称。',
   title_review_node: '书名候选已经生成，正在等待你的选择。', summary_node: '正在整理故事简介与内部策划摘要。',
   summary_review_node: '简介提案已经生成，正在等待你的决定。', outline_node: '正在构建世界观、角色、主线和分卷结构。',
   outline_review_node: '全书总纲已经生成，正在等待你的审阅。', memory_retrieval_node: '正在读取前文章节和人物状态。',
@@ -52,6 +54,7 @@ export function chapterNumberFromState(state: WorkflowViewState): number | undef
 
 const reviewNodes: Record<string, string> = {
   review_or_modify_creative_brief: 'creative_brief_review_node',
+  review_or_modify_character_design: 'character_design_review_node',
   confirm_or_provide_title: 'title_review_node', confirm_or_provide_summary: 'summary_review_node',
   review_or_modify_outline: 'outline_review_node', review_or_provide_chapter_outline: 'chapter_outline_review_node',
   review_reflection_issues: 'reflection_review_node', quality_gate_exhausted: 'reflection_review_node',

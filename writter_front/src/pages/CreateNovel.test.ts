@@ -10,6 +10,9 @@ describe('buildCreationSubmission', () => {
       core_premise: ' 两位旧友因一封迟到十年的信重逢 ',
       reader_promise: ' 克制的情感拉扯与逐层揭晓的旧事 ',
       content_boundaries: ' 不使用失忆梗 ',
+      setting_era: ' 1990 年代末 ',
+      setting_region: ' 江南县城 ',
+      naming_preference: ' 参考《诗经》，清雅但不生僻 ',
       total_chapters: 36,
       writing_style: ' 幽默诙谐 ',
     })
@@ -25,6 +28,8 @@ describe('buildCreationSubmission', () => {
           core_premise: '两位旧友因一封迟到十年的信重逢',
           reader_promise: '克制的情感拉扯与逐层揭晓的旧事',
           content_boundaries: '不使用失忆梗',
+          setting_context: { era: '1990 年代末', region: '江南县城' },
+          naming_preference: '参考《诗经》，清雅但不生僻',
         },
       },
     })
@@ -38,6 +43,8 @@ describe('buildCreationSubmission', () => {
         core_premise: '两位旧友因一封迟到十年的信重逢',
         reader_promise: '克制的情感拉扯与逐层揭晓的旧事',
         content_boundaries: '不使用失忆梗',
+        setting_context: { era: '1990 年代末', region: '江南县城' },
+        naming_preference: '参考《诗经》，清雅但不生僻',
       },
     })
   })
@@ -50,6 +57,9 @@ describe('buildCreationSubmission', () => {
       core_premise: ' ',
       reader_promise: '',
       content_boundaries: '   ',
+      setting_era: ' ',
+      setting_region: '',
+      naming_preference: '   ',
       total_chapters: 12,
       writing_style: ' ',
     })

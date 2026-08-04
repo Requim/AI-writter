@@ -4,6 +4,10 @@ from application.agents.creative_brief_node import (
     creative_brief_node,
     creative_brief_review_node,
 )
+from application.agents.character_design_node import (
+    character_design_node,
+    character_design_review_node,
+)
 from application.agents.title_generator_node import title_generator_node, title_review_node
 from application.agents.summary_generator_node import (
     summary_generator_node,
@@ -31,6 +35,8 @@ __all__ = [
     "type_confirmation_node",
     "creative_brief_node",
     "creative_brief_review_node",
+    "character_design_node",
+    "character_design_review_node",
     "title_generator_node",
     "title_review_node",
     "summary_generator_node",

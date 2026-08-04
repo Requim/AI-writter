@@ -3,9 +3,47 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { WorkflowPanel } from './WorkflowPanel'
 import type { WorkflowViewState } from '@/hooks/useWorkflowStream'
+import type { InterruptInfo } from '@/types/novel'
 
 
 afterEach(cleanup)
+
+function nameCandidate(id: string, name: string, source: string) {
+  return {
+    candidate_id: id, name, surname: name[0], given_name: name.slice(1), source_id: `source-${id}`,
+    source_title: source, source_quote: '有美一人，清扬婉兮。', meaning: '眉目清朗，品性坦荡。',
+    pinyin: 'qīng yáng', role_fit: '与人物克制而坚定的行动方式相合。',
+  }
+}
+
+function characterDesignInterrupt(): InterruptInfo {
+  return {
+    action: 'review_or_modify_character_design', proposal_id: 'proposal-characters',
+    proposal: { proposal_id: 'proposal-characters', kind: 'character_design', version: 1, payload: {
+      naming_policy: { source_scope: ['诗经', '楚辞'] },
+      core_roles: [{
+        character_id: 'lead-m', role_type: 'male_lead',
+        profile: { identity: '县报记者', external_goal: '查清旧案' },
+        name_candidates: [nameCandidate('m-1', '江清扬', '《诗经·野有蔓草》'), nameCandidate('m-2', '周既白', '《诗经·烝民》'), nameCandidate('m-3', '许维桢', '《诗经·文王》')],
+        recommended_candidate_id: 'm-1',
+      }, {
+        character_id: 'lead-f', role_type: 'female_lead',
+        profile: { identity: '档案管理员', external_goal: '守住母亲留下的秘密' },
+        name_candidates: [nameCandidate('f-1', '陶静姝', '《诗经·静女》'), nameCandidate('f-2', '宋攸宁', '《诗经·斯干》'), nameCandidate('f-3', '程令仪', '《诗经·湛露》')],
+        recommended_candidate_id: 'f-1',
+      }],
+      supporting_characters: [{ character_id: 'support-1', name: '闻绍庭', role_type: 'antagonist', profile: {}, name_origin: 'classical' }],
+      relationships: [{ from: 'lead-m', to: 'lead-f', relation: '旧识' }],
+    } },
+  }
+}
+
+function renderCharacterReview(onResume: (value: unknown) => void) {
+  render(<WorkflowPanel state={{
+    status: 'paused', connection: 'idle', draft: '', activeNode: 'character_design_review_node', issues: [], events: [],
+    interrupt: characterDesignInterrupt(),
+  }} autoMode={false} onResume={onResume} onRetry={vi.fn()} onCancel={vi.fn()} onRefresh={vi.fn()} />)
+}
 
 describe('WorkflowPanel creative brief', () => {
   it('shows the generated creative brief for manual confirmation', () => {
@@ -45,6 +83,35 @@ describe('WorkflowPanel creative brief', () => {
     expect(screen.getByText('查清妹妹失踪的真相。')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '确认创作简报' }))
     expect(onResume).toHaveBeenCalledWith(brief)
+  })
+})
+
+describe('WorkflowPanel character design', () => {
+  it('shows verified name context and accepts untouched recommendations', () => {
+    const onResume = vi.fn()
+    renderCharacterReview(onResume)
+    expect(screen.getByText('《诗经·野有蔓草》')).toBeInTheDocument()
+    expect(screen.getAllByText('有美一人，清扬婉兮。').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('与人物克制而坚定的行动方式相合。').length).toBeGreaterThan(0)
+    fireEvent.click(screen.getByRole('button', { name: '确认角色设计' }))
+    expect(onResume).toHaveBeenCalledWith({ proposal_id: 'proposal-characters', decision: 'accept' })
+  })
+
+  it('submits changed candidates, custom names, and regeneration feedback', () => {
+    const onResume = vi.fn()
+    renderCharacterReview(onResume)
+    fireEvent.click(screen.getByRole('radio', { name: /周既白/ }))
+    fireEvent.change(screen.getByRole('textbox', { name: '女主角自定义姓名' }), { target: { value: '梁知夏' } })
+    fireEvent.click(screen.getByRole('button', { name: '确认角色设计' }))
+    expect(onResume).toHaveBeenCalledWith({
+      proposal_id: 'proposal-characters', decision: 'modify',
+      value: { name_selections: { 'lead-m': 'm-2' }, custom_names: { 'lead-f': '梁知夏' } },
+    })
+    fireEvent.change(screen.getByPlaceholderText('输入具体修改要求'), { target: { value: '男主姓名更朴素，避免生僻字' } })
+    fireEvent.click(screen.getByRole('button', { name: '按要求修订' }))
+    expect(onResume).toHaveBeenLastCalledWith({
+      proposal_id: 'proposal-characters', decision: 'regenerate', feedback: '男主姓名更朴素，避免生僻字',
+    })
   })
 })
 

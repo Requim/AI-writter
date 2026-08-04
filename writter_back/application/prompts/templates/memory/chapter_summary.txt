@@ -1,0 +1,15 @@
+[PROMPT_VERSION:$PROMPT_VERSION]
+请用250字以内概括以下完整章节。
+必须覆盖：关键因果链、人物状态变化、获得或失去的信息或物品、已回收与新埋伏笔，以及结尾最后动作和下一章压力。禁止只概括开头。
+同时提取本章的 POV、主要地点、冲突手段、转折类型、ending_mode 与高频意象，供最近五章模式去重使用。
+
+章节标题：$chapter_title
+章节内容：$chapter_content
+只输出 JSON：
+{
+  "summary": "章节摘要",
+  "narrative_pattern": {
+    "pov": "", "locations": [], "conflict_method": "", "turn_type": "",
+    "ending_mode": "", "motifs": []
+  }
+}

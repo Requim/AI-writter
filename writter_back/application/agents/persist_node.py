@@ -1,272 +1,250 @@
-"""持久化节点 - 章节阶段写 chapters 表，设定阶段直接放行"""
+"""持久化节点：保存小说设定或单章内容与连续性状态。"""
+
+from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime
+from typing import Any, Literal
+from uuid import UUID, uuid4
 
-logger = logging.getLogger("uvicorn")
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
-from typing import Literal
-from uuid import uuid4, UUID
-from datetime import datetime
-from application.schemas.agent_state import NovelAgentState
+
 from application.continuity import extract_story_state
-from application.streaming import emit_workflow_event
 from application.prompts.memory_prompts import (
+    CHAPTER_SUMMARY_SCHEMA,
+    CHAPTER_SUMMARY_TEMPERATURE,
+    STORY_STATE_SCHEMA,
+    STORY_STATE_TEMPERATURE,
     build_chapter_summary_prompt,
     build_story_state_prompt,
-    CHAPTER_SUMMARY_TEMPERATURE,
-    CHAPTER_SUMMARY_SCHEMA,
-    STORY_STATE_TEMPERATURE,
-    STORY_STATE_SCHEMA,
 )
+from application.schemas.agent_state import NovelAgentState
+from application.streaming import emit_workflow_event
+from service.entities.chapter import Chapter
+from service.value_objects.outline import Outline
+from service.value_objects.progress import Progress
+
+logger = logging.getLogger("uvicorn")
+OUTLINE_FIELDS = frozenset({
+    "story_background", "main_characters", "main_plot", "antagonist_plan",
+    "truth_reveal_ladder", "cost_curve", "relationship_turns", "chapters",
+    "writing_style", "total_chapters", "volumes", "creative_brief", "prompt_version",
+})
+STORY_STATE_FIELDS = {
+    "timeline", "characters", "open_conflicts", "foreshadowing",
+    "immutable_facts", "last_transition",
+}
 
 
-async def persist_node(
-    state: NovelAgentState, config: RunnableConfig
-) -> Command[Literal["progress_check_node"]]:
-    repository = config["configurable"].get("novel_repository")
-    memory_service = config["configurable"].get("memory_service")
-    novel_id = config["configurable"].get("novel_id", "")
-    tenant_id = config["configurable"].get("tenant_id", "")
-    current_index = state.get("current_chapter_index", 0)
-    current_chapter_content = state.get("current_chapter_content", "")
+def _outline_value(raw: Any) -> tuple[Outline | None, int]:
+    if not isinstance(raw, dict):
+        return None, 0
+    filtered = {key: value for key, value in raw.items() if key in OUTLINE_FIELDS}
+    try:
+        outline = Outline(**filtered)
+        total = int(raw.get("total_chapters", 0) or 0)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("小说设定保存失败：宏观总纲格式无效") from exc
+    return outline, total
 
-    # 没有章节内容 = 设定阶段（刚走完 outline_node），同步 title/summary/outline 到 novels 表
-    if not current_chapter_content:
-        logger.info(f"{'=' * 60}")
-        logger.info(f"【持久化节点】进入 | novel_id={novel_id}, 阶段=设定")
-        if repository and novel_id:
-            novel = await repository.find_by_id(tenant_id, novel_id)
-            if novel is None:
-                raise RuntimeError("小说设定保存失败：目标小说不存在")
-            title_val = state.get("title")
-            summary_val = state.get("summary")
-            outline_raw = state.get("total_outline")
-            updated = False
-            total_ch = 0
-            if title_val:
-                novel.title = title_val
-                updated = True
-            if summary_val:
-                novel.summary = summary_val
-                updated = True
-            if isinstance(outline_raw, dict):
-                from service.value_objects.outline import Outline
 
-                outline_fields = {
-                    "story_background",
-                    "main_characters",
-                    "main_plot",
-                    "chapters",
-                    "writing_style",
-                    "total_chapters",
-                    "volumes",
-                    "creative_brief",
-                    "prompt_version",
-                }
-                filtered = {k: v for k, v in outline_raw.items() if k in outline_fields}
-                try:
-                    novel.total_outline = Outline(**filtered)
-                except Exception as exc:
-                    raise RuntimeError("小说设定保存失败：宏观总纲格式无效") from exc
-                total_ch = int(outline_raw.get("total_chapters", 0) or 0)
-                updated = True
-            if total_ch and novel.progress:
-                old_progress = (
-                    novel.progress.to_dict()
-                    if hasattr(novel.progress, "to_dict")
-                    else {}
-                )
-                old_progress["total_chapters"] = total_ch
-                from service.value_objects.progress import Progress
+async def _persist_setup(
+    state: NovelAgentState, repository: Any, tenant_id: str, novel_id: str,
+) -> None:
+    if not repository or not novel_id:
+        return
+    novel = await repository.find_by_id(tenant_id, novel_id)
+    if novel is None:
+        raise RuntimeError("小说设定保存失败：目标小说不存在")
+    updated = False
+    if state.get("title"):
+        novel.title = state["title"]
+        updated = True
+    if state.get("summary"):
+        novel.summary = state["summary"]
+        updated = True
+    outline, total = _outline_value(state.get("total_outline"))
+    if outline is not None:
+        novel.total_outline = outline
+        updated = True
+    if total and novel.progress:
+        progress_data = novel.progress.to_dict() if hasattr(novel.progress, "to_dict") else {}
+        progress_data["total_chapters"] = total
+        novel.progress = Progress(**progress_data)
+        updated = True
+    if updated:
+        await repository.update(tenant_id, novel)
+        logger.info("【持久化节点】novels 表已更新 | title=%s, total_chapters=%s", novel.title, total)
 
-                novel.progress = Progress(**old_progress)
-                updated = True
-            if updated:
-                await repository.update(tenant_id, novel)
-                logger.info(
-                    "【持久化节点】novels 表已更新 | title=%s, total_chapters=%s",
-                    novel.title,
-                    total_ch,
-                )
-        logger.info("【持久化节点】完成 -> 进度检查节点")
-        logger.info(f"{'=' * 60}")
-        return Command(goto="progress_check_node")
 
-    # ==================== 章节阶段：保存章节 + 进度 ====================
-    current_chapter_content = state.get("current_chapter_content", "")
-    chapter_outline = (
-        state.get("chapter_outlines", [{}])[-1] if state.get("chapter_outlines") else {}
-    )
-
-    chapter_id = str(uuid4())
-    completed_chapter = {
-        "id": chapter_id,
-        "chapter_index": current_index,
-        "title": chapter_outline.get("title", f"第{current_index + 1}章"),
-        "content": current_chapter_content,
-        "word_count": len(current_chapter_content),
-        "outline": chapter_outline,
-        "status": "completed",
+def _completed_chapter(state: NovelAgentState, content: str, index: int) -> dict[str, Any]:
+    outlines = state.get("chapter_outlines") or []
+    outline = outlines[-1] if outlines and isinstance(outlines[-1], dict) else {}
+    return {
+        "id": str(uuid4()), "chapter_index": index,
+        "title": outline.get("title", f"第{index + 1}章"), "content": content,
+        "word_count": len(content), "outline": outline, "status": "completed",
     }
 
-    total_outline_raw = state.get("total_outline")
-    if isinstance(total_outline_raw, str):
-        import json as _json
 
+def _total_chapters(value: Any) -> int:
+    if isinstance(value, str):
         try:
-            total_outline_raw = _json.loads(total_outline_raw)
-        except Exception:
-            total_outline_raw = {}
-    total_chapters = (
-        total_outline_raw.get("total_chapters", 0)
-        if isinstance(total_outline_raw, dict)
-        else 0
+            value = json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return 0
+    return int(value.get("total_chapters", 0) or 0) if isinstance(value, dict) else 0
+
+
+def _progress(index: int, total: int) -> tuple[int, float, bool]:
+    completed = index + 1
+    percentage = completed / total * 100 if total > 0 else 0
+    return completed, percentage, completed >= total if total else False
+
+
+def _chapter_entity(chapter: dict[str, Any], novel_id: str) -> Chapter:
+    now = datetime.now()
+    return Chapter(
+        id=UUID(chapter["id"]), novel_id=UUID(novel_id),
+        chapter_index=chapter["chapter_index"], title=chapter["title"],
+        outline=chapter["outline"], content=chapter["content"],
+        word_count=chapter["word_count"], status="completed", created_at=now, updated_at=now,
     )
-    completed_count = current_index + 1
-    new_percentage = (
-        (completed_count / total_chapters * 100) if total_chapters > 0 else 0
+
+
+async def _generate_summary(llm: Any, chapter: dict[str, Any]) -> str:
+    prompt = build_chapter_summary_prompt(chapter["title"], chapter["content"])
+    for _attempt in range(2):
+        generated = await llm.structured_generate(
+            prompt=prompt, schema=CHAPTER_SUMMARY_SCHEMA,
+            temperature=CHAPTER_SUMMARY_TEMPERATURE,
+        )
+        value = generated.get("summary") if isinstance(generated, dict) else None
+        summary = value.strip() if isinstance(value, str) else ""
+        if summary:
+            return summary
+    raise RuntimeError("章节保存失败：章节摘要生成结果为空")
+
+
+def _previous_patterns(previous_state: str) -> list[dict[str, Any]]:
+    try:
+        parsed = json.loads(previous_state) if previous_state else {}
+    except (json.JSONDecodeError, TypeError):
+        return []
+    values = parsed.get("recent_narrative_patterns", []) if isinstance(parsed, dict) else []
+    return [dict(item) for item in values if isinstance(item, dict)]
+
+
+def _recent_patterns(
+    previous_state: str, generated: dict[str, Any], outline: dict[str, Any], index: int,
+) -> list[dict[str, Any]]:
+    values = generated.get("recent_narrative_patterns")
+    patterns = [dict(item) for item in values if isinstance(item, dict)] if isinstance(values, list) else []
+    if not patterns:
+        patterns = _previous_patterns(previous_state)
+    current = outline.get("narrative_pattern")
+    if isinstance(current, dict) and current:
+        patterns = [item for item in patterns if item.get("chapter_number") != index + 1]
+        patterns.append({"chapter_number": index + 1, **current})
+    return patterns[-5:]
+
+
+async def _generate_story_state(
+    llm: Any, chapter: dict[str, Any], previous: str, index: int,
+) -> dict[str, Any]:
+    prompt = build_story_state_prompt(
+        index, chapter["title"], chapter["content"], previous_state=previous,
+        chapter_outline=chapter["outline"],
     )
-    is_completed = completed_count >= total_chapters if total_chapters else False
-
-    if repository and novel_id:
-        from service.entities.chapter import Chapter
-        from service.value_objects.progress import Progress
-
-        chapter_entity = Chapter(
-            id=UUID(chapter_id),
-            novel_id=UUID(novel_id),
-            chapter_index=current_index,
-            title=completed_chapter["title"],
-            outline=chapter_outline,
-            content=current_chapter_content,
-            word_count=completed_chapter["word_count"],
-            status="completed",
-            created_at=datetime.now(),
-            updated_at=datetime.now(),
+    for _attempt in range(2):
+        generated = await llm.structured_generate(
+            prompt=prompt, schema=STORY_STATE_SCHEMA, temperature=STORY_STATE_TEMPERATURE,
         )
-        if memory_service is None:
-            raise RuntimeError("章节保存失败：记忆服务不可用")
-
-        memory_content, memory_metadata = memory_service.build_chapter_memory(
-            completed_chapter
-        )
-        progress = Progress(
-            current_chapter=completed_count,
-            total_chapters=total_chapters,
-            percentage=new_percentage,
-            status="completed" if is_completed else "writing",
-        )
-        llm_config = config["configurable"].get("llm_config", {})
-        llm_instance = llm_config.get("llm_instance")
-        if llm_instance is None:
-            raise RuntimeError("章节保存失败：无法生成连续性记忆")
-
-        summary = ""
-        summary_prompt = build_chapter_summary_prompt(
-            completed_chapter["title"], current_chapter_content
-        )
-        for _attempt in range(2):
-            generated_summary = await llm_instance.structured_generate(
-                prompt=summary_prompt,
-                schema=CHAPTER_SUMMARY_SCHEMA,
-                temperature=CHAPTER_SUMMARY_TEMPERATURE,
+        if isinstance(generated, dict) and STORY_STATE_FIELDS.issubset(generated):
+            generated["recent_narrative_patterns"] = _recent_patterns(
+                previous, generated, chapter["outline"], index,
             )
-            summary_value = (
-                generated_summary.get("summary")
-                if isinstance(generated_summary, dict)
-                else None
-            )
-            summary = summary_value.strip() if isinstance(summary_value, str) else ""
-            if summary:
-                break
-        if not summary:
-            raise RuntimeError("章节保存失败：章节摘要生成结果为空")
+            generated["updated_through_chapter"] = index + 1
+            return generated
+    raise RuntimeError("章节保存失败：累计故事状态生成结果无效")
 
-        previous_story_state = extract_story_state(state.get("memory_context", ""))
-        state_prompt = build_story_state_prompt(
-            current_index,
-            completed_chapter["title"],
-            current_chapter_content,
-            previous_state=previous_story_state,
-            chapter_outline=chapter_outline,
-        )
-        story_state_data: dict = {}
-        required_story_state_fields = {
-            "timeline",
-            "characters",
-            "open_conflicts",
-            "foreshadowing",
-            "immutable_facts",
-            "last_transition",
-        }
-        for _attempt in range(2):
-            generated_state = await llm_instance.structured_generate(
-                prompt=state_prompt,
-                schema=STORY_STATE_SCHEMA,
-                temperature=STORY_STATE_TEMPERATURE,
-            )
-            if isinstance(
-                generated_state, dict
-            ) and required_story_state_fields.issubset(generated_state):
-                story_state_data = generated_state
-                break
-        if not story_state_data:
-            raise RuntimeError("章节保存失败：累计故事状态生成结果无效")
-        story_state_data["updated_through_chapter"] = current_index + 1
 
-        rolling_plan = chapter_outline.get("rolling_plan", [])
-        await repository.replace_chapter(
-            tenant_id,
-            novel_id,
-            chapter_entity,
-            memory_content,
-            memory_metadata,
-            progress,
-            chapter_summary=summary[:1200],
-            story_state=json.dumps(story_state_data, ensure_ascii=False),
-            rolling_plan=(
-                json.dumps(rolling_plan, ensure_ascii=False) if rolling_plan else None
-            ),
-            discard_following=bool(
-                config["configurable"].get("discard_following_chapters", False)
-            ),
-        )
-        emit_workflow_event(
-            "chapter_persisted",
-            {
-                "chapter_id": chapter_id,
-                "chapter_index": current_index,
-                "current_chapter": completed_count,
-                "percentage": new_percentage,
-                "is_completed": is_completed,
-            },
-            "persist_node",
-        )
-        logger.info(
-            "【持久化节点】章节、摘要、累计状态、滚动规划和进度已原子保存 | ch=%s, title=%s",
-            current_index,
-            completed_chapter["title"],
-        )
-
-    logger.info(
-        f"【持久化节点】完成 -> 进度检查节点 | {new_percentage:.1f}%, 完结={'是' if is_completed else '否'}"
+async def _persist_chapter(
+    state: NovelAgentState, config: RunnableConfig, chapter: dict[str, Any],
+    completed_count: int, percentage: float, is_completed: bool,
+) -> None:
+    values = config["configurable"]
+    repository = values.get("novel_repository")
+    novel_id, tenant_id = values.get("novel_id", ""), values.get("tenant_id", "")
+    if not repository or not novel_id:
+        return
+    memory_service = values.get("memory_service")
+    if memory_service is None:
+        raise RuntimeError("章节保存失败：记忆服务不可用")
+    llm = values.get("llm_config", {}).get("llm_instance")
+    if llm is None:
+        raise RuntimeError("章节保存失败：无法生成连续性记忆")
+    memory_content, memory_metadata = memory_service.build_chapter_memory(chapter)
+    summary = await _generate_summary(llm, chapter)
+    previous = extract_story_state(state.get("memory_context", ""))
+    story_state = await _generate_story_state(llm, chapter, previous, chapter["chapter_index"])
+    rolling_plan = chapter["outline"].get("rolling_plan", [])
+    progress = Progress(
+        current_chapter=completed_count, total_chapters=_total_chapters(state.get("total_outline")),
+        percentage=percentage, status="completed" if is_completed else "writing",
     )
-    logger.info(f"{'=' * 60}")
+    await repository.replace_chapter(
+        tenant_id, novel_id, _chapter_entity(chapter, novel_id), memory_content,
+        memory_metadata, progress, chapter_summary=summary[:1200],
+        story_state=json.dumps(story_state, ensure_ascii=False),
+        rolling_plan=json.dumps(rolling_plan, ensure_ascii=False) if rolling_plan else None,
+        discard_following=bool(values.get("discard_following_chapters", False)),
+    )
+
+
+def _writing_command(
+    chapter: dict[str, Any], percentage: float, is_completed: bool,
+) -> Command[Literal["progress_check_node"]]:
     return Command(
         goto="progress_check_node",
         update={
-            "completed_chapters": [completed_chapter],
-            "progress_percentage": new_percentage,
+            "completed_chapters": [chapter], "progress_percentage": percentage,
             "is_completed": is_completed,
-            "current_chapter_index": current_index + 1,
-            # 清理临时状态，防止下一章路由误判
-            "current_chapter_content": "",
-            "reflection_issues": [],
-            "user_decision": {},
-            "memory_context": "",
-            "scene_ledger": [],
-            "revision_history": [],
+            "current_chapter_index": chapter["chapter_index"] + 1,
+            "current_chapter_content": "", "reflection_issues": [], "user_decision": {},
+            "memory_context": "", "scene_ledger": [], "revision_history": [],
         },
     )
+
+
+async def persist_node(
+    state: NovelAgentState, config: RunnableConfig,
+) -> Command[Literal["progress_check_node"]]:
+    """按当前是否存在章节正文选择设定或章节持久化路径。"""
+    values = config["configurable"]
+    content = str(state.get("current_chapter_content") or "")
+    if not content:
+        await _persist_setup(
+            state, values.get("novel_repository"), values.get("tenant_id", ""),
+            values.get("novel_id", ""),
+        )
+        return Command(goto="progress_check_node")
+    index = int(state.get("current_chapter_index", 0) or 0)
+    chapter = _completed_chapter(state, content, index)
+    completed, percentage, is_completed = _progress(
+        index, _total_chapters(state.get("total_outline")),
+    )
+    await _persist_chapter(state, config, chapter, completed, percentage, is_completed)
+    emit_workflow_event(
+        "chapter_persisted",
+        {
+            "chapter_id": chapter["id"], "chapter_index": index,
+            "current_chapter": completed, "percentage": percentage,
+            "is_completed": is_completed,
+        },
+        "persist_node",
+    )
+    logger.info("【持久化节点】章节与连续性状态已保存 | ch=%s, title=%s", index, chapter["title"])
+    return _writing_command(chapter, percentage, is_completed)

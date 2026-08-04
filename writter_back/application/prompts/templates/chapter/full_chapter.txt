@@ -1,0 +1,36 @@
+[PROMPT_VERSION:$PROMPT_VERSION]
+请根据以下深度细纲，撰写第$chapter_number章正文内容。
+
+【基本信息】
+小说类型：$novel_type
+书名：$title
+章节标题：$chapter_title
+字数分配参考：$word_distribution
+本章目标字数：约 $target_words 字；不得超过目标的 115%，禁止注水。
+
+【细纲数据】
+$scenes
+
+【静态故事圣经（不可违背）】
+$story_bible
+
+【本章状态契约】
+$contract
+
+【主角心理轨迹】
+$internal_monologue
+
+【伏笔与悬念】
+- 本章需自然回收的伏笔（Callback）：$callback
+- 由本章行动后果埋下的新矛盾（Setup）：$setup
+
+【前文衔接】
+（前文记忆分层：<S层故事状态> | <M层近期章节> | <L层历史章节摘录>）
+$memory_context$previous_tail
+
+$writing_principles
+
+【输出要求】
+- 直接输出正文，不要写“场景1”“第1步”等标签。
+- 字数严格控制在 3000-7000 字之间。
+- 结尾准确兑现状态契约中的 ending_mode，并呈现人物行动造成的后果；不得额外添加与契约无关的强行断章。

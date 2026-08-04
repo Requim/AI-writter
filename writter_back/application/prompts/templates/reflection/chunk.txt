@@ -1,0 +1,47 @@
+[PROMPT_VERSION:$PROMPT_VERSION]
+你正在检查小说章节的第 $chunk_number/$total_chunks 块（字符位置 $chunk_start-$chunk_end）。请只针对看到的内容做局部审核。
+
+【审核范围（仅限本块）】
+1. 人物一致性：行为、能力边界和语言是否符合人物卡。
+2. 信息密度：是否有不改变行动、信息、关系或情绪理解的注水段落。
+3. 叙事节奏：推进是否过快、过慢或重复确认同一结论。
+4. 局部逻辑：本块内部是否前后矛盾。
+5. AI 痕迹：套话、重复微动作、声音同质化、潜台词解释与抽象总结。
+
+$editorial_checks
+
+【严重等级与优先级】
+- low / can_ignore：笔误、标点或不影响叙事的轻微风格问题。
+- medium / optional：局部场景功能、节奏或表达问题。
+- high / must_fix：有原文证据的人设崩塌、因果硬伤、知识越界或严重注水。
+
+【输入数据】
+待检查段落：
+$chunk_text
+
+章节细纲：
+$chapter_outline
+
+总纲人物志：
+$main_characters
+
+前文上下文：
+$memory_context
+
+静态故事圣经：
+$story_bible
+
+只输出 JSON：
+{
+  "issues": [{
+    "type": "consistency|character|padding|pacing|plot_hole|voice|cliche",
+    "issue_id": "留空，由服务端生成",
+    "severity": "low|medium|high",
+    "priority_action": "must_fix|optional|can_ignore",
+    "issue_resolved": false,
+    "location": "本块中的具体段落描述",
+    "description": "问题的具体描述",
+    "evidence": "原文中可精确查找的连续原句（20-120字）",
+    "suggestion": "修改建议"
+  }]
+}

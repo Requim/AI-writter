@@ -3,7 +3,7 @@
 import json
 from typing import Any
 
-from application.prompts.version import PROMPT_VERSION
+from application.prompts.template_loader import render_prompt
 
 
 CREATIVE_BRIEF_SCHEMA = {
@@ -14,18 +14,33 @@ CREATIVE_BRIEF_SCHEMA = {
     "reader_promise": "string",
     "tone": "string",
     "originality_anchor": "string",
+    "setting_context": "object",
+    "naming_preference": "string",
+    "style_fingerprint": "string",
+    "trope_contract": "object",
     "content_boundaries": "array",
 }
 
-_REQUIRED_TEXT_FIELDS = tuple(
-    field for field, field_type in CREATIVE_BRIEF_SCHEMA.items() if field_type == "string"
+_REQUIRED_TEXT_FIELDS = (
+    "core_premise",
+    "protagonist_drive",
+    "core_conflict",
+    "theme_question",
+    "reader_promise",
+    "tone",
+    "originality_anchor",
 )
+_OPTIONAL_TEXT_FIELDS = ("naming_preference", "style_fingerprint")
+_OBJECT_FIELDS = ("setting_context", "trope_contract")
 
 
 def normalize_creative_brief(value: Any) -> dict[str, Any]:
     """Normalize model or user input into the stable creative-brief contract."""
     raw = value if isinstance(value, dict) else {}
-    brief = {field: str(raw.get(field, "") or "").strip() for field in _REQUIRED_TEXT_FIELDS}
+    text_fields = (*_REQUIRED_TEXT_FIELDS, *_OPTIONAL_TEXT_FIELDS)
+    brief = {field: str(raw.get(field, "") or "").strip() for field in text_fields}
+    for field in _OBJECT_FIELDS:
+        brief[field] = raw.get(field, {}) if isinstance(raw.get(field), dict) else {}
     boundaries = raw.get("content_boundaries", [])
     if isinstance(boundaries, str):
         boundaries = [item.strip() for item in boundaries.split("；") if item.strip()]
@@ -61,6 +76,10 @@ def build_legacy_creative_brief(
             "reader_promise": f"持续兑现{novel_type}类型的冲突、变化与情绪回报",
             "tone": style or "遵循既有正文风格",
             "originality_anchor": background[:240] or premise,
+            "setting_context": {},
+            "naming_preference": "服从时代、地域和家庭背景",
+            "style_fingerprint": style or "遵循既有正文风格",
+            "trope_contract": {},
             "content_boundaries": [],
         }
     )
@@ -76,25 +95,11 @@ def build_creative_brief_prompt(
     """Build the premise-first contract used by all downstream prompts."""
     seed_json = json.dumps(seed or {}, ensure_ascii=False, indent=2)
     feedback_block = f"\n【本次修改要求】\n{feedback}" if feedback else ""
-    return f"""[PROMPT_VERSION:{PROMPT_VERSION}]
-你是一名小说总策划。请先建立可供整条创作链复用的“创作简报”，不要写书名、简介或正文。
-
-【已有输入】
-类型：{novel_type}
-暂定书名：{title or "未提供"}
-用户简介：{summary or "未提供"}
-用户创作意图：
-{seed_json}{feedback_block}
-
-【约束】
-1. 用户已提供的书名、简介和创作意图是正史约束，只能补全，不能替换。
-2. core_premise 用一句话表达“谁因什么异常处境，不得不做什么，否则失去什么”。
-3. protagonist_drive 写清外在欲望、内在缺口和不能退出的理由。
-4. core_conflict 必须是双方目标无法同时成立的冲突，不得只写氛围或题材。
-5. theme_question 只提出贯穿全书的价值问题，不提前给答案。
-6. reader_promise 写明读者将持续获得的类型快感、情绪体验和升级方式。
-7. originality_anchor 给出一个可反复参与剧情的独特机制或关系，不用空泛标签。
-8. tone 描述叙事视角、距离、节奏、句式、意象和对话潜台词倾向。
-9. content_boundaries 列出用户要求避开的内容；没有则为空数组。
-
-只输出与给定 schema 对应的 JSON 对象，不要 Markdown、解释或备选方案。"""
+    return render_prompt(
+        "creative_brief/brief.txt",
+        novel_type=novel_type,
+        title=title or "未提供",
+        summary=summary or "未提供",
+        seed_json=seed_json,
+        feedback_block=feedback_block,
+    )

@@ -6,6 +6,7 @@ import {
   ChapterOutlineReview, CreativeBriefReview, MacroOutlineReview, QualityReview,
   RevisionReview, SummaryReview, TitleReview,
 } from './ReviewContents'
+import { CharacterDesignReview } from './CharacterDesignReview'
 import { outlineFrom, proposalPayload, titleCandidates } from './valueHelpers'
 
 interface Props {
@@ -45,6 +46,7 @@ function decisionValue(interrupt: InterruptInfo, decision: Decision, value?: unk
 
 function primaryLabel(action: string): string {
   if (action === 'review_or_modify_creative_brief') return '确认创作简报'
+  if (action === 'review_or_modify_character_design') return '确认角色设计'
   if (action === 'review_or_provide_chapter_outline') return '使用细纲，生成正文'
   if (action === 'review_reflection_issues') return '接受本章'
   if (action === 'ready_for_next_chapter') return '生成下一章'
@@ -94,7 +96,8 @@ function InstructionEditor({ interrupt, onResume }: InstructionProps) {
   const submit = () => {
     const text = instruction.trim()
     if (!text) return
-    const command = interrupt.action === 'review_or_modify_creative_brief'
+    const regenerate = ['review_or_modify_creative_brief', 'review_or_modify_character_design'].includes(interrupt.action)
+    const command = regenerate
       ? proposalDecision(interrupt, 'regenerate', undefined, text)
       : proposalDecision(interrupt, 'modify', text)
     onResume(command || text)
@@ -121,15 +124,20 @@ export function WorkflowReview({ interrupt, autoMode, onResume }: Props) {
   const humanReview = ['quality_gate_exhausted', 'quality_gate_human_review', 'quality_review_unavailable'].includes(interrupt.action)
   if (autoMode && !humanReview) return null
   const selectTitle = (item: TitleSuggestion) => onResume(decisionValue(interrupt, 'modify', item))
+  const characterDesign = interrupt.action === 'review_or_modify_character_design'
+  const confirmCharacters = (value?: unknown) => onResume(decisionValue(interrupt, value ? 'modify' : 'accept', value))
+  const regenerateCharacters = () => onResume(decisionValue(interrupt, 'regenerate'))
   const canInstruct = !['ready_for_next_chapter', 'require_novel_type'].includes(interrupt.action)
   return <section className="interrupt-block">
     <div className="interrupt-title"><PauseCircleOutlined /> 需要你的决定</div>
     <p>{interrupt.message || '请审阅当前结果后继续。'}</p>
-    {reviewContent(interrupt, selectTitle)}
-    {interrupt.action === 'quality_review_unavailable'
+    {characterDesign
+      ? <CharacterDesignReview key={proposalIdentity(interrupt)} interrupt={interrupt} onConfirm={confirmCharacters} onRegenerate={regenerateCharacters} />
+      : reviewContent(interrupt, selectTitle)}
+    {!characterDesign && (interrupt.action === 'quality_review_unavailable'
       ? <UnavailableActions interrupt={interrupt} onResume={onResume} />
       : humanReview ? <QualityActions interrupt={interrupt} onResume={onResume} />
-      : <StandardActions interrupt={interrupt} onResume={onResume} />}
+      : <StandardActions interrupt={interrupt} onResume={onResume} />)}
     {canInstruct && !humanReview && <InstructionEditor interrupt={interrupt} onResume={onResume} />}
   </section>
 }

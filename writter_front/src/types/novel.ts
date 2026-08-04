@@ -10,6 +10,55 @@ export interface CreativeBrief {
   tone?: string
   originality_anchor?: string
   content_boundaries?: string | string[]
+  setting_context?: {
+    era?: string
+    region?: string
+  }
+  naming_preference?: string
+  style_fingerprint?: JsonValue
+  trope_contract?: JsonValue
+}
+
+export interface CharacterNameCandidate {
+  candidate_id: string
+  name: string
+  surname: string
+  given_name: string
+  source_id: string
+  source_title: string
+  source_quote: string
+  meaning: string
+  pinyin?: string
+  role_fit?: string
+}
+
+export interface CharacterDesignRole {
+  character_id: string
+  role_type: string
+  profile: Record<string, JsonValue>
+  name_candidates: CharacterNameCandidate[]
+  recommended_candidate_id: string
+}
+
+export interface ResolvedCharacter {
+  character_id: string
+  name: string
+  role_type: string
+  profile: Record<string, JsonValue>
+  name_origin: JsonValue
+}
+
+export interface CharacterDesignProposal {
+  naming_policy: Record<string, JsonValue>
+  core_roles: CharacterDesignRole[]
+  supporting_characters: ResolvedCharacter[]
+  relationships: JsonValue[]
+  reserved_names?: ResolvedCharacter[]
+}
+
+export interface CharacterDesignSelection {
+  name_selections?: Record<string, string>
+  custom_names?: Record<string, string>
 }
 
 export interface TitleSuggestion {
@@ -116,6 +165,7 @@ export interface PendingProposal {
 
 export type ReviewInterruptAction =
   | 'review_or_modify_creative_brief'
+  | 'review_or_modify_character_design'
   | 'confirm_or_provide_title'
   | 'confirm_or_provide_summary'
   | 'review_or_modify_outline'
@@ -141,6 +191,7 @@ interface InterruptBase {
   ai_generated_summary?: string
   ai_generated_outline?: Record<string, JsonValue>
   ai_generated_creative_brief?: CreativeBrief
+  ai_generated_character_design?: CharacterDesignProposal
   issues?: ReflectionIssue[]
   [key: string]: unknown
 }

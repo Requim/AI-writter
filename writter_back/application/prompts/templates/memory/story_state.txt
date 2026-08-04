@@ -1,0 +1,38 @@
+[PROMPT_VERSION:$PROMPT_VERSION]
+你是小说连续性管理员。请把“上一版累计故事状态”与本章已写成的事实合并，输出新的累计状态 JSON。
+旧状态中未被本章明确改变的事实必须原样保留；不得根据细纲臆造正文没有发生的事件，也不得删除仍未解决的冲突和伏笔。
+
+【上一版累计故事状态】
+$previous_state
+
+【本章状态契约（仅用于核对，事实以正文为准）】
+$chapter_outline
+
+【第$chapter_number章：$chapter_title】
+$chapter_content
+
+【输出 JSON】
+{
+  "timeline": {"current_time": "", "elapsed": "", "sequence_notes": []},
+  "locations": [{"character": "", "location": "", "since_chapter": $chapter_number}],
+  "characters": [{
+    "name": "", "physical_state": "", "emotional_state": "", "goal": "",
+    "knowledge": [], "unknown_to_character": [], "inventory": [], "relationships": []
+  }],
+  "open_conflicts": [{"id": "", "description": "", "introduced_chapter": 1, "status": "open"}],
+  "foreshadowing": [{
+    "id": "", "description": "", "introduced_chapter": 1,
+    "target_chapter": null, "status": "open|resolved"
+  }],
+  "revealed_secrets": [],
+  "unrevealed_secrets": [],
+  "immutable_facts": [{"fact": "", "source_chapter": 1}],
+  "last_transition": {"last_action": "", "location": "", "next_pressure": ""},
+  "recent_narrative_patterns": [{
+    "chapter_number": $chapter_number, "pov": "", "locations": [], "conflict_method": "",
+    "turn_type": "", "ending_mode": "", "motifs": []
+  }],
+  "updated_through_chapter": $chapter_number
+}
+recent_narrative_patterns 合并旧记录与本章实际表现，只保留最近 5 章；不得从细纲复制正文未体现的模式。
+只输出 JSON，不要 Markdown。

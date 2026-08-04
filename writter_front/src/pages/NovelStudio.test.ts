@@ -35,6 +35,12 @@ describe('autoResumeValue', () => {
   it('accepts a generated creative brief in automatic mode', () => {
     expect(autoResumeValue({ action: 'review_or_modify_creative_brief' }, 'suspense')).toBe('accept')
   })
+
+  it('accepts the recommended character design through the proposal envelope', () => {
+    expect(autoResumeValue({
+      action: 'review_or_modify_character_design', proposal_id: 'characters-1',
+    }, 'suspense')).toEqual({ proposal_id: 'characters-1', decision: 'accept' })
+  })
 })
 
 describe('chapter editing safeguards', () => {

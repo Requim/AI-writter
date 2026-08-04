@@ -4,13 +4,17 @@ import json
 
 from typing import Any
 
-from application.prompts.version import PROMPT_VERSION
+from application.prompts.template_loader import render_prompt
 
 
 OUTLINE_SCHEMA: dict[str, str] = {
     "story_background": "string",
     "main_characters": "array",
     "main_plot": "object",
+    "antagonist_plan": "string",
+    "truth_reveal_ladder": "array",
+    "cost_curve": "array",
+    "relationship_turns": "array",
     "writing_style": "string",
     "total_chapters": "integer",
     "volumes": "array",
@@ -27,6 +31,7 @@ def build_outline_prompt(
     target_total_chapters: int | None = None,
     requested_writing_style: str | None = None,
     creative_brief: dict[str, Any] | None = None,
+    main_characters: list[dict[str, Any]] | None = None,
 ) -> str:
     """Build a bounded macro-outline prompt without per-chapter output."""
     chapter_requirement = (
@@ -39,65 +44,25 @@ def build_outline_prompt(
         if requested_writing_style
         else "明确叙事视角、节奏、语言基调、对话风格和氛围。"
     )
-    brief = json.dumps(creative_brief or {}, ensure_ascii=False, indent=2)
-    return f"""[PROMPT_VERSION:{PROMPT_VERSION}]
-请根据以下信息生成小说的宏观总纲。这里只规划全书结构，不生成逐章列表；
-每一章的详细细纲会在后续工作流中按章生成。
-
-【基础信息】
-类型：{novel_type}
-书名：{title}
-简介：{summary}
-
-【创作简报（最高优先级）】
-{brief}
-
-【用户设定优先级】
-- 书名和简介是用户确认的正史事实，不是供改写的灵感素材。
-- 必须保留简介中出现的全部人名、人物关系、时代背景和核心故事方向。
-- 简介较短时只能围绕已有事实扩展，不得替换主角、关系、题材或另起故事。
-- 后续的世界设定、人物表、主线和分卷必须能够直接追溯到这份简介。
-- 每卷冲突升级必须持续兑现 creative_brief 的 reader_promise，并从不同角度逼问 theme_question。
-
-【总纲要求】
-1. story_background（600-1000字）：世界规则、核心限制或力量代价、主要势力、
-   社会矛盾和故事导火索。所有后续剧情必须服从这些约束。
-2. main_characters：6-10名核心角色。每人包含“姓名、性格、目标、冲突对象、
-   关系标签”，并与至少两名角色形成明确关系。
-3. main_plot：使用“起、承、转、合”描述全书主线、关键反转和最终收束。
-4. writing_style（150-300字）：{style_requirement}
-5. total_chapters：{chapter_requirement}
-6. volumes：规划 4-6 卷，必须连续覆盖第1章到 total_chapters。每卷包含：
-   volume_name、volume_number、start_chapter、end_chapter、core_conflict、
-   main_character_arc、climax_event，以及 next_volume_hook（卷尾衔接钩子）。
-
-【重要边界】
-- 禁止输出 chapters 字段或逐章事件列表。
-- 总纲只负责全局约束和分卷方向，当前章节细纲由后续节点结合前文记忆生成。
-- 输出必须是一个完整、可解析的 JSON 对象，不要使用 Markdown 代码块。
-
-【JSON格式】
-{{
-  "story_background": "...",
-  "main_characters": [
-    {{"姓名": "", "性格": "", "目标": "", "冲突对象": "", "关系标签": ""}}
-  ],
-  "main_plot": {{"起": "", "承": "", "转": "", "合": ""}},
-  "writing_style": "...",
-  "total_chapters": 150,
-  "volumes": [
-    {{
-      "volume_name": "第一卷 ...",
-      "volume_number": 1,
-      "start_chapter": 1,
-      "end_chapter": 30,
-      "core_conflict": "...",
-      "main_character_arc": "...",
-      "climax_event": "...",
-      "next_volume_hook": "..."
-    }}
-  ]
-}}"""
+    characters = main_characters or []
+    if characters:
+        requirement = "逐项复制已确认角色；只能补充人物弧阶段和分卷职责，不得换名、删人或重写底层设定。"
+        characters_json = json.dumps(characters, ensure_ascii=False, indent=2)
+    else:
+        requirement = "未提供已确认角色时生成 6-10 名角色，保持简介既有人名；每人包含姓名、性格、目标、冲突对象和关系标签。"
+        characters_json = '[{"姓名":"","性格":"","目标":"","冲突对象":"","关系标签":""}]'
+    return render_prompt(
+        "outline/macro.txt",
+        novel_type=novel_type,
+        title=title,
+        summary=summary,
+        creative_brief=json.dumps(creative_brief or {}, ensure_ascii=False, indent=2),
+        main_characters=json.dumps(characters, ensure_ascii=False, indent=2) if characters else "未提供",
+        character_requirement=requirement,
+        main_characters_json=characters_json,
+        style_requirement=style_requirement,
+        chapter_requirement=chapter_requirement,
+    )
 
 
 def volume_for_chapter(outline: dict[str, Any], chapter_number: int) -> dict[str, Any]:

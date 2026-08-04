@@ -14,6 +14,7 @@ const fieldLabels: Record<string, string> = {
   issue_id: '问题编号', type: '问题类型', severity: '严重程度', priority_action: '处理优先级',
   evidence: '原文证据', suggestion: '操作建议', suggested_fix_text: '建议改写',
   issue_resolved: '是否解决', evidence_valid: '证据是否有效',
+  from: '发起人物', to: '关联人物', relation: '关系',
 }
 
 function fieldLabel(key: string): string {

@@ -11,7 +11,10 @@ from application.agents.chapter_writer_node import _build_prev_scene_digest
 from application.agents.persist_node import persist_node
 from application.continuity import (
     build_budgeted_context,
+    build_story_bible,
+    compact_story_bible,
     compact_text,
+    related_character_cards,
     validate_chapter_contract,
 )
 from application.prompts.memory_prompts import (
@@ -44,6 +47,42 @@ def test_budgeted_context_preserves_every_memory_layer() -> None:
     assert "<P层滚动规划>" in result
     assert "<M层近期章节>" in result
     assert "<L层历史章节摘录>" in result
+
+
+def test_story_bible_keeps_related_card_and_indexes_every_other_character() -> None:
+    characters = [
+        {"name": "许澄", "role_type": "主角", "profile": {"secret": "隐瞒旧案"}},
+        {"姓名": "赵闻", "身份": "证人", "秘密": "见过凶手"},
+        {"name": "周砚", "role": "调查员", "profile": {"secret": "身份存疑"}},
+    ]
+    total = {"story_background": "雨城", "main_characters": characters}
+
+    bible = build_story_bible(total, max_chars=500, related_context={"characters": ["赵闻"]})
+
+    assert "<全局规则>" in bible
+    assert '"秘密": "见过凶手"' in bible
+    assert "- 许澄 | 主角" in bible
+    assert "- 周砚 | 调查员" in bible
+    assert "隐瞒旧案" not in bible
+    assert "身份存疑" not in bible
+
+
+def test_story_bible_does_not_drop_middle_character_indexes_when_budget_is_small() -> None:
+    characters = [
+        {"姓名": f"角色{index}", "角色定位": f"身份{index}", "经历": "长" * 500}
+        for index in range(8)
+    ]
+    bible = build_story_bible(
+        {"main_characters": characters, "main_plot": {"过程": "长" * 1000}},
+        max_chars=5000,
+        related_context={"characters": ["角色4"]},
+    )
+    compacted = compact_story_bible(bible, 500)
+
+    assert related_character_cards({"main_characters": characters}, "角色4") == [characters[4]]
+    assert '"经历": "' + "长" * 500 + '"' in compacted
+    for index in (0, 1, 2, 3, 5, 6, 7):
+        assert f"- 角色{index} | 身份{index}" in compacted
 
 
 def test_chapter_contract_requires_causal_and_rolling_plan() -> None:

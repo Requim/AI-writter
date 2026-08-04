@@ -50,20 +50,37 @@ def _merge_seed(generated: dict, seed: dict) -> dict:
 async def creative_brief_node(
     state: NovelAgentState,
     config: RunnableConfig,
-) -> Command[Literal["title_node", "creative_brief_review_node"]]:
+) -> Command[Literal["character_design_node", "title_node", "creative_brief_review_node"]]:
     """生成创作简报并先写入 checkpoint，不执行人工审核。"""
     if proposal_matches(state, "creative_brief"):
         return Command(goto="creative_brief_review_node")
     seed = normalize_creative_brief(state.get("creative_brief"))
     if not validate_creative_brief(seed):
-        return Command(goto="title_node", update={"prompt_version": PROMPT_VERSION})
+        return Command(goto=_brief_next_node(state), update={"prompt_version": PROMPT_VERSION})
     legacy = _legacy_brief(state)
     if legacy:
         legacy = _merge_seed(legacy, seed)
         return Command(
-            goto="title_node",
+            goto=_brief_next_node(state),
             update={"creative_brief": legacy, "prompt_version": PROMPT_VERSION},
         )
+    brief = await _generate_brief(state, config, seed)
+    if config["configurable"].get("auto_mode", False):
+        return _accept_brief(state, brief)
+    return Command(
+        goto="creative_brief_review_node",
+        update=proposal_update(state, "creative_brief", brief),
+    )
+
+
+def _brief_next_node(state: NovelAgentState) -> str:
+    return "character_design_node" if int(state.get("workflow_schema_version") or 3) >= 4 else "title_node"
+
+
+async def _generate_brief(
+    state: NovelAgentState, config: RunnableConfig, seed: dict,
+) -> dict:
+    """调用模型并合并用户提供的创作简报约束。"""
     llm = config["configurable"].get("llm_config", {}).get("llm_instance")
     if not llm:
         raise RuntimeError("创作简报生成失败：LLM 不可用")
@@ -87,21 +104,13 @@ async def creative_brief_node(
     missing = validate_creative_brief(brief)
     if missing:
         raise RuntimeError(f"创作简报生成失败：缺少 {', '.join(missing)}")
-    if config["configurable"].get("auto_mode", False):
-        return Command(
-            goto="title_node",
-            update={"creative_brief": brief, "prompt_version": PROMPT_VERSION},
-        )
-    return Command(
-        goto="creative_brief_review_node",
-        update=proposal_update(state, "creative_brief", brief),
-    )
+    return brief
 
 
 async def creative_brief_review_node(
     state: NovelAgentState,
     config: RunnableConfig,
-) -> Command[Literal["title_node", "creative_brief_node"]]:
+) -> Command[Literal["character_design_node", "title_node", "creative_brief_node"]]:
     """审核已保存的创作简报，本节点不得调用 LLM。"""
     del config
     proposal = require_proposal(state, "creative_brief")
@@ -114,20 +123,20 @@ async def creative_brief_review_node(
     )
     decision = unpack_decision(raw_decision, proposal)
     if decision == "accept":
-        return _accept_brief(proposal["payload"])
+        return _accept_brief(state, proposal["payload"])
     if decision == "regenerate":
         feedback = raw_decision.get("feedback", "") if isinstance(raw_decision, dict) else ""
         return _regenerate_brief(feedback or "请生成不同方案")
     if isinstance(decision, dict):
         selected = _merge_seed(proposal["payload"], decision)
         if not validate_creative_brief(selected):
-            return _accept_brief(selected)
+            return _accept_brief(state, selected)
     return _regenerate_brief(str(decision or ""))
 
 
-def _accept_brief(brief: dict) -> Command:
+def _accept_brief(state: NovelAgentState, brief: dict) -> Command:
     return Command(
-        goto="title_node",
+        goto=_brief_next_node(state),
         update={
             "creative_brief": brief,
             "pending_proposal": None,

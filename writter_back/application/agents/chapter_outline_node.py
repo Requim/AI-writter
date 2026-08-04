@@ -8,6 +8,10 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
 
 from application.continuity import normalize_chapter_contract, validate_chapter_contract
+from application.reserved_names import (
+    consume_reserved_introductions,
+    hydrate_reserved_introductions,
+)
 from application.prompts.chapter_outline_prompts import (
     CHAPTER_OUTLINE_SCHEMA,
     build_chapter_outline_prompt,
@@ -37,10 +41,13 @@ def _total_outline(value: Any) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
-def _validated_outline(generated: Any, chapter_number: int) -> dict[str, Any]:
+def _validated_outline(
+    generated: Any, chapter_number: int, total_outline: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     if not isinstance(generated, dict) or not generated:
         raise RuntimeError("章节细纲生成失败：模型未返回有效 JSON")
     outline = normalize_chapter_contract(generated, chapter_number)
+    outline = hydrate_reserved_introductions(outline, total_outline or {})
     issues = validate_chapter_contract(outline, chapter_number)
     if issues:
         raise RuntimeError(f"第 {chapter_number} 章细纲生成失败：" + "；".join(issues))
@@ -70,7 +77,22 @@ async def _generate_outline(
         schema=CHAPTER_OUTLINE_SCHEMA,
         temperature=0.45,
     )
-    return _validated_outline(generated, chapter_number)
+    return _validated_outline(
+        generated, chapter_number, _total_outline(state.get("total_outline")),
+    )
+
+
+def _accept_outline_update(
+    state: NovelAgentState, outline: dict[str, Any], *, clear_proposal: bool = False,
+) -> dict[str, Any]:
+    total = _total_outline(state.get("total_outline"))
+    update: dict[str, Any] = {
+        "chapter_outlines": [outline],
+        "total_outline": consume_reserved_introductions(total, outline),
+    }
+    if clear_proposal:
+        update.update({"pending_proposal": None, "pending_proposal_decision": None})
+    return update
 
 
 async def chapter_outline_node(
@@ -82,16 +104,20 @@ async def chapter_outline_node(
     if proposal_matches(state, "chapter_outline", chapter_number):
         return Command(goto="chapter_outline_review_node")
     if state.get("chapter_outlines_input"):
-        outline = normalize_chapter_contract(
-            state["chapter_outlines_input"], chapter_number
+        outline = _validated_outline(
+            state["chapter_outlines_input"], chapter_number,
+            _total_outline(state.get("total_outline")),
         )
         return Command(
             goto="router_agent",
-            update={"chapter_outlines": [outline], "chapter_outlines_input": None},
+            update={
+                **_accept_outline_update(state, outline),
+                "chapter_outlines_input": None,
+            },
         )
     outline = await _generate_outline(state, config, chapter_number)
     if config["configurable"].get("auto_mode", False):
-        return Command(goto="router_agent", update={"chapter_outlines": [outline]})
+        return Command(goto="router_agent", update=_accept_outline_update(state, outline))
     return Command(
         goto="chapter_outline_review_node",
         update=proposal_update(state, "chapter_outline", outline, chapter_number),
@@ -123,12 +149,10 @@ async def chapter_outline_review_node(
             },
         )
     selected = proposal["payload"] if decision == "accept" else decision
-    outline = _validated_outline(selected, chapter_number)
+    outline = _validated_outline(
+        selected, chapter_number, _total_outline(state.get("total_outline")),
+    )
     return Command(
         goto="router_agent",
-        update={
-            "chapter_outlines": [outline],
-            "pending_proposal": None,
-            "pending_proposal_decision": None,
-        },
+        update=_accept_outline_update(state, outline, clear_proposal=True),
     )

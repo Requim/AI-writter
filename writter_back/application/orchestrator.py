@@ -38,6 +38,10 @@ TASK_REGISTRATION_GRACE_SECONDS = 60.0
 
 LEGACY_PROPOSAL_FIELDS = {
     "review_or_modify_creative_brief": ("creative_brief", "ai_generated_creative_brief"),
+    "review_or_modify_character_design": (
+        "character_design",
+        "ai_generated_character_design",
+    ),
     "confirm_or_provide_title": ("title", "ai_suggestions"),
     "confirm_or_provide_summary": ("summary", "ai_generated_summary"),
     "review_or_modify_outline": ("outline", "ai_generated_outline"),

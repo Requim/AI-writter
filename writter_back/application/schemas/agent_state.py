@@ -10,6 +10,7 @@ class PendingProposal(TypedDict):
     proposal_id: str
     kind: Literal[
         "creative_brief",
+        "character_design",
         "title",
         "summary",
         "outline",
@@ -34,6 +35,9 @@ class NovelAgentState(TypedDict):
     requested_writing_style: Optional[str]    # 用户指定写作风格（约束AI生成总纲）
     creative_brief: Optional[Dict]            # 创作简报（母题、冲突、读者承诺与内容边界）
     creative_brief_feedback: Optional[str]    # 用户对创作简报的修改要求
+    character_design: Optional[Dict]           # 已确认角色表、命名策略与关系轴
+    character_design_feedback: Optional[str]  # 用户对角色设计的重生成要求
+    character_design_return_to: Optional[str] # 旧 checkpoint 补做角色设计后的返回节点
     total_outline: Optional[Dict]            # 总纲领（用户优先，空则AI生成）
     chapter_outlines_input: Optional[Dict]    # 用户提供的章节细纲（优先使用）
     

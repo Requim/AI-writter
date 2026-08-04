@@ -66,6 +66,13 @@ function AdvancedFields() {
   return <div className="advanced-fields">
     <Form.Item label="暂定书名" name="title"><Input size="large" maxLength={80} placeholder="留空则由 AI 提供候选" /></Form.Item>
     <Form.Item label="故事简介" name="summary"><Input.TextArea rows={4} maxLength={1200} placeholder="留空则分别生成读者文案和内部简报" showCount /></Form.Item>
+    <div className="setting-row">
+      <Form.Item label="故事时代" name="setting_era"><Input size="large" maxLength={80} placeholder="如：北宋末年、当代、近未来" /></Form.Item>
+      <Form.Item label="主要地域" name="setting_region"><Input size="large" maxLength={100} placeholder="如：江南水乡、架空北方边城" /></Form.Item>
+    </div>
+    <Form.Item label="命名偏好" name="naming_preference">
+      <Input.TextArea rows={2} maxLength={300} placeholder="如：偏爱《诗经》典故，姓名清雅但不生僻" showCount />
+    </Form.Item>
     <Form.Item label="内容边界" name="content_boundaries"><Input.TextArea rows={2} maxLength={400} placeholder="不希望出现的情节、尺度或表达方式" showCount /></Form.Item>
     <div className="form-row">
       <Form.Item label="计划章节" name="total_chapters" rules={[
