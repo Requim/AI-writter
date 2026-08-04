@@ -14,3 +14,9 @@ class StaleWorkflowDecisionError(RuntimeError):
     """用户提交的决定不属于当前等待审核的提案。"""
 
     code = "stale_workflow_decision"
+
+
+class InvalidReviewDecisionError(ValueError):
+    """用户提交的审核决定不符合公开协议。"""
+
+    code = "invalid_workflow_decision"

@@ -19,4 +19,27 @@ export default defineConfig([
       globals: globals.browser,
     },
   },
+  {
+    files: [
+      'src/api/{novel,workflow}.ts',
+      'src/hooks/{useWorkflowStream,workflowState}.ts',
+      'src/components/WorkflowPanel.tsx',
+      'src/components/AppShell.tsx',
+      'src/components/workflow/**/*.{ts,tsx}',
+      'src/pages/CreateNovel.tsx',
+      'src/pages/creationQuota.ts',
+      'src/pages/novelStudioUtils.ts',
+      'src/pages/novel-studio/{NovelStudioView.tsx,useNovelStudioController.ts,useAutoRunNotifications.ts}',
+      'src/stores/quotaStore.ts',
+      'src/workflowReviewPolicy.ts',
+    ],
+    rules: {
+      'max-lines-per-function': ['error', {
+        max: 50,
+        skipBlankLines: true,
+        skipComments: true,
+      }],
+      'max-depth': ['error', 3],
+    },
+  },
 ])

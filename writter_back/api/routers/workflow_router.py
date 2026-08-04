@@ -2,8 +2,10 @@
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
-from dataclasses import asdict, dataclass
+from collections.abc import AsyncIterator, Mapping
+from dataclasses import asdict, dataclass, replace
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any, TypeAlias
 from uuid import uuid4
 
@@ -12,10 +14,29 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from api.dependencies import get_tenant_context
+from api.workflow_commands import (
+    ClaimedWorkflowCommand,
+    claim_command as _claim_command,
+    command_error as _command_error,
+    finalize_command as _finalize_command,
+    finalize_command_or_http as _finalize_command_or_http,
+    get_workflow_command_store,
+    release_command as _release_command,
+    release_command_or_http as _release_command_or_http,
+    resolve_command_id,
+)
 from application.checkpoint_reconciliation import reconcile_pending_checkpoint
-from application.errors import RetryableWorkflowError, StaleWorkflowDecisionError
+from application.errors import (
+    InvalidReviewDecisionError,
+    RetryableWorkflowError,
+    StaleWorkflowDecisionError,
+)
 from application.events import WorkflowEvent
 from application.orchestrator import NovelOrchestrator
+from application.proposals import (
+    CURRENT_WORKFLOW_SCHEMA_VERSION,
+    LEGACY_WORKFLOW_SCHEMA_VERSION,
+)
 from application.quota_service import QuotaService
 from config import settings
 from infrastructure.database.identity_repository import (
@@ -26,16 +47,13 @@ from infrastructure.database.repository import PostgresNovelRepository
 from service.entities.identity import TenantContext
 from service.entities.novel import Novel
 from service.ports.workflow_command_store import (
-    WorkflowCommandClaimStatus,
     WorkflowCommandStore,
     WorkflowCommandStoreUnavailable,
 )
 
 logger = logging.getLogger("uvicorn")
 router = APIRouter()
-_RUNNING_TTL_BUFFER_SECONDS = 120
-_TERMINAL_TTL_SECONDS = 24 * 60 * 60
-_COMMAND_STORE_TIMEOUT_SECONDS = 5.0
+_MAX_PROVIDER_RETRY_AFTER_SECONDS = 120.0
 
 
 def get_orchestrator(request: Request) -> NovelOrchestrator:
@@ -50,19 +68,9 @@ def get_quota_service(request: Request) -> QuotaService:
     return request.app.state.quota_service
 
 
-def get_workflow_command_store(request: Request) -> WorkflowCommandStore:
-    return request.app.state.workflow_command_store
-
-
 class WorkflowInvokeRequest(BaseModel):
     input: dict[str, Any] | None = None
     command: dict[str, Any] | None = None
-
-
-@dataclass(frozen=True)
-class ClaimedWorkflowCommand:
-    command_id: str
-    lease_token: str
 
 
 @dataclass(frozen=True)
@@ -72,9 +80,15 @@ class PreparedWorkflow:
     is_resume: bool
     is_retry: bool
     command: ClaimedWorkflowCommand
+    auto_mode: bool = False
 
 
 StreamItem: TypeAlias = WorkflowEvent | Exception | None
+
+
+def _resolve_command_id(idempotency_key: str | None) -> str:
+    """保留旧路由私有入口，实际规则由共享命令保护模块维护。"""
+    return resolve_command_id(idempotency_key)
 
 
 @dataclass
@@ -107,124 +121,6 @@ async def _authorize_thread(
     if novel is None:
         raise HTTPException(status_code=404, detail="小说不存在")
     return novel
-
-
-def _command_error(
-    status_code: int, code: str, message: str, retryable: bool = True
-) -> HTTPException:
-    return HTTPException(
-        status_code=status_code,
-        detail={"code": code, "message": message, "retryable": retryable},
-    )
-
-
-def _resolve_command_id(idempotency_key: str | None) -> str:
-    command_id = (idempotency_key or "").strip()
-    if command_id:
-        return command_id
-    if settings.WORKFLOW_IDEMPOTENCY_REQUIRED:
-        raise _command_error(
-            400, "idempotency_key_required", "缺少 Idempotency-Key", False
-        )
-    return str(uuid4())
-
-
-async def _claim_command(
-    store: WorkflowCommandStore,
-    context: TenantContext,
-    thread_id: str,
-    idempotency_key: str | None,
-) -> ClaimedWorkflowCommand:
-    command_id = _resolve_command_id(idempotency_key)
-    try:
-        claim = await asyncio.wait_for(
-            store.claim(
-                str(context.tenant_id),
-                thread_id,
-                command_id,
-                settings.WORKFLOW_TIMEOUT_SECONDS + _RUNNING_TTL_BUFFER_SECONDS,
-            ),
-            timeout=_COMMAND_STORE_TIMEOUT_SECONDS,
-        )
-    except (WorkflowCommandStoreUnavailable, asyncio.TimeoutError) as exc:
-        raise _command_error(
-            503, "idempotency_store_unavailable", "命令保护服务暂时不可用，请稍后重试"
-        ) from exc
-    if claim.status is WorkflowCommandClaimStatus.IN_PROGRESS:
-        raise _command_error(409, "workflow_command_in_progress", "该命令正在执行")
-    if claim.status is WorkflowCommandClaimStatus.ALREADY_APPLIED:
-        raise _command_error(409, "workflow_command_already_applied", "该命令已执行")
-    if claim.lease_token is None:
-        raise _command_error(503, "idempotency_store_unavailable", "命令租约无效")
-    return ClaimedWorkflowCommand(command_id, claim.lease_token)
-
-
-async def _finalize_command(
-    store: WorkflowCommandStore,
-    context: TenantContext,
-    thread_id: str,
-    command: ClaimedWorkflowCommand,
-) -> None:
-    try:
-        finalized = await asyncio.wait_for(
-            store.finalize(
-                str(context.tenant_id), thread_id, command.command_id,
-                command.lease_token, _TERMINAL_TTL_SECONDS,
-            ),
-            timeout=_COMMAND_STORE_TIMEOUT_SECONDS,
-        )
-    except asyncio.TimeoutError as exc:
-        raise WorkflowCommandStoreUnavailable from exc
-    if not finalized:
-        raise WorkflowCommandStoreUnavailable("workflow command lease was lost")
-
-
-async def _finalize_command_or_http(
-    store: WorkflowCommandStore,
-    context: TenantContext,
-    thread_id: str,
-    command: ClaimedWorkflowCommand,
-) -> None:
-    try:
-        await _finalize_command(store, context, thread_id, command)
-    except WorkflowCommandStoreUnavailable as exc:
-        raise _command_error(
-            503, "idempotency_store_unavailable", "命令执行结果暂时无法确认，请稍后同步"
-        ) from exc
-
-
-async def _release_command(
-    store: WorkflowCommandStore,
-    context: TenantContext,
-    thread_id: str,
-    command: ClaimedWorkflowCommand,
-) -> None:
-    try:
-        released = await asyncio.wait_for(
-            store.release(
-                str(context.tenant_id), thread_id,
-                command.command_id, command.lease_token,
-            ),
-            timeout=_COMMAND_STORE_TIMEOUT_SECONDS,
-        )
-    except asyncio.TimeoutError as exc:
-        raise WorkflowCommandStoreUnavailable from exc
-    if not released:
-        raise WorkflowCommandStoreUnavailable("workflow command lease was lost")
-
-
-async def _release_command_or_http(
-    store: WorkflowCommandStore,
-    context: TenantContext,
-    thread_id: str,
-    command: ClaimedWorkflowCommand,
-) -> None:
-    try:
-        await _release_command(store, context, thread_id, command)
-    except WorkflowCommandStoreUnavailable as exc:
-        raise _command_error(
-            503, "idempotency_store_unavailable", "命令重试状态暂时无法确认，请稍后同步"
-        ) from exc
 
 
 def _seed_initial_input(input_data: dict[str, Any], novel: Novel) -> None:
@@ -269,6 +165,33 @@ def _seed_initial_input(input_data: dict[str, Any], novel: Novel) -> None:
         input_data.setdefault("requested_writing_style", outline.writing_style)
 
 
+def _requested_auto_mode(request: WorkflowInvokeRequest) -> bool:
+    command = request.command or {}
+    input_data = request.input or {}
+    return bool(command.get("_auto_mode", input_data.get("_auto_mode", False)))
+
+
+async def _validate_resume_decision(
+    orchestrator: NovelOrchestrator,
+    context: TenantContext,
+    thread_id: str,
+    resume_value: Any,
+) -> None:
+    validator = getattr(orchestrator, "validate_resume_decision", None)
+    if not callable(validator):
+        return
+    try:
+        await validator(context, thread_id, resume_value)
+    except StaleWorkflowDecisionError as exc:
+        raise _command_error(
+            409, "stale_workflow_decision", str(exc)
+        ) from exc
+    except InvalidReviewDecisionError as exc:
+        raise _command_error(
+            422, "invalid_workflow_decision", str(exc), False
+        ) from exc
+
+
 async def _prepare_request(
     request: WorkflowInvokeRequest,
     context: TenantContext,
@@ -287,10 +210,18 @@ async def _prepare_request(
         raise HTTPException(status_code=422, detail="retry 与 resume 不能同时提交")
     if request.command is not None and not is_retry and not is_resume:
         raise HTTPException(status_code=422, detail="工作流 command 无效")
+    if is_resume:
+        await _validate_resume_decision(
+            orchestrator, context, thread_id, command.get("resume")
+        )
     auto_mode = command.pop("_auto_mode", input_data.pop("_auto_mode", False))
     orchestrator.set_auto_mode(context, thread_id, bool(auto_mode))
     if not is_resume and not is_retry:
-        input_data.setdefault("workflow_schema_version", 4)
+        input_data["workflow_schema_version"] = (
+            CURRENT_WORKFLOW_SCHEMA_VERSION
+            if settings.WORKFLOW_REVIEW_V3_ENABLED
+            else LEGACY_WORKFLOW_SCHEMA_VERSION
+        )
         if novel is not None:
             _seed_initial_input(input_data, novel)
         existing_run_id = await orchestrator.get_workflow_run_id(context, thread_id)
@@ -331,6 +262,12 @@ def _public_error_data(exc: Exception) -> dict[str, Any]:
             "message": str(exc),
             "retryable": True,
         }
+    if isinstance(exc, InvalidReviewDecisionError):
+        return {
+            "code": "invalid_workflow_decision",
+            "message": str(exc),
+            "retryable": False,
+        }
     if isinstance(exc, RetryableWorkflowError):
         return {
             "code": "structured_output_invalid",
@@ -348,18 +285,21 @@ def _public_error_data(exc: Exception) -> dict[str, Any]:
             "message": "无法稳定连接模型服务，请重试当前步骤",
             "retryable": True,
         }
-    return {
-        "code": "workflow_failed",
-        "message": "工作流执行失败，请联系管理员查看日志",
-        "retryable": False,
+    payload: dict[str, Any] = {
+        "code": getattr(exc, "code", None) or "workflow_failed",
+        "message": "当前步骤执行失败，请同步创作现场后重试，并查看错误详情",
+        "retryable": True,
     }
+    for field in ("node", "retry_attempt"):
+        value = getattr(exc, field, None)
+        if value is not None:
+            payload[field] = value
+    return payload
 
 
 def _provider_status_error(exc: Exception) -> dict[str, Any] | None:
     status = getattr(exc, "status_code", None)
-    body = getattr(exc, "body", None)
-    body_data = body if isinstance(body, dict) else {}
-    retry_after = body_data.get("retry_after")
+    retry_after = _retry_after_seconds(exc)
     if status in {408, 504, 524}:
         return {
             "code": "provider_timeout",
@@ -382,6 +322,84 @@ def _provider_status_error(exc: Exception) -> dict[str, Any] | None:
             "retry_after": retry_after,
         }
     return None
+
+
+def _is_retryable_provider_error(exc: Exception) -> bool:
+    return _provider_status_error(exc) is not None or _is_provider_connection_error(exc)
+
+
+def _header_retry_after(headers: Any) -> Any:
+    getter = getattr(headers, "get", None)
+    if not callable(getter):
+        return None
+    return getter("retry-after") or getter("Retry-After")
+
+
+def _raw_retry_after(exc: Exception) -> Any:
+    response = getattr(exc, "response", None)
+    value = _header_retry_after(getattr(response, "headers", None))
+    if value is not None:
+        return value
+    value = _header_retry_after(getattr(exc, "headers", None))
+    if value is not None:
+        return value
+    body = getattr(exc, "body", None)
+    return body.get("retry_after") if isinstance(body, Mapping) else None
+
+
+def _retry_after_seconds(exc: Exception) -> float | None:
+    raw = _raw_retry_after(exc)
+    if raw is None:
+        return None
+    try:
+        seconds = float(raw)
+    except (TypeError, ValueError):
+        try:
+            target = parsedate_to_datetime(str(raw))
+            target = target.replace(tzinfo=target.tzinfo or timezone.utc)
+            seconds = (target - datetime.now(timezone.utc)).total_seconds()
+        except (TypeError, ValueError, OverflowError):
+            return None
+    return min(_MAX_PROVIDER_RETRY_AFTER_SECONDS, max(0.0, seconds))
+
+
+async def _wait_for_auto_retry(exc: Exception) -> float:
+    delay = _retry_after_seconds(exc) or 0.0
+    if delay:
+        await asyncio.sleep(delay)
+    return delay
+
+
+def _record_retry_attempt(
+    orchestrator: NovelOrchestrator,
+    context: TenantContext,
+    thread_id: str,
+    attempt: int,
+) -> None:
+    recorder = getattr(orchestrator, "record_retry_attempt", None)
+    if callable(recorder):
+        recorder(context, thread_id, attempt)
+
+
+def _should_auto_retry(
+    prepared: PreparedWorkflow, exc: Exception, attempt: int
+) -> bool:
+    return (
+        settings.WORKFLOW_AUTO_RETRY_ENABLED
+        and prepared.auto_mode
+        and attempt == 0
+        and _is_retryable_provider_error(exc)
+    )
+
+
+def _retry_prepared(prepared: PreparedWorkflow) -> PreparedWorkflow:
+    return replace(
+        prepared,
+        input_data=None,
+        resume_value=None,
+        is_resume=False,
+        is_retry=True,
+    )
 
 
 async def _acquire(
@@ -441,7 +459,11 @@ async def _prepare_execution(
         prepared = await _prepare_request(
             request, context, thread_id, orchestrator, quota, novel
         )
-        return PreparedWorkflow(*prepared, command=command)
+        return PreparedWorkflow(
+            *prepared,
+            command=command,
+            auto_mode=_requested_auto_mode(request),
+        )
     except (Exception, asyncio.CancelledError):
         try:
             if acquired:
@@ -459,6 +481,25 @@ async def _invoke_prepared(
     context: TenantContext,
     thread_id: str,
 ) -> Any:
+    async with asyncio.timeout(settings.WORKFLOW_TIMEOUT_SECONDS):
+        try:
+            return await _invoke_once(prepared, orchestrator, context, thread_id)
+        except Exception as exc:
+            if not _should_auto_retry(prepared, exc, 0):
+                raise
+            logger.warning("自动模式将在原 checkpoint 重试一次: %s", thread_id)
+            _record_retry_attempt(orchestrator, context, thread_id, 1)
+            await _wait_for_auto_retry(exc)
+            retry = _retry_prepared(prepared)
+            return await _invoke_once(retry, orchestrator, context, thread_id)
+
+
+async def _invoke_once(
+    prepared: PreparedWorkflow,
+    orchestrator: NovelOrchestrator,
+    context: TenantContext,
+    thread_id: str,
+) -> Any:
     operation = (
         orchestrator.retry(context, thread_id)
         if prepared.is_retry
@@ -466,9 +507,7 @@ async def _invoke_prepared(
         if prepared.is_resume
         else orchestrator.invoke(context, thread_id, prepared.input_data or {})
     )
-    return await asyncio.wait_for(
-        operation, timeout=settings.WORKFLOW_TIMEOUT_SECONDS
-    )
+    return await operation
 
 
 async def _settle_invocation(
@@ -521,6 +560,10 @@ async def invoke_workflow(
         raise HTTPException(status_code=409, detail="工作流已取消")
     except StaleWorkflowDecisionError as exc:
         raise _command_error(409, "stale_workflow_decision", str(exc)) from exc
+    except InvalidReviewDecisionError as exc:
+        raise _command_error(
+            422, "invalid_workflow_decision", str(exc), False
+        ) from exc
     except HTTPException:
         raise
     except Exception as exc:
@@ -580,7 +623,38 @@ async def _produce_stream_events(
     thread_id: str,
     prepared: PreparedWorkflow,
 ) -> None:
-    async for event in orchestrator.stream_events(
+    attempt = 0
+    sequence = 0
+    current = prepared
+    while True:
+        try:
+            async for event in _stream_attempt(
+                orchestrator, context, thread_id, current
+            ):
+                sequence += 1
+                channel.publish(event.model_copy(update={"id": sequence}))
+            return
+        except Exception as exc:
+            if not _should_auto_retry(current, exc, attempt):
+                raise
+            attempt += 1
+            current = _retry_prepared(current)
+            _record_retry_attempt(orchestrator, context, thread_id, attempt)
+            sequence += 1
+            delay = _retry_after_seconds(exc) or 0.0
+            channel.publish(
+                _auto_retry_event(thread_id, sequence, current, delay)
+            )
+            await _wait_for_auto_retry(exc)
+
+
+def _stream_attempt(
+    orchestrator: NovelOrchestrator,
+    context: TenantContext,
+    thread_id: str,
+    prepared: PreparedWorkflow,
+) -> AsyncIterator[WorkflowEvent]:
+    return orchestrator.stream_events(
         context,
         thread_id,
         input_data=prepared.input_data,
@@ -588,8 +662,27 @@ async def _produce_stream_events(
         is_resume=prepared.is_resume,
         is_retry=prepared.is_retry,
         command_id=prepared.command.command_id,
-    ):
-        channel.publish(event)
+    )
+
+
+def _auto_retry_event(
+    thread_id: str,
+    event_id: int,
+    prepared: PreparedWorkflow,
+    retry_after: float,
+) -> WorkflowEvent:
+    return WorkflowEvent(
+        id=event_id,
+        type="status",
+        thread_id=thread_id,
+        command_id=prepared.command.command_id,
+        data={
+            "status": "retrying",
+            "message": "模型服务短暂异常，正在从当前步骤自动重试",
+            "retry_after": retry_after,
+            "retry_attempt": 1,
+        },
+    )
 
 
 def _stream_store_error(
@@ -639,6 +732,7 @@ def _heartbeat_event(
             "active_node": execution.get("active_node"),
             "stage_started_at": execution.get("stage_started_at"),
             "stage_elapsed_seconds": execution.get("stage_elapsed_seconds", 0),
+            "retry_attempt": execution.get("retry_attempt", 0),
         },
     ).to_sse()
 

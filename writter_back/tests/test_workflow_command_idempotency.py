@@ -17,6 +17,10 @@ from api.routers.workflow_router import (
     WorkflowInvokeRequest,
 )
 from application.events import WorkflowEvent
+from application.errors import (
+    InvalidReviewDecisionError,
+    StaleWorkflowDecisionError,
+)
 from infrastructure.command_store import RedisWorkflowCommandStore
 from infrastructure.database.identity_repository import QuotaExceededError
 from service.entities.identity import TenantContext
@@ -110,6 +114,52 @@ class FailingStreamingOrchestrator(StreamingOrchestrator):
         raise RuntimeError("provider failed")
 
 
+class ProviderUnavailableError(RuntimeError):
+    status_code = 503
+
+    def __init__(self, message: str, retry_after=None) -> None:
+        super().__init__(message)
+        self.body = {"retry_after": retry_after} if retry_after is not None else {}
+
+
+class ProviderStatusError(RuntimeError):
+    def __init__(self, status_code: int) -> None:
+        super().__init__(f"provider status {status_code}")
+        self.status_code = status_code
+        self.body: dict = {}
+
+
+class APIConnectionError(RuntimeError):
+    pass
+
+
+class AutoRetryStreamingOrchestrator:
+    def __init__(self, failures: int = 1, retry_after=None) -> None:
+        self.calls: list[dict] = []
+        self.retry_attempts: list[int] = []
+        self.prepare_retry_checkpoint = AsyncMock()
+        self.failures = failures
+        self.error = ProviderUnavailableError(
+            "provider unavailable", retry_after=retry_after
+        )
+
+    async def stream_events(self, context, thread_id, **kwargs):
+        self.calls.append(kwargs)
+        if kwargs.get("is_retry"):
+            await self.prepare_retry_checkpoint(context, thread_id)
+        if len(self.calls) <= self.failures:
+            raise self.error
+        yield WorkflowEvent(
+            id=1, type="completed", thread_id=thread_id, data={"status": "idle"}
+        )
+
+    def record_retry_attempt(self, _context, _thread_id, attempt: int) -> None:
+        self.retry_attempts.append(attempt)
+
+    def finish(self, *_args, **_kwargs) -> None:
+        return None
+
+
 def tenant_context() -> TenantContext:
     return TenantContext(
         tenant_id=uuid4(),
@@ -120,6 +170,26 @@ def tenant_context() -> TenantContext:
         ai_enabled=True,
         monthly_generation_limit=30,
     )
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        ProviderStatusError(408),
+        ProviderStatusError(429),
+        ProviderStatusError(500),
+        ProviderStatusError(524),
+        APIConnectionError("connection failed"),
+    ],
+)
+def test_transient_provider_errors_are_auto_retryable(error) -> None:
+    assert workflow_router._is_retryable_provider_error(error) is True
+
+
+def test_non_transient_provider_error_is_not_auto_retryable() -> None:
+    assert workflow_router._is_retryable_provider_error(
+        ProviderStatusError(400)
+    ) is False
 
 
 @pytest.mark.asyncio
@@ -320,6 +390,35 @@ async def test_quota_failure_releases_command_for_replay(monkeypatch):
     assert replay.status is WorkflowCommandClaimStatus.ACQUIRED
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error", "status_code", "code"),
+    [
+        (StaleWorkflowDecisionError("提案已变化"), 409, "stale_workflow_decision"),
+        (InvalidReviewDecisionError("决定无效"), 422, "invalid_workflow_decision"),
+    ],
+)
+async def test_resume_decision_is_validated_before_execution(
+    error, status_code, code
+):
+    orchestrator = SimpleNamespace(
+        validate_resume_decision=AsyncMock(side_effect=error),
+        set_auto_mode=Mock(),
+    )
+    quota = SimpleNamespace(reserve=AsyncMock())
+    request = WorkflowInvokeRequest(command={"resume": {"decision": "accept"}})
+
+    with pytest.raises(HTTPException) as raised:
+        await workflow_router._prepare_request(
+            request, tenant_context(), str(uuid4()), orchestrator, quota
+        )
+
+    assert raised.value.status_code == status_code
+    assert raised.value.detail["code"] == code
+    quota.reserve.assert_not_awaited()
+    orchestrator.set_auto_mode.assert_not_called()
+
+
 def test_required_idempotency_key_can_be_enabled(monkeypatch):
     monkeypatch.setattr(workflow_router.settings, "WORKFLOW_IDEMPOTENCY_REQUIRED", True)
 
@@ -372,6 +471,46 @@ async def test_invoke_finalizes_command_and_blocks_same_key(monkeypatch):
     orchestrator.invoke.assert_awaited_once()
     running_ttl = math.ceil(workflow_router.settings.WORKFLOW_TIMEOUT_SECONDS + 120)
     assert redis.ttl_history == [running_ttl, 86_400]
+
+
+@pytest.mark.asyncio
+async def test_auto_retry_reuses_command_run_and_quota(monkeypatch):
+    monkeypatch.setattr(
+        workflow_router.settings, "WORKFLOW_AUTO_RETRY_ENABLED", True
+    )
+    monkeypatch.setattr(workflow_router, "_ensure_checkpoint_ready", AsyncMock())
+    context = tenant_context()
+    thread_id = str(uuid4())
+    repository = SimpleNamespace(find_by_id=AsyncMock(return_value=Novel()))
+    orchestrator = SimpleNamespace(
+        try_start=AsyncMock(return_value=True),
+        set_auto_mode=Mock(),
+        set_active_command=Mock(),
+        get_workflow_run_id=AsyncMock(return_value=None),
+        invoke=AsyncMock(side_effect=ProviderUnavailableError("temporary")),
+        retry=AsyncMock(return_value={"status": "ok"}),
+        register_task=Mock(),
+        finish=Mock(),
+    )
+    quota = SimpleNamespace(reserve=AsyncMock())
+    store = RedisWorkflowCommandStore("redis://unused", client=FakeRedis())
+    request = WorkflowInvokeRequest(input={
+        "_auto_mode": True, "workflow_run_id": "same-run",
+    })
+
+    result = await workflow_router.invoke_workflow(
+        thread_id, request, "same-command", context,
+        orchestrator, repository, quota, store,
+    )
+
+    assert result == {"status": "ok"}
+    assert orchestrator.invoke.await_args.args[2]["workflow_run_id"] == "same-run"
+    orchestrator.retry.assert_awaited_once_with(context, thread_id)
+    quota.reserve.assert_awaited_once()
+    assert quota.reserve.await_args.args[1] == "same-run"
+    orchestrator.set_active_command.assert_called_once_with(
+        context, thread_id, "same-command"
+    )
 
 
 def invoke_orchestrator(outcome) -> SimpleNamespace:
@@ -448,6 +587,119 @@ async def prepared_stream(
         "stream-command", claim.lease_token or ""
     )
     return PreparedWorkflow(None, None, False, False, command)
+
+
+@pytest.mark.asyncio
+async def test_auto_mode_retries_provider_error_once_with_same_command(monkeypatch):
+    monkeypatch.setattr(
+        workflow_router.settings, "WORKFLOW_AUTO_RETRY_ENABLED", True
+    )
+    command = ClaimedWorkflowCommand("same-command", "lease")
+    prepared = PreparedWorkflow(
+        {"workflow_run_id": "same-run"}, None, False, False, command, True
+    )
+    channel = workflow_router.StreamChannel(asyncio.Queue(), asyncio.Event())
+    orchestrator = AutoRetryStreamingOrchestrator(retry_after=500)
+    sleep = AsyncMock()
+    monkeypatch.setattr(workflow_router.asyncio, "sleep", sleep)
+    context = tenant_context()
+    thread_id = str(uuid4())
+
+    await workflow_router._produce_stream_events(
+        channel, orchestrator, context, thread_id, prepared
+    )
+
+    assert len(orchestrator.calls) == 2
+    assert {call["command_id"] for call in orchestrator.calls} == {"same-command"}
+    assert orchestrator.calls[0]["input_data"]["workflow_run_id"] == "same-run"
+    assert orchestrator.calls[1]["is_retry"] is True
+    orchestrator.prepare_retry_checkpoint.assert_awaited_once_with(
+        context, thread_id
+    )
+    events = [channel.queue.get_nowait(), channel.queue.get_nowait()]
+    assert [event.id for event in events] == [1, 2]
+    assert events[0].data["status"] == "retrying"
+    assert events[0].data["retry_after"] == 120
+    assert events[0].data["retry_attempt"] == 1
+    assert orchestrator.retry_attempts == [1]
+    sleep.assert_awaited_once_with(120)
+
+
+@pytest.mark.asyncio
+async def test_auto_mode_never_retries_provider_error_more_than_once(monkeypatch):
+    monkeypatch.setattr(
+        workflow_router.settings, "WORKFLOW_AUTO_RETRY_ENABLED", True
+    )
+    prepared = PreparedWorkflow(
+        None, None, False, False,
+        ClaimedWorkflowCommand("same-command", "lease"), True,
+    )
+    channel = workflow_router.StreamChannel(asyncio.Queue(), asyncio.Event())
+    orchestrator = AutoRetryStreamingOrchestrator(failures=2)
+
+    with pytest.raises(ProviderUnavailableError):
+        await workflow_router._produce_stream_events(
+            channel, orchestrator, tenant_context(), str(uuid4()), prepared
+        )
+
+    assert len(orchestrator.calls) == 2
+    assert orchestrator.retry_attempts == [1]
+    orchestrator.prepare_retry_checkpoint.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_second_provider_failure_releases_command_for_manual_recovery(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        workflow_router.settings, "WORKFLOW_AUTO_RETRY_ENABLED", True
+    )
+    context = tenant_context()
+    thread_id = str(uuid4())
+    store = RedisWorkflowCommandStore("redis://unused", client=FakeRedis())
+    initial = await prepared_stream(store, context, thread_id)
+    prepared = PreparedWorkflow(
+        initial.input_data, initial.resume_value, initial.is_resume,
+        initial.is_retry, initial.command, True,
+    )
+    channel = workflow_router.StreamChannel(asyncio.Queue(), asyncio.Event())
+    orchestrator = AutoRetryStreamingOrchestrator(failures=2)
+
+    await workflow_router._run_stream_execution(
+        channel, orchestrator, store, context, thread_id, prepared
+    )
+    replay = await store.claim(
+        str(context.tenant_id), thread_id, "stream-command", 720
+    )
+
+    assert len(orchestrator.calls) == 2
+    assert replay.status is WorkflowCommandClaimStatus.ACQUIRED
+    assert orchestrator.retry_attempts == [1]
+
+
+@pytest.mark.asyncio
+async def test_auto_retry_disabled_does_not_retry_provider_error(monkeypatch):
+    monkeypatch.setattr(
+        workflow_router.settings, "WORKFLOW_AUTO_RETRY_ENABLED", False
+    )
+    prepared = PreparedWorkflow(
+        None,
+        None,
+        False,
+        False,
+        ClaimedWorkflowCommand("same-command", "lease"),
+        True,
+    )
+    channel = workflow_router.StreamChannel(asyncio.Queue(), asyncio.Event())
+    orchestrator = AutoRetryStreamingOrchestrator()
+
+    with pytest.raises(ProviderUnavailableError):
+        await workflow_router._produce_stream_events(
+            channel, orchestrator, tenant_context(), str(uuid4()), prepared
+        )
+
+    assert len(orchestrator.calls) == 1
+    orchestrator.prepare_retry_checkpoint.assert_not_awaited()
 
 
 @pytest.mark.asyncio

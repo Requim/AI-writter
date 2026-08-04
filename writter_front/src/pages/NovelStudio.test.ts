@@ -28,6 +28,13 @@ describe('shouldAutoResume', () => {
       action: 'quality_gate_human_review',
       chapter_number: 3,
     }, undefined)).toBe(false)
+    expect(shouldAutoResume(true, true, {
+      action: 'quality_review_unavailable',
+      chapter_number: 3,
+    }, undefined)).toBe(false)
+    expect(shouldAutoResume(true, true, {
+      action: 'summary_review_required',
+    }, undefined)).toBe(false)
   })
 })
 
@@ -52,6 +59,8 @@ describe('chapter editing safeguards', () => {
     word_count: 5,
     status: 'completed',
     version: 2,
+    review_status: 'passed' as const,
+    quality_score: 4.4,
     updated_at: '2026-07-31T00:00:00Z',
   }
 

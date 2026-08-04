@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     WORKFLOW_TIMEOUT_SECONDS: float = 600.0
     SSE_HEARTBEAT_SECONDS: float = 15.0
     WORKFLOW_IDEMPOTENCY_REQUIRED: bool = False
+    WORKFLOW_AUTO_RETRY_ENABLED: bool = False
     WORKFLOW_REVIEW_V3_ENABLED: bool = False
     ADAPTIVE_COMPACTION_ENABLED: bool = False
 

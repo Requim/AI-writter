@@ -14,11 +14,15 @@ from psycopg_pool import AsyncConnectionPool
 
 from application.events import WorkflowEvent
 from application.quota_service import QuotaService
-from application.errors import RetryableWorkflowError, WorkflowBusyError
+from application.errors import (
+    RetryableWorkflowError,
+    StaleWorkflowDecisionError,
+    WorkflowBusyError,
+)
 from application.agents.router_agent import _route
-from application.proposals import proposal_update
-from application.schemas.agent_state import NovelAgentState
-from application.workflow_builder import create_novel_workflow
+from application.proposals import proposal_update, resolve_review_decision
+from application.schemas.agent_state import NovelAgentState, PendingProposal
+from application.workflow_builder import WORKFLOW_NODES, create_novel_workflow
 from config import settings
 from infrastructure.database.repository import PostgresNovelRepository
 from infrastructure.llm import AnthropicAdapter, DeepSeekAdapter, OpenAIAdapter
@@ -85,7 +89,11 @@ def _legacy_proposal_parts(interrupt_data: Any) -> tuple[str, Any, int | None] |
     kind, payload_field = source
     payload = interrupt_data.get(payload_field)
     if kind == "summary" and isinstance(payload, str):
-        payload = {"reader_blurb": payload, "editorial_brief": payload}
+        payload = {
+            "reader_blurb": payload,
+            "editorial_brief": payload,
+            "legacy_single_view": True,
+        }
     if payload in (None, "", [], {}):
         return None
     return kind, payload, chapter
@@ -145,14 +153,14 @@ class NovelOrchestrator(AgentOrchestrator):
         memory_service: PostgresMemoryAdapter,
         llm_config: dict[str, Any],
         quota_service: QuotaService | None = None,
-    ):
+    ) -> None:
         self.repository = repository
         self.memory_service = memory_service
         self.llm_config = llm_config
         self.quota_service = quota_service
-        self._workflow = None
-        self._checkpointer = None
-        self._llm_instance = None
+        self._workflow: Any = None
+        self._checkpointer: Any = None
+        self._llm_instance: Any = None
         self._locks: dict[str, asyncio.Lock] = {}
         self._active_tasks: dict[str, asyncio.Task[Any]] = {}
         self._auto_mode: dict[str, bool] = {}
@@ -172,7 +180,7 @@ class NovelOrchestrator(AgentOrchestrator):
             return False
         return age.total_seconds() > TASK_REGISTRATION_GRACE_SECONDS
 
-    def _build_llm_instance(self):
+    def _build_llm_instance(self) -> Any:
         provider = self.llm_config.get("provider", "deepseek")
         model = self.llm_config.get("model", "deepseek-chat")
         timeout = float(self.llm_config.get("timeout", settings.LLM_TIMEOUT_SECONDS))
@@ -201,7 +209,7 @@ class NovelOrchestrator(AgentOrchestrator):
             max_retries=max_retries,
         )
 
-    def _get_llm_instance(self):
+    def _get_llm_instance(self) -> Any:
         if self._llm_instance is None:
             self._llm_instance = self._build_llm_instance()
         return self._llm_instance
@@ -276,6 +284,7 @@ class NovelOrchestrator(AgentOrchestrator):
             "status": "running",
             "active_node": None,
             "message": "正在连接创作工作流",
+            "retry_attempt": 0,
             "started_at": now,
             "stage_started_at": now,
             "last_activity_at": now,
@@ -288,6 +297,15 @@ class NovelOrchestrator(AgentOrchestrator):
         """绑定当前执行命令，供事件和快照过滤旧响应。"""
         key = self.execution_key(context, thread_id)
         self._execution_snapshots.setdefault(key, {})["command_id"] = command_id
+
+    def record_retry_attempt(
+        self, context: TenantContext, thread_id: str, attempt: int
+    ) -> None:
+        """记录当前命令的自动重试次数，供快照与心跳展示。"""
+        key = self.execution_key(context, thread_id)
+        snapshot = self._execution_snapshots.setdefault(key, {})
+        snapshot["retry_attempt"] = max(0, attempt)
+        snapshot["last_activity_at"] = datetime.now(timezone.utc).isoformat()
 
     @asynccontextmanager
     async def exclusive_operation(
@@ -429,13 +447,19 @@ class NovelOrchestrator(AgentOrchestrator):
 
     async def prepare_resume_command(
         self, context: TenantContext, thread_id: str, resume_value: Any
-    ) -> Command:
+    ) -> Command | None:
         """为旧审核 checkpoint 补建提案，避免恢复时重新调用模型。"""
         await self._ensure_workflow()
         config = self._make_config(context, thread_id, include_llm=False)
         snapshot = await self._workflow.aget_state(config)
         values = getattr(snapshot, "values", {}) or {}
-        if values.get("pending_proposal"):
+        proposal = values.get("pending_proposal")
+        if isinstance(proposal, dict):
+            resolve_review_decision(
+                cast(NovelAgentState, values),
+                resume_value,
+                cast(PendingProposal, proposal),
+            )
             return Command(resume=resume_value)
         interrupts: list[Any] = []
         for task in getattr(snapshot, "tasks", []) or []:
@@ -444,7 +468,8 @@ class NovelOrchestrator(AgentOrchestrator):
         if parts is None:
             first = interrupts[0] if interrupts else None
             if isinstance(first, dict) and first.get("action") == "confirm_revision":
-                logger.warning("旧版修订 checkpoint 仅含预览，将执行一次兼容性重算")
+                await self._prepare_legacy_revision_recompute(config, values)
+                return None
             return Command(resume=resume_value)
         kind, payload, chapter_number = parts
         update = proposal_update(
@@ -453,9 +478,67 @@ class NovelOrchestrator(AgentOrchestrator):
             payload,
             chapter_number,
         )
+        update["workflow_schema_version"] = int(
+            values.get("workflow_schema_version") or 2
+        )
         update["pending_proposal_decision"] = resume_value
         logger.info("已从旧 checkpoint 补建 %s 提案", kind)
         return Command(resume=resume_value, update=update)
+
+    async def _prepare_legacy_revision_recompute(
+        self, config: dict[str, Any], values: dict[str, Any]
+    ) -> None:
+        """旧修订预览仅允许重算一次，后续由标准重试恢复。"""
+        if values.get("legacy_revision_recompute_done"):
+            raise StaleWorkflowDecisionError("旧版修订已重算，请同步最新创作现场")
+        await self._route_retry_node(
+            config,
+            "revision_node",
+            "旧版修订仅含预览，正在兼容性重算",
+            {"legacy_revision_recompute_done": True},
+        )
+        logger.warning("旧版修订 checkpoint 仅含预览，将执行一次兼容性重算")
+
+    async def validate_resume_decision(
+        self, context: TenantContext, thread_id: str, resume_value: Any
+    ) -> None:
+        """在配额与模型调用前校验当前提案决定。"""
+        await self._ensure_workflow()
+        config = self._make_config(context, thread_id, include_llm=False)
+        snapshot = await self._workflow.aget_state(config)
+        values = getattr(snapshot, "values", {}) or {}
+        proposal = values.get("pending_proposal")
+        if not isinstance(proposal, dict):
+            return
+        resolve_review_decision(
+            cast(NovelAgentState, values),
+            resume_value,
+            cast(PendingProposal, proposal),
+        )
+
+    @staticmethod
+    def _failed_task_node(state: Any) -> str | None:
+        for task in getattr(state, "tasks", []) or []:
+            error = getattr(task, "error", None)
+            name = str(getattr(task, "name", ""))
+            if error is not None and name in WORKFLOW_NODES and name != "router_agent":
+                return name
+        return None
+
+    async def _route_retry_node(
+        self,
+        config: dict[str, Any],
+        next_node: str,
+        reasoning: str,
+        extra_update: dict[str, Any] | None = None,
+    ) -> None:
+        update = {"next_tool": next_node, "router_reasoning": reasoning}
+        update.update(extra_update or {})
+        await self._workflow.aupdate_state(
+            config,
+            update,
+            as_node="router_agent",
+        )
 
     async def prepare_retry_checkpoint(
         self, context: TenantContext, thread_id: str
@@ -466,14 +549,14 @@ class NovelOrchestrator(AgentOrchestrator):
         state = await self._workflow.aget_state(config)
         values = getattr(state, "values", {}) or {}
         next_nodes = tuple(getattr(state, "next", ()) or ())
-
-        if values.get("current_chapter_content"):
+        failed_node = self._failed_task_node(state)
+        if failed_node:
+            next_node = failed_node
+            reasoning = f"从原失败节点重试 {next_node}"
+            await self._route_retry_node(config, next_node, reasoning)
+        elif values.get("current_chapter_content"):
             next_node, reasoning = _route(values)
-            await self._workflow.aupdate_state(
-                config,
-                {"next_tool": next_node, "router_reasoning": reasoning},
-                as_node="router_agent",
-            )
+            await self._route_retry_node(config, next_node, reasoning)
         elif next_nodes:
             next_node = str(next_nodes[0])
             reasoning = f"从 checkpoint 重试 {next_node}"
@@ -717,7 +800,7 @@ class NovelOrchestrator(AgentOrchestrator):
 
     async def stream(
         self, context: TenantContext, thread_id: str, input_data: dict[str, Any]
-    ):
+    ) -> AsyncIterator[dict[str, Any]]:
         async for event in self.stream_events(
             context, thread_id, input_data=input_data
         ):

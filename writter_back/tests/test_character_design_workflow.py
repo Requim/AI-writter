@@ -127,7 +127,12 @@ async def test_review_selects_current_candidate_and_accepts_custom_name() -> Non
 async def test_invalid_model_naming_retries_twice_then_succeeds() -> None:
     llm = _CharacterLLM(invalid_attempts=2)
     command = await character_design_node(_state(), _config(llm, auto_mode=True))
-    assert command.goto == "title_node"
+    assert command.goto == "character_design_review_node"
+    assert llm.calls == 3
+    reviewed = await character_design_review_node(
+        {**_state(), **command.update}, _config(llm, auto_mode=True)
+    )
+    assert reviewed.goto == "title_node"
     assert llm.calls == 3
 
 

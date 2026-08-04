@@ -20,11 +20,10 @@ from application.prompts.character_design_prompts import (
 )
 from application.prompts.version import PROMPT_VERSION
 from application.proposals import (
+    decide_proposal,
     proposal_matches,
     proposal_update,
-    request_decision,
     require_proposal,
-    unpack_decision,
 )
 from application.schemas.agent_state import NovelAgentState
 from application.streaming import emit_workflow_event
@@ -57,6 +56,7 @@ def _accept_design(state: NovelAgentState, design: dict[str, Any]) -> Command:
         update={
             "character_design": design, "pending_proposal": None,
             "pending_proposal_decision": None, "character_design_return_to": None,
+            "character_design_feedback": None,
             "prompt_version": PROMPT_VERSION,
         },
     )
@@ -157,11 +157,12 @@ async def character_design_node(
         "character_design_node",
     )
     proposal = await _generate_valid_proposal(state, llm, pool, version)
-    if config.get("configurable", {}).get("auto_mode", False):
-        return _accept_design(state, resolve_character_design(proposal, {}, recent_names=recent_names))
     return Command(
         goto="character_design_review_node",
-        update=proposal_update(state, "character_design", proposal),
+        update={
+            **proposal_update(state, "character_design", proposal),
+            "character_design_feedback": None,
+        },
     )
 
 
@@ -171,16 +172,16 @@ async def character_design_review_node(
 ) -> Command[Literal["character_design_node", "title_node", "outline_node"]]:
     """审核当前版本角色提案，并拒绝跨版本候选选择。"""
     proposal = require_proposal(state, "character_design")
-    raw_decision = request_decision(
-        state, proposal, action="review_or_modify_character_design",
+    decision = decide_proposal(
+        state, proposal, config, action="review_or_modify_character_design",
         message="AI 已生成角色设计，请逐一确认核心角色姓名",
         ai_generated_character_design=proposal["payload"],
     )
-    decision = unpack_decision(raw_decision, proposal)
-    if decision == "regenerate":
-        feedback = raw_decision.get("feedback", "") if isinstance(raw_decision, Mapping) else ""
-        return _regenerate_design(feedback)
-    selection = {} if decision == "accept" else decision
+    if decision.action == "regenerate":
+        return _regenerate_design(decision.feedback)
+    if decision.action == "revise":
+        return _regenerate_design(decision.instruction)
+    selection = {} if decision.action == "accept" else decision.value
     if not isinstance(selection, Mapping):
         return _regenerate_design(str(selection or "请生成不同角色方案"))
     recent_names = await _recent_character_names(config)

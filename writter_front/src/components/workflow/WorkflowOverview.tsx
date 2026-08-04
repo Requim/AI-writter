@@ -1,8 +1,8 @@
-import { ClockCircleOutlined, DisconnectOutlined, ReloadOutlined, StopOutlined } from '@ant-design/icons'
+import { ClockCircleOutlined, DisconnectOutlined, LinkOutlined, ReloadOutlined, StopOutlined } from '@ant-design/icons'
 import { Button, Tooltip } from 'antd'
 import { useEffect, useState } from 'react'
 import type { WorkflowViewState } from '@/hooks/useWorkflowStream'
-import { formatElapsed, formatTime, stagePresentation } from './presentation'
+import { formatElapsed, formatSyncAge, formatTime, stagePresentation } from './presentation'
 
 interface Props {
   state: WorkflowViewState
@@ -12,13 +12,28 @@ interface Props {
 }
 
 function useClock(active: boolean): number {
-  const [now, setNow] = useState(0)
+  const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
     if (!active) return
     const timer = window.setInterval(() => setNow(Date.now()), 1000)
     return () => window.clearInterval(timer)
   }, [active])
   return now
+}
+
+function ConnectionNote({ state, now }: { state: WorkflowViewState; now: number }) {
+  if (state.connection === 'streaming' && state.status === 'running') return (
+    <div className="connection-note"><LinkOutlined /> 实时连接中，生成内容会持续更新</div>
+  )
+  if (state.connection !== 'detached' || !['running', 'stalled'].includes(state.status)) return null
+  if (state.connectionRecovering) return (
+    <div className="connection-note"><DisconnectOutlined /> 连接恢复中，正在重新同步创作现场</div>
+  )
+  const syncText = state.lastSyncedAt
+    ? `最近同步于 ${formatSyncAge(state.lastSyncedAt, now)}` : '等待首次状态同步'
+  return (
+    <div className="connection-note"><LinkOutlined /> 后台运行中，{syncText}</div>
+  )
 }
 
 export function WorkflowOverview({ state, chapterPrefix, onRefresh, onCancel }: Props) {
@@ -36,11 +51,11 @@ export function WorkflowOverview({ state, chapterPrefix, onRefresh, onCancel }: 
         <div><dt><ClockCircleOutlined /> 开始</dt><dd>{formatTime(state.startedAt)}</dd></div>
         <div><dt>本阶段已用时</dt><dd>{elapsed || '正在记录'}</dd></div>
       </dl>}
-      {state.connection === 'detached' && state.status === 'running' && <div className="connection-note"><DisconnectOutlined /> 页面已断开流式连接，正在同步后台状态</div>}
+      <ConnectionNote state={state} now={now} />
       {state.status === 'stalled' && <div className="stalled-note"><strong>任务长时间没有新进展</strong><span>刷新状态后仍无变化时，可以结束任务并从已保留进度继续。</span></div>}
       {(busy || state.connection === 'detached') && <div className="execution-actions">
         <Tooltip title="从服务器读取当前节点"><Button size="small" icon={<ReloadOutlined />} onClick={onRefresh}>刷新状态</Button></Tooltip>
-        <Button size="small" danger icon={<StopOutlined />} loading={state.status === 'cancelling'} onClick={onCancel}>结束任务</Button>
+        {busy && <Button size="small" danger icon={<StopOutlined />} loading={state.status === 'cancelling'} onClick={onCancel}>结束任务</Button>}
       </div>}
     </section>
   )

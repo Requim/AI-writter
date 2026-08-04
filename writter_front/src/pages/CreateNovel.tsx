@@ -1,34 +1,22 @@
 import { ArrowLeftOutlined, ArrowRightOutlined, BookOutlined, SettingOutlined } from '@ant-design/icons'
 import { App, Button, Collapse, Form, Input, InputNumber, Segmented, Select, Skeleton } from 'antd'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import type { FormInstance } from 'antd'
 import { AppShell } from '@/components/AppShell'
 import { useUnsavedChangesGuard, type DiscardConfirmation } from '@/hooks/useUnsavedChangesGuard'
 import { novelApi } from '@/api/novel'
-import { tenantApi } from '@/api/auth'
-import { useAuthStore } from '@/stores/authStore'
+import { useQuota } from '@/stores/quotaStore'
 import { useNovelStore } from '@/stores/novelStore'
 import type { QuotaUsage } from '@/types/auth'
 import { buildCreationSubmission, type CreationForm } from './creationSubmission'
+import { quotaBlocksCreation, quotaNoticeDetails } from './creationQuota'
 
 const genreOptions = [
   ['suspense', '悬疑'], ['sci_fi', '科幻'], ['romance', '言情'], ['fantasy', '奇幻'],
   ['wuxia', '武侠'], ['xianxia', '仙侠'], ['urban', '都市'], ['history', '历史'],
   ['horror', '惊悚'], ['comedy', '喜剧'],
 ].map(([value, label]) => ({ value, label }))
-
-function useQuota(): { quota?: QuotaUsage; loading: boolean } {
-  const tenantId = useAuthStore((state) => state.currentTenantId)
-  const [result, setResult] = useState<{ tenantId?: string; quota?: QuotaUsage }>({})
-  useEffect(() => {
-    let active = true
-    tenantApi.usage().then((quota) => { if (active) setResult({ tenantId, quota }) })
-      .catch(() => { if (active) setResult({ tenantId }) })
-    return () => { active = false }
-  }, [tenantId])
-  return { quota: result.tenantId === tenantId ? result.quota : undefined, loading: result.tenantId !== tenantId }
-}
 
 function useDiscardDraft(form: FormInstance<CreationForm>, submitting: boolean) {
   const { modal } = App.useApp()
@@ -84,12 +72,14 @@ function AdvancedFields() {
   </div>
 }
 
-function QuotaNotice({ quota, loading }: { quota?: QuotaUsage; loading: boolean }) {
+interface QuotaNoticeProps { quota?: QuotaUsage; loading: boolean; chapters?: number }
+
+function QuotaNotice({ quota, loading, chapters }: QuotaNoticeProps) {
   if (loading) return <div className="creation-quota"><Skeleton.Input active size="small" /></div>
-  if (!quota) return <div className="creation-quota" data-state="unknown"><span>额度暂时无法读取</span><small>提交时仍会由服务端核验</small></div>
-  return <div className="creation-quota" data-state={quota.remaining > 0 && quota.ai_enabled ? 'ready' : 'empty'}>
-    <span>本月剩余 <strong>{quota.remaining}</strong> / {quota.limit} 次</span>
-    <small>{quota.remaining > 0 && quota.ai_enabled ? '启动创作将预留 1 次额度' : '当前无法启动 AI 创作'}</small>
+  const details = quotaNoticeDetails(quota, chapters)
+  return <div className="creation-quota" data-state={details.state}>
+    <span>{quota ? <>本月剩余 <strong>{quota.remaining}</strong> / {quota.limit} 次</> : '额度暂时无法读取'}</span>
+    <small>{details.detail}</small>
   </div>
 }
 
@@ -111,9 +101,10 @@ export default function CreateNovel() {
   const setAutoMode = useNovelStore((state) => state.setAutoMode)
   const title = Form.useWatch('title', form)
   const genre = Form.useWatch('novel_type', form)
+  const chapters = Form.useWatch('total_chapters', form)
   const { quota, loading: quotaLoading } = useQuota()
   const confirmDiscard = useDiscardDraft(form, submitting)
-  const quotaBlocked = Boolean(quota && (!quota.ai_enabled || quota.remaining < 1))
+  const quotaBlocked = quotaBlocksCreation(quota)
   const submit = async (values: CreationForm) => {
     setSubmitting(true)
     const { payload, startInput } = buildCreationSubmission(values)
@@ -131,7 +122,7 @@ export default function CreateNovel() {
         <Form form={form} layout="vertical" initialValues={{ novel_type: 'suspense', total_chapters: 12 }} onFinish={(values) => void submit(values)} requiredMark={false}>
           <CoreFields autoMode={autoMode} onModeChange={setAutoMode} />
           <Collapse ghost className="advanced-settings" items={[{ key: 'advanced', label: <span><SettingOutlined /> 更多创作约束</span>, children: <AdvancedFields /> }]} />
-          <QuotaNotice quota={quota} loading={quotaLoading} />
+          <QuotaNotice quota={quota} loading={quotaLoading} chapters={chapters} />
           <Button type="primary" size="large" htmlType="submit" disabled={quotaBlocked} loading={submitting} icon={<ArrowRightOutlined />} iconPlacement="end">创建并进入工作台</Button>
         </Form>
       </section><CreationPreview title={title} genre={genre} /></div>

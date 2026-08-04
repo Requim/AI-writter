@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { buildCreationSubmission } from './creationSubmission'
+import { quotaBlocksCreation, quotaNoticeDetails } from './creationQuota'
 
 describe('buildCreationSubmission', () => {
   it('passes user-authored fields to both persistence and workflow input', () => {
@@ -68,5 +69,25 @@ describe('buildCreationSubmission', () => {
       novel_type: 'suspense',
       target_total_chapters: 12,
     })
+  })
+})
+
+describe('creation quota notice', () => {
+  const quota = {
+    used: 8, limit: 10, remaining: 2, ai_enabled: true, period_start: '2026-08-01',
+  }
+
+  it('warns without blocking when the next command is affordable but the full book is not', () => {
+    expect(quotaNoticeDetails(quota, 12)).toEqual({
+      state: 'warning',
+      detail: '仍可启动 1 次，但余额不足以覆盖预计全书（预计 13 次，含 12 章生成）',
+    })
+    expect(quotaBlocksCreation(quota)).toBe(false)
+  })
+
+  it('blocks only when AI is disabled or no command can be reserved', () => {
+    expect(quotaBlocksCreation({ ...quota, remaining: 0 })).toBe(true)
+    expect(quotaBlocksCreation({ ...quota, ai_enabled: false })).toBe(true)
+    expect(quotaBlocksCreation({ ...quota, remaining: 1 })).toBe(false)
   })
 })

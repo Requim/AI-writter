@@ -58,14 +58,7 @@ WORKFLOW_NODES = {
 
 PROGRESS_ROUTES = {"end": END, "continue": "router_agent"}
 ROUTER_ROUTES = {
-    "memory_retrieval_node": "memory_retrieval_node",
-    "chapter_outline_node": "chapter_outline_node",
-    "chapter_writer_node": "chapter_writer_node",
-    "chapter_compaction_node": "chapter_compaction_node",
-    "reflection_node": "reflection_node",
-    "revision_node": "revision_node",
-    "persist_node": "persist_node",
-    "progress_check_node": "progress_check_node",
+    name: name for name in WORKFLOW_NODES if name != "router_agent"
 }
 
 

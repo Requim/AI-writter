@@ -152,8 +152,14 @@ def test_scene_digest_uses_actual_generated_ending() -> None:
 
 
 @pytest.mark.asyncio
-async def test_persist_node_commits_all_continuity_artifacts_together() -> None:
+async def test_persist_node_commits_all_continuity_artifacts_together(monkeypatch) -> None:
     repository = SimpleNamespace(replace_chapter=AsyncMock())
+    events: list[tuple[str, dict, str]] = []
+    monkeypatch.setitem(
+        persist_node.__globals__,
+        "emit_workflow_event",
+        lambda event_type, data, node: events.append((event_type, data, node)),
+    )
     memory_service = SimpleNamespace(
         build_chapter_memory=lambda chapter: (
             "章节头尾记忆",
@@ -212,3 +218,8 @@ async def test_persist_node_commits_all_continuity_artifacts_together() -> None:
     assert kwargs["chapter_summary"] == "章节摘要，包含最终动作。"
     assert json.loads(kwargs["story_state"])["updated_through_chapter"] == 1
     assert json.loads(kwargs["rolling_plan"]) == rolling_plan
+    started_stages = [
+        data["stage"] for event_type, data, _node in events
+        if event_type == "status" and data.get("status") == "started"
+    ]
+    assert started_stages == ["chapter_summary", "story_state"]

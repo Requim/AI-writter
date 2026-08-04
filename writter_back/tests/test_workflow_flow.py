@@ -11,7 +11,9 @@ from uuid import uuid4
 import httpx
 import openai
 import pytest
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
+from langgraph.types import Command
 
 from api.routers.workflow_router import (
     WorkflowInvokeRequest,
@@ -62,10 +64,10 @@ def orchestrator() -> NovelOrchestrator:
     )
 
 
-def _chapter_outline_result() -> dict:
+def _chapter_outline_result(chapter_number: int = 1) -> dict:
     return {
-        "chapter_number": 1,
-        "title": "第一章 回声",
+        "chapter_number": chapter_number,
+        "title": f"第{chapter_number}章 回声",
         "chapter_goal": "建立核心悬念",
         "core_conflict": "主角收到不可能存在的来信",
         "key_events": ["收到来信", "确认寄信人已死亡"],
@@ -77,7 +79,7 @@ def _chapter_outline_result() -> dict:
         "exit_state": {"location": "出租屋", "last_action": "打开信封"},
         "logic_hooks": {"callback": "无", "setup": "信封中的照片"},
         "rolling_plan": [{
-            "chapter_number": 1,
+            "chapter_number": chapter_number,
             "goal": "建立核心悬念",
             "required_event": "收到来信",
             "state_delta": "主角决定调查",
@@ -120,7 +122,7 @@ class FakeWorkflowLLM:
         del prompt
         if schema is CHAPTER_OUTLINE_SCHEMA:
             self.chapter_outline_calls += 1
-            return _chapter_outline_result()
+            return _chapter_outline_result(self.chapter_outline_calls)
         if schema is CHUNK_REFLECTION_SCHEMA:
             return {"issues": []}
         if schema is AGGREGATION_SCHEMA or schema is REFLECTION_SCHEMA:
@@ -134,6 +136,7 @@ class FakeWorkflowLLM:
 
 def _manual_workflow_input() -> dict:
     return {
+        "workflow_schema_version": 2,
         "novel_type": "suspense",
         "title": "测试小说",
         "summary": "测试简介",
@@ -169,6 +172,51 @@ def _manual_workflow_config(llm: FakeWorkflowLLM) -> dict:
             "quota_service": None,
         },
     }
+
+
+def _three_chapter_input() -> dict:
+    state = _manual_workflow_input()
+    state["total_outline"] = {
+        **state["total_outline"],
+        "total_chapters": 3,
+    }
+    return state
+
+
+def _checkpoint_config(llm: FakeWorkflowLLM, auto_mode: bool) -> dict:
+    config = _manual_workflow_config(llm)
+    config["recursion_limit"] = 120
+    config["configurable"] = {
+        **config["configurable"],
+        "auto_mode": auto_mode,
+        "thread_id": str(uuid4()),
+    }
+    return config
+
+
+async def _finish_manual_three_chapters(
+    llm: FakeWorkflowLLM,
+) -> tuple[dict, int, int]:
+    workflow = create_novel_workflow(MemorySaver())
+    config = _checkpoint_config(llm, auto_mode=False)
+    result = await workflow.ainvoke(_three_chapter_input(), config)
+    reviews = 0
+    confirmations = 0
+    while result.get("is_completed") is not True:
+        proposal = result.get("pending_proposal")
+        interrupts = result.get("__interrupt__", ())
+        actions = [item.value.get("action") for item in interrupts]
+        if proposal and proposal["kind"] == "chapter_outline":
+            decision = {
+                "proposal_id": proposal["proposal_id"], "decision": "accept",
+            }
+            reviews += 1
+        else:
+            assert actions == ["ready_for_next_chapter"]
+            decision = True
+            confirmations += 1
+        result = await workflow.ainvoke(Command(resume=decision), config)
+    return result, reviews, confirmations
 
 
 class FakeRoutingWorkflow:
@@ -299,6 +347,36 @@ async def test_fake_llm_completes_one_chapter_through_real_graph():
     assert len(result["completed_chapters"]) == 1
     assert llm.chapter_outline_calls == 1
     assert llm.stream_calls == 3
+
+
+@pytest.mark.asyncio
+async def test_auto_mode_completes_three_chapters_through_real_graph():
+    llm = FakeWorkflowLLM()
+    workflow = create_novel_workflow()
+
+    result = await workflow.ainvoke(
+        _three_chapter_input(), _checkpoint_config(llm, auto_mode=True)
+    )
+
+    assert result["is_completed"] is True
+    assert result["current_chapter_index"] == 3
+    assert len(result["completed_chapters"]) == 3
+    assert llm.chapter_outline_calls == 3
+    assert llm.stream_calls == 9
+
+
+@pytest.mark.asyncio
+async def test_manual_mode_reviews_each_outline_and_completes_three_chapters():
+    llm = FakeWorkflowLLM()
+
+    result, reviews, confirmations = await _finish_manual_three_chapters(llm)
+
+    assert result["is_completed"] is True
+    assert result["current_chapter_index"] == 3
+    assert len(result["completed_chapters"]) == 3
+    assert reviews == llm.chapter_outline_calls == 3
+    assert confirmations == 2
+    assert llm.stream_calls == 9
 
 
 @pytest.mark.asyncio
@@ -558,6 +636,27 @@ async def test_failed_run_reuses_checkpoint_quota_key():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("enabled", "expected"), [(False, 2), (True, 4)])
+async def test_new_workflow_schema_follows_review_v3_flag(
+    monkeypatch, enabled: bool, expected: int,
+) -> None:
+    monkeypatch.setattr(
+        "api.routers.workflow_router.settings.WORKFLOW_REVIEW_V3_ENABLED", enabled
+    )
+    service = SimpleNamespace(
+        set_auto_mode=lambda *_args: None,
+        get_workflow_run_id=AsyncMock(return_value=None),
+    )
+    quota = SimpleNamespace(reserve=AsyncMock())
+    prepared, *_ = await _prepare_request(
+        WorkflowInvokeRequest(input={"workflow_schema_version": 99}),
+        tenant_context(), str(uuid4()), service, quota,
+    )
+    assert prepared is not None
+    assert prepared["workflow_schema_version"] == expected
+
+
+@pytest.mark.asyncio
 async def test_retry_request_does_not_reserve_quota():
     context = tenant_context()
     service = SimpleNamespace(set_auto_mode=lambda *_args: None)
@@ -600,6 +699,45 @@ async def test_retry_checkpoint_routes_existing_draft_to_reflection():
     assert next_node == "reflection_node"
     assert workflow.aupdate_state.await_args.args[1]["next_tool"] == "reflection_node"
     assert workflow.aupdate_state.await_args.kwargs["as_node"] == "router_agent"
+
+
+@pytest.mark.asyncio
+async def test_retry_checkpoint_prioritizes_original_failed_node():
+    service = orchestrator()
+    workflow = SimpleNamespace(
+        aget_state=AsyncMock(return_value=SimpleNamespace(
+            values={"current_chapter_content": "已有正文"},
+            next=("outline_review_node",),
+            tasks=[SimpleNamespace(
+                name="outline_review_node", error=RuntimeError("审核失败")
+            )],
+        )),
+        aupdate_state=AsyncMock(),
+    )
+    service._workflow = workflow
+
+    next_node = await service.prepare_retry_checkpoint(
+        tenant_context(), str(uuid4())
+    )
+
+    assert next_node == "outline_review_node"
+    update = workflow.aupdate_state.await_args.args[1]
+    assert update["next_tool"] == "outline_review_node"
+    assert "原失败节点" in update["router_reasoning"]
+
+
+@pytest.mark.asyncio
+async def test_retry_attempt_is_visible_in_execution_snapshot():
+    service = orchestrator()
+    context = tenant_context()
+    thread_id = str(uuid4())
+    assert await service.try_start(context, thread_id) is True
+
+    service.record_retry_attempt(context, thread_id, 1)
+    snapshot = service.get_execution_snapshot(context, thread_id)
+
+    assert snapshot["retry_attempt"] == 1
+    service.finish(context, thread_id)
 
 
 @pytest.mark.asyncio
@@ -824,3 +962,19 @@ def test_interrupted_provider_stream_is_safe_and_retryable():
         "message": "无法稳定连接模型服务，请重试当前步骤",
         "retryable": True,
     }
+
+
+def test_generic_error_is_actionable_and_keeps_execution_context(monkeypatch):
+    monkeypatch.setattr("api.routers.workflow_router.settings.DEBUG", False)
+    error = RuntimeError("private implementation details")
+    error.code = "workflow_node_failed"
+    error.node = "summary_node"
+    error.retry_attempt = 1
+
+    payload = _public_error_data(error)
+
+    assert payload["code"] == "workflow_node_failed"
+    assert payload["node"] == "summary_node" and payload["retry_attempt"] == 1
+    assert payload["retryable"] is True
+    assert "管理员" not in payload["message"]
+    assert "同步创作现场后重试" in payload["message"]

@@ -38,6 +38,10 @@ class NovelAgentState(TypedDict):
     character_design: Optional[Dict]           # 已确认角色表、命名策略与关系轴
     character_design_feedback: Optional[str]  # 用户对角色设计的重生成要求
     character_design_return_to: Optional[str] # 旧 checkpoint 补做角色设计后的返回节点
+    title_feedback: Optional[str]              # 用户对书名提案的修改要求
+    summary_feedback: Optional[str]            # 用户对简介提案的修改要求
+    outline_feedback: Optional[str]            # 用户对宏观总纲的修改要求
+    chapter_outline_feedback: Optional[str]    # 用户对当前章节细纲的修改要求
     total_outline: Optional[Dict]            # 总纲领（用户优先，空则AI生成）
     chapter_outlines_input: Optional[Dict]    # 用户提供的章节细纲（优先使用）
     
@@ -51,6 +55,7 @@ class NovelAgentState(TypedDict):
     pending_proposal_decision: Optional[Any]     # 仅用于恢复旧 checkpoint 的一次性决定
     proposal_versions: Dict[str, int]          # 每类提案的单调版本号
     workflow_schema_version: int               # checkpoint 状态契约版本
+    legacy_revision_recompute_done: Optional[bool]  # 旧修订预览是否已兼容重算
     current_chapter_index: int                # 当前处理的章节索引
     chapter_outlines: Annotated[List[Dict], add]   # 最终使用的章节细纲列表
     current_chapter_content: Optional[str]    # 当前章节内容

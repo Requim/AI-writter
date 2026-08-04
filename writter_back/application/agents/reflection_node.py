@@ -23,11 +23,11 @@ from application.prompts.reflection_prompts import (
 )
 from application.prompts.version import PROMPT_VERSION
 from application.proposals import (
+    ReviewDecision,
+    decide_proposal,
     proposal_update,
     proposal_matches,
-    request_decision,
     require_proposal,
-    unpack_decision,
 )
 from application.schemas.agent_state import NovelAgentState
 from application.streaming import emit_workflow_event
@@ -368,23 +368,35 @@ def _quality_gate(result: dict, content: str) -> tuple[dict, list[dict]]:
     return gate, issues
 
 
-def _choice_command(choice: Any, issues: list[dict], gate: dict) -> Command:
-    if choice == "accept":
+def _choice_command(
+    decision: ReviewDecision, issues: list[dict], gate: dict
+) -> Command:
+    if decision.action == "accept":
         return Command(
             goto="persist_node",
             update={
                 "quality_gate": {**gate, "decision": "user_accepted"},
                 "quality_results": [{**gate, "decision": "user_accepted"}],
+                "reflection_issues": issues,
                 "pending_proposal": None,
                 "pending_proposal_decision": None,
             },
         )
-    if choice == "regenerate":
+    if decision.action == "regenerate":
         return Command(
             goto="chapter_writer_node",
             update={"pending_proposal": None, "pending_proposal_decision": None},
         )
-    instructions = choice if isinstance(choice, str) and choice not in {"revise", ""} else None
+    if decision.action == "replace":
+        return Command(
+            goto="reflection_node",
+            update={
+                "current_chapter_content": decision.value,
+                "pending_proposal": None,
+                "pending_proposal_decision": None,
+            },
+        )
+    instructions = decision.instruction or None
     return Command(
         goto="revision_node",
         update={
@@ -537,7 +549,7 @@ def _route_quality_result(
     attempts = state.get("revision_attempts", 0)
     maximum = values.get("max_reflection_loops", 5)
     if values.get("auto_mode", False) and gate["decision"] in {"patch", "refactor"} and attempts < maximum:
-        return _choice_command("revise", issues, gate)
+        return _choice_command(ReviewDecision("revise"), issues, gate)
     if values.get("direct_rewrite", False):
         if attempts < maximum:
             return _direct_rewrite_revision(gate, issues)
@@ -546,16 +558,39 @@ def _route_quality_result(
     return _reflection_proposal(state, action, gate, issues)
 
 
-def _unavailable_choice(choice: Any, reason: str, chapter: int) -> Command:
-    if choice in {"retry", "regenerate_review"}:
+def _unavailable_choice(
+    decision: ReviewDecision, reason: str, chapter: int
+) -> Command:
+    if decision.action == "replace":
+        return Command(
+            goto="reflection_node",
+            update={
+                "current_chapter_content": decision.value,
+                "pending_proposal": None,
+                "pending_proposal_decision": None,
+            },
+        )
+    if decision.action == "revise" and decision.instruction in {"retry", "regenerate_review"}:
         return Command(
             goto="reflection_node",
             update={"pending_proposal": None, "pending_proposal_decision": None},
         )
-    if choice == "regenerate":
+    if decision.action == "regenerate":
         return Command(
             goto="chapter_writer_node",
             update={"pending_proposal": None, "pending_proposal_decision": None},
+        )
+    if decision.action == "revise":
+        return Command(
+            goto="revision_node",
+            update={
+                "user_decision": {
+                    "action": "revise",
+                    "instructions": decision.instruction or None,
+                },
+                "pending_proposal": None,
+                "pending_proposal_decision": None,
+            },
         )
     gate = {
         "decision": "user_accepted_without_ai_review",
@@ -578,7 +613,6 @@ async def reflection_review_node(
     state: NovelAgentState, config: RunnableConfig
 ) -> Command[Literal["persist_node", "revision_node", "chapter_writer_node", "reflection_node"]]:
     """Collect a decision about an already checkpointed quality proposal."""
-    del config
     chapter = state.get("current_chapter_index", 0) + 1
     proposal = require_proposal(state, "reflection", chapter)
     payload = proposal["payload"] if isinstance(proposal["payload"], dict) else {}
@@ -590,9 +624,11 @@ async def reflection_review_node(
         }
     else:
         fields = _review_payload(payload.get("action", "review_reflection_issues"), state, payload["gate"], payload["issues"])
-    choice = unpack_decision(request_decision(state, proposal, **fields), proposal)
+    decision = decide_proposal(
+        state, proposal, config, force_human=True, **fields
+    )
     if payload.get("status") == "unavailable":
         return _unavailable_choice(
-            choice, str(payload.get("reason") or ""), chapter
+            decision, str(payload.get("reason") or ""), chapter
         )
-    return _choice_command(choice, payload["issues"], payload["gate"])
+    return _choice_command(decision, payload["issues"], payload["gate"])

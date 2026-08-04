@@ -32,6 +32,30 @@ class AIUnavailableError(RuntimeError):
     pass
 
 
+_QUOTA_BREAKDOWN_KEYS = ("outline", "chapter", "rewrite", "other")
+
+
+def _quota_category(operation_type: str) -> str:
+    return operation_type if operation_type in _QUOTA_BREAKDOWN_KEYS[:-1] else "other"
+
+
+def _quota_breakdown(rows: list[Any]) -> dict[str, int]:
+    result = {key: 0 for key in _QUOTA_BREAKDOWN_KEYS}
+    for operation_type, count in rows:
+        result[_quota_category(str(operation_type))] += int(count)
+    return result
+
+
+def _quota_recent_entry(ledger: QuotaLedgerModel) -> dict[str, Any]:
+    return {
+        "id": str(ledger.id),
+        "workflow_run_id": str(ledger.workflow_run_id),
+        "operation_type": ledger.operation_type,
+        "chapter_index": ledger.chapter_index,
+        "created_at": ledger.created_at,
+    }
+
+
 class IdentityRepository:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]):
         self.session_factory = session_factory
@@ -451,6 +475,33 @@ class IdentityRepository:
                     )
                 ).scalar_one()
             )
+
+    async def quota_usage_details(
+        self, tenant_id: UUID, period_start: date, recent_limit: int = 20,
+    ) -> dict[str, Any]:
+        """查询当前周期额度分类与最近流水，供租户额度接口展示。"""
+        filters = (
+            QuotaLedgerModel.tenant_id == tenant_id,
+            QuotaLedgerModel.period_start == period_start,
+        )
+        grouped_query = (
+            select(QuotaLedgerModel.operation_type, func.count(QuotaLedgerModel.id))
+            .where(*filters)
+            .group_by(QuotaLedgerModel.operation_type)
+        )
+        recent_query = (
+            select(QuotaLedgerModel)
+            .where(*filters)
+            .order_by(QuotaLedgerModel.created_at.desc())
+            .limit(max(1, min(recent_limit, 100)))
+        )
+        async with self.session_factory() as session:
+            grouped = list((await session.execute(grouped_query)).all())
+            recent = list((await session.execute(recent_query)).scalars())
+        return {
+            "breakdown": _quota_breakdown(grouped),
+            "recent": [_quota_recent_entry(item) for item in recent],
+        }
 
     async def admin_list_tenants(self, period_start: date) -> list[dict[str, Any]]:
         async with self.session_factory() as session:

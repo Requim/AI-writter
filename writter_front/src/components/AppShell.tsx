@@ -7,11 +7,11 @@ import {
   SettingOutlined,
 } from '@ant-design/icons'
 import { Button, Progress, Select, Tooltip } from 'antd'
-import { useEffect, useState } from 'react'
 import { NavLink, useNavigate } from 'react-router-dom'
-import { authApi, tenantApi } from '@/api/auth'
+import { authApi } from '@/api/auth'
 import { currentTenant, useAuthStore } from '@/stores/authStore'
-import type { QuotaUsage } from '@/types/auth'
+import { useQuota } from '@/stores/quotaStore'
+import type { TenantSummary } from '@/types/auth'
 import type { NavigationGuard, NavigationGuardOptions } from '@/hooks/useUnsavedChangesGuard'
 
 function runGuarded(
@@ -73,6 +73,29 @@ function HeaderNavigation({
   )
 }
 
+interface TenantConsoleProps {
+  tenants: TenantSummary[]
+  currentTenantId?: string
+  onChange: (tenantId: string) => void
+}
+
+function TenantConsole({ tenants, currentTenantId, onChange }: TenantConsoleProps) {
+  const { quota: usage } = useQuota()
+  return <div className="tenant-console">
+    <Select
+      aria-label="当前工作区" value={currentTenantId} onChange={onChange}
+      options={tenants.map((item) => ({ label: item.name, value: item.id }))}
+      popupMatchSelectWidth={false}
+    />
+    {usage && <Tooltip title={`本月 AI 创作额度 ${usage.used}/${usage.limit}`}>
+      <div className="quota-meter">
+        <Progress type="circle" size={26} percent={usage.limit ? Math.round(usage.used / usage.limit * 100) : 100} showInfo={false} strokeColor="#176b5b" />
+        <span>{usage.remaining}</span>
+      </div>
+    </Tooltip>}
+  </div>
+}
+
 /** 应用框架可选接收页面离开前的确认逻辑。 */
 export function AppShell({ children, onBeforeNavigate }: PropsWithChildren<{ onBeforeNavigate?: NavigationGuard }>) {
   const navigate = useNavigate()
@@ -82,12 +105,7 @@ export function AppShell({ children, onBeforeNavigate }: PropsWithChildren<{ onB
   const refreshToken = useAuthStore((state) => state.refreshToken)
   const switchTenant = useAuthStore((state) => state.switchTenant)
   const clear = useAuthStore((state) => state.clear)
-  const [usage, setUsage] = useState<QuotaUsage>()
   const tenant = currentTenant()
-
-  useEffect(() => {
-    tenantApi.usage().then(setUsage).catch(() => undefined)
-  }, [currentTenantId])
 
   const changeTenant = (tenantId: string) => {
     runGuarded(onBeforeNavigate, () => {
@@ -110,23 +128,7 @@ export function AppShell({ children, onBeforeNavigate }: PropsWithChildren<{ onB
           <span className="brand-mark"><BookOutlined /></span>
           <span><strong>墨间</strong><small>Novel Desk</small></span>
         </GuardedNavLink>
-        <div className="tenant-console">
-          <Select
-            aria-label="当前工作区"
-            value={currentTenantId}
-            onChange={changeTenant}
-            options={tenants.map((item) => ({ label: item.name, value: item.id }))}
-            popupMatchSelectWidth={false}
-          />
-          {usage && (
-            <Tooltip title={`本月 AI 创作额度 ${usage.used}/${usage.limit}`}>
-              <div className="quota-meter">
-                <Progress type="circle" size={26} percent={usage.limit ? Math.round(usage.used / usage.limit * 100) : 100} showInfo={false} strokeColor="#176b5b" />
-                <span>{usage.remaining}</span>
-              </div>
-            </Tooltip>
-          )}
-        </div>
+        <TenantConsole tenants={tenants} currentTenantId={currentTenantId} onChange={changeTenant} />
         <HeaderNavigation
           guard={onBeforeNavigate}
           role={tenant?.role}

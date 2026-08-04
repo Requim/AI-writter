@@ -34,6 +34,12 @@ describe('workflowReducer command isolation', () => {
     expect(stale).toBe(state)
   })
 
+  it('ignores events without a command id while a command is active', () => {
+    const state = { ...initialWorkflowState, status: 'running' as const, activeCommandId: 'command-new' }
+    const stale = workflowReducer(state, { type: 'event', event: event(9, 'append', '旧连接片段') })
+    expect(stale).toBe(state)
+  })
+
   it('ignores stale snapshots unless reconciliation is forced', () => {
     const state = {
       ...initialWorkflowState, status: 'running' as const, activeCommandId: 'command-new',
@@ -46,6 +52,22 @@ describe('workflowReducer command isolation', () => {
     }
     expect(workflowReducer(state, { type: 'snapshot', snapshot })).toBe(state)
     expect(workflowReducer(state, { type: 'snapshot', snapshot, force: true }).status).toBe('paused')
+  })
+})
+
+describe('workflowReducer sync health', () => {
+  it('enters recovery only after two consecutive failures and clears it on success', () => {
+    const first = workflowReducer(initialWorkflowState, { type: 'sync_failed' })
+    const second = workflowReducer(first, { type: 'sync_failed' })
+    expect(first.connectionRecovering).toBe(false)
+    expect(second.connectionRecovering).toBe(true)
+    const recovered = workflowReducer(second, {
+      type: 'sync_succeeded', at: '2026-08-04T08:00:00Z',
+    })
+    expect(recovered).toMatchObject({
+      connectionRecovering: false, consecutiveSyncFailures: 0,
+      lastSyncedAt: '2026-08-04T08:00:00Z',
+    })
   })
 })
 
@@ -118,6 +140,27 @@ describe('workflowReducer execution snapshots', () => {
     expect(hydrated.activeNode).toBe('outline_node')
     expect(hydrated.reasoning).toBe('正在构建宏观总纲')
     expect(hydrated.error).not.toContain('{"detail"')
+  })
+})
+
+describe('workflowReducer persistence stage timing', () => {
+  it('restarts the stage timer for chapter summary and story-state events', () => {
+    const summary = workflowReducer(initialWorkflowState, { type: 'event', event: {
+      id: 20, type: 'status', thread_id: 'thread-1', node: 'chapter_summary',
+      data: { status: 'started', started_at: '2026-08-04T08:00:00Z' },
+      timestamp: '2026-08-04T08:00:00Z',
+    } })
+    expect(summary).toMatchObject({
+      activeNode: 'chapter_summary', stageStartedAt: '2026-08-04T08:00:00Z',
+    })
+    const storyState = workflowReducer(summary, { type: 'event', event: {
+      id: 21, type: 'status', thread_id: 'thread-1', node: 'story_state',
+      data: { status: 'started', started_at: '2026-08-04T08:00:03Z' },
+      timestamp: '2026-08-04T08:00:03Z',
+    } })
+    expect(storyState).toMatchObject({
+      activeNode: 'story_state', stageStartedAt: '2026-08-04T08:00:03Z',
+    })
   })
 })
 
@@ -320,5 +363,48 @@ describe('workflowReducer paused snapshot', () => {
     expect(hydrated.status).toBe('paused')
     expect(hydrated.activeNode).toBe('chapter_outline_review_node')
     expect(hydrated.reasoning).toBe('第1章细纲已生成，请审阅或修改')
+  })
+})
+
+describe('workflowReducer completion', () => {
+  it('hydrates an explicitly completed checkpoint as a finished novel', () => {
+    const snapshot: WorkflowSnapshot = {
+      thread_id: 'thread-1', status: 'idle', is_completed: true,
+      has_interrupt: false, interrupts: [], next_nodes: ['router_agent'],
+      execution: { active_node: 'router_agent', command_id: 'old-command' },
+      state: { current_chapter_index: 3, is_completed: true },
+    }
+    const hydrated = workflowReducer(initialWorkflowState, { type: 'snapshot', snapshot })
+    expect(hydrated.status).toBe('completed')
+    expect(hydrated.activeNode).toBeUndefined()
+    expect(hydrated.activeCommandId).toBeUndefined()
+    expect(hydrated.hasPendingCheckpoint).toBe(false)
+  })
+
+  it('does not confuse a completed command with a completed novel', () => {
+    const commandDone = workflowReducer({ ...initialWorkflowState, status: 'running' }, {
+      type: 'event', event: {
+        id: 9, type: 'completed', thread_id: 'thread-1', data: { status: 'idle' },
+        timestamp: '2026-08-03T00:00:00Z',
+      },
+    })
+    expect(commandDone.status).toBe('idle')
+  })
+})
+
+describe('workflowReducer error reconciliation', () => {
+  it('keeps live error diagnostics while hydrating authoritative checkpoint flags', () => {
+    const snapshot: WorkflowSnapshot = {
+      thread_id: 'thread-1', status: 'idle', has_interrupt: false, interrupts: [],
+      next_nodes: ['reflection_node'], state: { has_current_chapter_content: true },
+    }
+    const hydrated = workflowReducer({
+      ...initialWorkflowState, status: 'error', error: '审读结构无效',
+      errorCode: 'quality_result_invalid', errorNode: 'reflection_node', retryable: true,
+    }, { type: 'snapshot', snapshot, force: true })
+    expect(hydrated.status).toBe('error')
+    expect(hydrated.errorCode).toBe('quality_result_invalid')
+    expect(hydrated.hasCheckpointDraft).toBe(true)
+    expect(hydrated.hasPendingCheckpoint).toBe(true)
   })
 })

@@ -2,7 +2,10 @@ import { Button, Tabs, Tag } from 'antd'
 import { useState } from 'react'
 import type { InterruptInfo, JsonValue, TitleSuggestion } from '@/types/novel'
 import { ReviewHeading, ReviewRows, ReviewValue } from './ReviewPrimitives'
-import { asRecord, asText, outlineFrom, proposalFrom, proposalPayload, titleCandidates } from './valueHelpers'
+import {
+  asRecord, asText, outlineFrom, proposalFrom, proposalPayload, summaryReviewDetails,
+  summaryValidationErrors, titleCandidates,
+} from './valueHelpers'
 import { qualityScoreOutOfFive } from './presentation'
 
 interface ReviewProps { interrupt: InterruptInfo }
@@ -24,33 +27,45 @@ export function CreativeBriefReview({ interrupt }: ReviewProps) {
   return <div className="review-surface"><ReviewHeading eyebrow="创作简报" /><ReviewRows rows={briefLabels.map(([label, key]) => [label, brief[key]])} /></div>
 }
 
-interface TitleReviewProps extends ReviewProps { onSelect: (item: TitleSuggestion, index: number) => void }
+interface TitleReviewProps extends ReviewProps {
+  onConfirm: (item: TitleSuggestion) => void
+  onRegenerate: () => void
+}
 
-export function TitleReview({ interrupt, onSelect }: TitleReviewProps) {
+export function TitleReview({ interrupt, onConfirm, onRegenerate }: TitleReviewProps) {
   const [expanded, setExpanded] = useState(false)
+  const [selected, setSelected] = useState<TitleSuggestion>()
   const suggestions = titleCandidates(interrupt)
   const visible = expanded ? suggestions : suggestions.slice(0, 3)
   if (!suggestions.length) return null
-  return <div className="review-surface title-review">
-    <ReviewHeading eyebrow="书名候选" title="先看最有潜力的三个" />
-    {visible.map((item, index) => <Button key={item.title} type="text" block onClick={() => onSelect(item, index)}>
-      <span className="title-choice"><strong>{item.title}</strong><span>{item.category && <Tag>{item.category}</Tag>}{item.total_score != null && <small>{item.total_score} 分</small>}</span></span>
-      {item.hint && <small>{item.hint}</small>}
-    </Button>)}
-    {suggestions.length > 3 && <Button type="link" className="expand-titles" onClick={() => setExpanded((value) => !value)}>{expanded ? '收起候选' : `展开其余 ${suggestions.length - 3} 个`}</Button>}
-  </div>
+  return <>
+    <div className="review-surface title-review">
+      <ReviewHeading eyebrow="书名候选" title="先选择，再确认使用" />
+      {visible.map((item) => <Button key={item.title} type="text" block aria-pressed={selected?.title === item.title}
+        className={selected?.title === item.title ? 'selected' : ''} onClick={() => setSelected(item)}>
+        <span className="title-choice"><strong>{item.title}</strong><span>{item.category && <Tag>{item.category}</Tag>}{item.total_score != null && <small>{item.total_score} / 40</small>}</span></span>
+        {item.hint && <small>{item.hint}</small>}
+      </Button>)}
+      {suggestions.length > 3 && <Button type="link" className="expand-titles" onClick={() => setExpanded((value) => !value)}>{expanded ? '收起候选' : `展开其余 ${suggestions.length - 3} 个`}</Button>}
+    </div>
+    <div className="interrupt-actions title-decision-actions">
+      <Button type="primary" disabled={!selected} onClick={() => selected && onConfirm(selected)}>{selected ? `确认使用《${selected.title}》` : '请先选择书名'}</Button>
+      <Button onClick={onRegenerate}>重新生成</Button>
+    </div>
+  </>
 }
 
 export function SummaryReview({ interrupt }: ReviewProps) {
-  const payload = proposalPayload(interrupt)
-  const reader = asText(payload?.reader_blurb) || interrupt.ai_generated_summary
-  const editorial = asText(payload?.editorial_brief) || reader
-  if (!reader && !editorial) return null
+  const { reader, editorial, legacy, complete } = summaryReviewDetails(interrupt)
+  const errors = summaryValidationErrors(interrupt)
   return <div className="review-surface summary-review">
     <ReviewHeading eyebrow="简介提案" />
+    {legacy && <div className="legacy-summary-note" role="note">旧版创作现场仅保存单一简介，两个视图暂时显示相同内容。</div>}
+    {!complete && <div className="summary-validation-note" role="alert">读者文案和内部简报必须完整且内容不同，请重新生成或修订后再确认。</div>}
+    {errors.length > 0 && <ul className="summary-validation-errors">{errors.map((error) => <li key={error}>{error}</li>)}</ul>}
     <Tabs size="small" items={[
-      { key: 'reader', label: '读者文案', children: <p>{reader}</p> },
-      { key: 'editorial', label: '内部简报', children: <p>{editorial}</p> },
+      { key: 'reader', label: '读者文案', children: <p>{reader || '未生成'}</p> },
+      { key: 'editorial', label: '内部简报', children: <p>{editorial || '未生成'}</p> },
     ]} />
   </div>
 }

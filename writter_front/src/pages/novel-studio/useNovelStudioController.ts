@@ -7,10 +7,12 @@ import { useWorkflowStream, type WorkflowViewState } from '@/hooks/useWorkflowSt
 import { useUnsavedChangesGuard, type DiscardConfirmation } from '@/hooks/useUnsavedChangesGuard'
 import { currentTenant } from '@/stores/authStore'
 import { useNovelStore } from '@/stores/novelStore'
+import { refreshQuota } from '@/stores/quotaStore'
 import type { ChapterDetail, ChapterSummary, NovelResponse, ProgressResponse } from '@/types/novel'
 import {
   autoResumeValue, hasChapterChanges, interruptKey, rewindImpactText, shouldAutoResume,
 } from '../novelStudioUtils'
+import { useAutoRunNotifications } from './useAutoRunNotifications'
 
 interface StudioLocationState { startInput?: Record<string, unknown> }
 type AppContext = ReturnType<typeof App.useApp>
@@ -26,6 +28,7 @@ interface DocumentState {
   mobilePanel: 'chapters' | 'editor' | 'workflow'
   loading: boolean
   saving: boolean
+  rewriting: boolean
 }
 
 interface DocumentModel {
@@ -36,13 +39,23 @@ interface DocumentModel {
 
 const initialDocumentState: DocumentState = {
   chapters: [], editorTitle: '', editorContent: '', editorMode: 'read',
-  mobilePanel: 'editor', loading: true, saving: false,
+  mobilePanel: 'editor', loading: true, saving: false, rewriting: false,
 }
+
+const REWRITE_SYNC_CODES = new Set([
+  'workflow_command_in_progress', 'workflow_command_already_applied',
+])
 
 function apiErrorCode(error: unknown): string | undefined {
   if (!axios.isAxiosError(error)) return undefined
   const payload = error.response?.data as { detail?: { code?: unknown } } | undefined
   return typeof payload?.detail?.code === 'string' ? payload.detail.code : undefined
+}
+
+function isRewriteSyncSignal(error: unknown): boolean {
+  return axios.isAxiosError(error)
+    && error.response?.status === 409
+    && REWRITE_SYNC_CODES.has(apiErrorCode(error) || '')
 }
 
 function useDocumentModel(): DocumentModel {
@@ -152,6 +165,53 @@ function useChapterSave(
   }, [app, editorContent, editorTitle, novelId, refresh, selectedChapter, selectedRef, setState])
 }
 
+async function syncRewrittenChapter(
+  model: DocumentModel,
+  novelId: string,
+  chapterId: string,
+  refresh: () => Promise<void> | undefined,
+): Promise<void> {
+  const [detail] = await Promise.all([
+    novelApi.chapter(novelId, chapterId), refresh(), refreshQuota(),
+  ])
+  applySelectedChapter(model.setState, model.selectedRef, detail)
+}
+
+function useChapterRewrite(
+  model: DocumentModel,
+  novelId: string,
+  refresh: () => Promise<void> | undefined,
+  app: AppContext,
+) {
+  const selected = model.state.selectedChapter
+  return useCallback(() => {
+    if (!selected) return
+    app.modal.confirm({
+      title: `AI 重写第 ${selected.chapter_index + 1} 章？`,
+      content: '只替换当前章节正文并重新审读，将预留 1 次生成额度；后续章节不会被删除。',
+      okText: '开始重写',
+      onOk: async () => {
+        model.setState((current) => ({ ...current, rewriting: true }))
+        try {
+          const detail = await novelApi.rewriteChapter(novelId, selected.id)
+          applySelectedChapter(model.setState, model.selectedRef, detail)
+          await Promise.all([refresh(), refreshQuota()])
+          app.message.success(`第 ${selected.chapter_index + 1} 章已重写`)
+        } catch (error) {
+          if (!isRewriteSyncSignal(error)) {
+            app.message.error('章节重写失败，请稍后重试')
+            throw error
+          }
+          await syncRewrittenChapter(model, novelId, selected.id, refresh)
+          app.message.info('重写请求正在处理或已完成，已同步当前章节与额度')
+        } finally {
+          model.setState((current) => ({ ...current, rewriting: false }))
+        }
+      },
+    })
+  }, [app, model, novelId, refresh, selected])
+}
+
 function useChapterDelete(
   model: DocumentModel,
   novelId: string,
@@ -228,17 +288,50 @@ function useAutoRunReset(
     const previous = previousRef.current
     previousRef.current = status
     if (!['running', 'paused', 'stalled', 'cancelling'].includes(previous)) return
-    if (['idle', 'recoverable', 'error'].includes(status)) queueMicrotask(() => setActive(false))
+    if (['idle', 'recoverable', 'error', 'completed'].includes(status)) queueMicrotask(() => setActive(false))
   }, [setActive, status])
 }
 
-function useDetachedSync(workflow: ReturnType<typeof useWorkflowStream>): void {
-  const { connection, status } = workflow.state
+function detachedPollDelay(): number {
+  return document.visibilityState === 'hidden' ? 15_000 : 3_000
+}
+
+function useDetachedSync(
+  connection: WorkflowViewState['connection'],
+  status: WorkflowViewState['status'],
+  sync: ReturnType<typeof useWorkflowStream>['sync'],
+): void {
   useEffect(() => {
     if (connection !== 'detached' || !['running', 'stalled'].includes(status)) return
-    const timer = window.setInterval(() => void workflow.sync().catch(() => undefined), 15_000)
-    return () => window.clearInterval(timer)
-  }, [connection, status, workflow])
+    const poll = () => void sync(true).catch(() => undefined)
+    let timer = window.setInterval(poll, detachedPollDelay())
+    const restart = () => {
+      window.clearInterval(timer)
+      poll()
+      timer = window.setInterval(poll, detachedPollDelay())
+    }
+    document.addEventListener('visibilitychange', restart)
+    return () => {
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', restart)
+    }
+  }, [connection, status, sync])
+}
+
+function useQuotaRefresh(commandId?: string, chapterId?: string): void {
+  const previousCommand = useRef<string | undefined>(undefined)
+  const previousChapter = useRef<string | undefined>(undefined)
+  useEffect(() => {
+    if (!commandId || previousCommand.current === commandId) return
+    previousCommand.current = commandId
+    const timer = window.setTimeout(() => void refreshQuota(), 750)
+    return () => window.clearTimeout(timer)
+  }, [commandId])
+  useEffect(() => {
+    if (!chapterId || previousChapter.current === chapterId) return
+    previousChapter.current = chapterId
+    void refreshQuota()
+  }, [chapterId])
 }
 
 function useInitialWorkflowSync(
@@ -381,6 +474,7 @@ export interface NovelStudioController {
   workflow: ReturnType<typeof useWorkflowStream>
   autoMode: boolean
   autoRunActive: boolean
+  isCompleted: boolean
   canDelete: boolean
   hasUnsavedChanges: boolean
   hasRecoverableCheckpoint: boolean
@@ -390,6 +484,7 @@ export interface NovelStudioController {
   openChapter: (chapter: ChapterSummary) => void
   saveChapter: () => Promise<boolean>
   deleteChapter: () => void
+  rewriteChapter: () => void
   startWriting: () => void
   resumeWriting: (value: unknown) => void
   continueAutoWriting: () => void
@@ -415,7 +510,8 @@ function useControllerEffects(
   useInitialWorkflowStart(model.state.novel, autoMode, workflow.run, setActive)
   useAutoResume(workflow, model.state.novel?.novel_type || 'suspense', autoMode, active, lastInterruptRef)
   useAutoRunReset(workflow.state.status, setActive)
-  useDetachedSync(workflow)
+  useDetachedSync(workflow.state.connection, workflow.state.status, workflow.sync)
+  useQuotaRefresh(workflow.state.activeCommandId, workflow.state.lastPersistedChapterId)
   usePersistedChapterSync(model, novelId, workflow.state.lastPersistedChapterId, hasChanges, message)
   useMetadataSync(model, workflow.state)
 }
@@ -427,7 +523,16 @@ function useStudioDocument(novelId: string, app: AppContext) {
   const loadChapter = useChapterLoader(model, novelId)
   const saveChapter = useChapterSave(model, novelId, refresh, app)
   const deleteChapter = useChapterDelete(model, novelId, refresh, app)
-  return { model, refresh, loadChapter, saveChapter, deleteChapter }
+  const rewriteChapter = useChapterRewrite(model, novelId, refresh, app)
+  return { model, refresh, loadChapter, saveChapter, deleteChapter, rewriteChapter }
+}
+
+function studioCompleted(state: DocumentState, workflow: WorkflowViewState): boolean {
+  const total = state.progress?.total_chapters || state.novel?.total_outline?.total_chapters || 0
+  const current = workflow.currentChapter ?? state.progress?.current_chapter ?? 0
+  const busy = ['running', 'paused', 'stalled', 'cancelling'].includes(workflow.status)
+  return workflow.status === 'completed'
+    || state.novel?.status === 'completed' || (!busy && total > 0 && current >= total)
 }
 
 export function useNovelStudioController(): NovelStudioController {
@@ -445,6 +550,8 @@ export function useNovelStudioController(): NovelStudioController {
   const hasChanges = hasChapterChanges(state.selectedChapter, state.editorTitle, state.editorContent)
   const confirmDiscard = useDiscardGuard(hasChanges, app.modal)
   const recovery = recoveryDetails(workflow.state, state.progress)
+  const isCompleted = studioCompleted(state, workflow.state)
+  useAutoRunNotifications(autoRunActive, workflow.state, isCompleted, app.notification)
   const commands = useWorkflowCommands({
     workflow, novelId, novelType: state.novel?.novel_type || 'suspense', autoMode,
     recoverable: recovery.recoverable, setActive: setAutoRunActive,
@@ -457,19 +564,20 @@ export function useNovelStudioController(): NovelStudioController {
   }, [document.model])
   const changeAutoMode = useCallback((value: boolean) => {
     setStoredAutoMode(value)
-    setAutoRunActive(value && workflow.state.status === 'running')
-  }, [setStoredAutoMode, workflow.state.status])
+  }, [setStoredAutoMode])
   const openChapter = useCallback((chapter: ChapterSummary) => {
     if (chapter.id === state.selectedChapter?.id) { setEditor({ mobilePanel: 'editor' }); return }
     confirmDiscard(() => void document.loadChapter(chapter))
   }, [confirmDiscard, document, setEditor, state.selectedChapter?.id])
   return {
-    novelId, document: state, workflow, autoMode, autoRunActive,
+    novelId, document: state, workflow, autoMode, autoRunActive, isCompleted,
     canDelete: ['owner', 'admin'].includes(currentTenant()?.role || ''),
     hasUnsavedChanges: hasChanges, hasRecoverableCheckpoint: recovery.recoverable,
     recoveryLabel: recovery.label, confirmDiscardChanges: confirmDiscard,
     refresh: document.refresh, openChapter, saveChapter: document.saveChapter,
-    deleteChapter: document.deleteChapter, startWriting: () => gated(commands.start),
+    deleteChapter: document.deleteChapter,
+    rewriteChapter: () => confirmDiscard(document.rewriteChapter),
+    startWriting: () => gated(commands.start),
     resumeWriting: (value) => gated(() => commands.resume(value)),
     continueAutoWriting: () => gated(commands.continueAuto),
     stopWriting: () => void commands.stop(), setAutoMode: changeAutoMode, setEditor,

@@ -1,4 +1,5 @@
 import type { ChapterDetail, ChapterSummary, InterruptInfo } from '@/types/novel'
+import { requiresHumanReview } from '@/workflowReviewPolicy'
 
 /** 返回自动模式处理当前人工确认时应提交的值。 */
 export function autoResumeValue(interrupt: InterruptInfo, novelType: string): unknown {
@@ -30,7 +31,7 @@ export function shouldAutoResume(
   lastInterruptKey: string | undefined,
 ): boolean {
   if (!autoMode || !autoRunActive || !interrupt) return false
-  if (['quality_gate_exhausted', 'quality_gate_human_review'].includes(interrupt.action)) return false
+  if (requiresHumanReview(interrupt.action)) return false
   return interruptKey(interrupt) !== lastInterruptKey
 }
 

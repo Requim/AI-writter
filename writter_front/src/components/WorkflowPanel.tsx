@@ -31,7 +31,7 @@ export function WorkflowPanel(props: WorkflowPanelProps) {
       <WorkflowTimeline state={state} />
       <WorkflowQualitySummary state={state} />
       <WorkflowReview interrupt={state.interrupt} autoMode={autoMode} onResume={onResume} onRetry={onRetry} />
-      <WorkflowError state={state} chapterNumber={chapterNumber} onRetry={onRetry} />
+      <WorkflowError state={state} chapterNumber={chapterNumber} onRetry={onRetry} onRefresh={onRefresh} />
     </aside>
   )
 }

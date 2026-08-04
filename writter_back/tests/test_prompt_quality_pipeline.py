@@ -7,7 +7,11 @@ from langgraph.types import Command
 from api.routers.workflow_router import _seed_initial_input
 from application.agents.chapter_writer_node import _build_scene_ledger_entry
 from application.agents.reflection_node import _quality_gate, reflection_node
-from application.agents.revision_node import apply_structured_patch, revision_node
+from application.agents.revision_node import (
+    apply_structured_patch,
+    revision_node,
+    revision_review_node,
+)
 from application.agents.title_generator_node import _normalize_candidates
 from application.errors import QualityGateReviewRequired, RetryableWorkflowError
 from application.prompts.chapter_outline_prompts import build_chapter_outline_prompt
@@ -284,7 +288,9 @@ async def test_creative_brief_regeneration_stays_on_single_graph_branch() -> Non
     first = await workflow.ainvoke({"novel_type": "suspense"}, config)
     assert first["__interrupt__"][0].value["action"] == "review_or_modify_creative_brief"
 
-    second = await workflow.ainvoke(Command(resume="regenerate"), config)
+    proposal_id = first["__interrupt__"][0].value["proposal_id"]
+    decision = {"proposal_id": proposal_id, "decision": "regenerate"}
+    second = await workflow.ainvoke(Command(resume=decision), config)
 
     actions = [item.value["action"] for item in second["__interrupt__"]]
     assert actions == ["review_or_modify_creative_brief"]
@@ -343,5 +349,9 @@ async def test_patch_failure_falls_back_to_full_refactor() -> None:
 
     command = await revision_node(state, config)
 
-    assert command.goto == "reflection_node"
-    assert command.update["current_chapter_content"].startswith("重构后的章节")
+    assert command.goto == "revision_review_node"
+    reviewed = await revision_review_node({**state, **command.update}, config)
+    assert reviewed.goto == "reflection_node"
+    assert reviewed.update["current_chapter_content"].startswith("重构后的章节")
+    assert reviewed.update["revision_attempts"] == 1
+    assert reviewed.update["revision_history"][0]["issues_before"]

@@ -104,13 +104,13 @@ describe('WorkflowPanel character design', () => {
     fireEvent.change(screen.getByRole('textbox', { name: '女主角自定义姓名' }), { target: { value: '梁知夏' } })
     fireEvent.click(screen.getByRole('button', { name: '确认角色设计' }))
     expect(onResume).toHaveBeenCalledWith({
-      proposal_id: 'proposal-characters', decision: 'modify',
+      proposal_id: 'proposal-characters', decision: 'replace',
       value: { name_selections: { 'lead-m': 'm-2' }, custom_names: { 'lead-f': '梁知夏' } },
     })
     fireEvent.change(screen.getByPlaceholderText('输入具体修改要求'), { target: { value: '男主姓名更朴素，避免生僻字' } })
     fireEvent.click(screen.getByRole('button', { name: '按要求修订' }))
     expect(onResume).toHaveBeenLastCalledWith({
-      proposal_id: 'proposal-characters', decision: 'regenerate', feedback: '男主姓名更朴素，避免生僻字',
+      proposal_id: 'proposal-characters', decision: 'revise', instruction: '男主姓名更朴素，避免生僻字',
     })
   })
 })
@@ -166,7 +166,7 @@ describe('WorkflowPanel chapter outline', () => {
 })
 
 describe('WorkflowPanel titles', () => {
-  it('shows scored title candidates and submits the selected object', () => {
+  it('keeps a legacy title selection local until explicit confirmation', () => {
     const onResume = vi.fn()
     render(
       <WorkflowPanel
@@ -187,6 +187,9 @@ describe('WorkflowPanel titles', () => {
     )
 
     fireEvent.click(screen.getByRole('button', { name: /死者请于雨夜回信/ }))
+    expect(onResume).not.toHaveBeenCalled()
+    expect(screen.getByText('35 / 40')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '确认使用《死者请于雨夜回信》' }))
     expect(onResume).toHaveBeenCalledWith(expect.objectContaining({ title: '死者请于雨夜回信' }))
   })
 
@@ -204,8 +207,10 @@ describe('WorkflowPanel titles', () => {
     expect(screen.queryByText('候选书名4')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '展开其余 2 个' }))
     fireEvent.click(screen.getByRole('button', { name: /候选书名4/ }))
+    expect(onResume).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: '确认使用《候选书名4》' }))
     expect(onResume).toHaveBeenCalledWith({
-      proposal_id: 'proposal-title', decision: 'modify', value: expect.objectContaining({ title: '候选书名4' }),
+      proposal_id: 'proposal-title', decision: 'replace', value: expect.objectContaining({ title: '候选书名4' }),
     })
   })
 })
@@ -224,6 +229,43 @@ describe('WorkflowPanel summary and quality', () => {
     expect(screen.getByText('给读者看的悬念。')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('tab', { name: '内部简报' }))
     expect(screen.getByText('供总纲推演的完整因果。')).toBeInTheDocument()
+  })
+
+  it('labels a legacy single-view summary instead of implying two generated variants', () => {
+    render(<WorkflowPanel state={{
+      status: 'paused', connection: 'idle', draft: '', issues: [], events: [],
+      interrupt: {
+        action: 'confirm_or_provide_summary', proposal_id: 'summary-legacy',
+        proposal: { proposal_id: 'summary-legacy', kind: 'summary', version: 1,
+          payload: { reader_blurb: '旧版简介', legacy_single_view: true } },
+      },
+    }} autoMode={false} onResume={vi.fn()} onRetry={vi.fn()} onCancel={vi.fn()} onRefresh={vi.fn()} />)
+    expect(screen.getByRole('note')).toHaveTextContent('旧版创作现场仅保存单一简介')
+  })
+
+  it('blocks acceptance when a v3 summary is missing either required view', () => {
+    render(<WorkflowPanel state={{
+      status: 'paused', connection: 'idle', draft: '', issues: [], events: [],
+      interrupt: {
+        action: 'confirm_or_provide_summary', proposal_id: 'summary-incomplete',
+        proposal: { proposal_id: 'summary-incomplete', kind: 'summary', version: 1,
+          payload: { reader_blurb: '只有读者文案' } },
+      },
+    }} autoMode={false} onResume={vi.fn()} onRetry={vi.fn()} onCancel={vi.fn()} onRefresh={vi.fn()} />)
+    expect(screen.getByRole('alert')).toHaveTextContent('必须完整且内容不同')
+    expect(screen.getByRole('button', { name: '接受并继续' })).toBeDisabled()
+  })
+
+  it('treats summaries that differ only in whitespace as the same content', () => {
+    render(<WorkflowPanel state={{
+      status: 'paused', connection: 'idle', draft: '', issues: [], events: [],
+      interrupt: {
+        action: 'confirm_or_provide_summary', proposal_id: 'summary-spaces',
+        proposal: { proposal_id: 'summary-spaces', kind: 'summary', version: 1,
+          payload: { reader_blurb: '雨 夜 来 信', editorial_brief: '雨夜来信' } },
+      },
+    }} autoMode={false} onResume={vi.fn()} onRetry={vi.fn()} onCancel={vi.fn()} onRefresh={vi.fn()} />)
+    expect(screen.getByRole('button', { name: '接受并继续' })).toBeDisabled()
   })
 
   it('keeps the human quality decision visible in automatic mode', () => {
@@ -264,7 +306,7 @@ describe('WorkflowPanel unavailable quality review', () => {
     }} autoMode onResume={onResume} onRetry={vi.fn()} onCancel={vi.fn()} onRefresh={vi.fn()} />)
     expect(screen.getByText('模型连续返回非数值评分')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '重新审读' }))
-    expect(onResume).toHaveBeenCalledWith({ proposal_id: 'reflection-1', decision: 'modify', value: 'retry' })
+    expect(onResume).toHaveBeenCalledWith({ proposal_id: 'reflection-1', decision: 'revise', instruction: 'retry' })
     expect(screen.getByRole('button', { name: '接受并标记未审读' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '重写正文' })).toBeInTheDocument()
   })
@@ -283,6 +325,9 @@ describe('WorkflowPanel errors', () => {
           issues: [],
           events: [],
           error: '模型返回的审读结果格式不符合要求，请重试当前步骤',
+          errorCode: 'quality_result_invalid',
+          errorNode: 'reflection_node',
+          retryCount: 1,
           retryable: true,
         }}
         autoMode
@@ -294,7 +339,58 @@ describe('WorkflowPanel errors', () => {
     )
 
     expect(screen.getByText('第 3 章质量审读失败')).toBeInTheDocument()
+    expect(screen.getByText('quality_result_invalid')).toBeInTheDocument()
+    expect(screen.getByText(/未完成预览已保留.*重试将从本章重新生成/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /同步现场/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /重试第 3 章质量审读/ })).toBeInTheDocument()
+  })
+})
+
+describe('WorkflowPanel summary recovery', () => {
+  it('pauses automatic mode and requires a valid two-view repair', () => {
+    const onResume = vi.fn()
+    render(<WorkflowPanel state={{
+      status: 'paused', connection: 'idle', draft: '', activeNode: 'summary_review_node', issues: [], events: [],
+      interrupt: {
+        action: 'summary_review_required', proposal_id: 'summary-repair',
+        message: '简介结构纠正失败，请人工处理',
+        proposal: { proposal_id: 'summary-repair', kind: 'summary', version: 2, payload: {
+          reader_blurb: '相同内容', editorial_brief: '相同内容', human_review_required: true,
+          validation_errors: ['reader_blurb 与 editorial_brief 不能相同'],
+        } },
+      },
+    }} autoMode onResume={onResume} onRetry={vi.fn()} onCancel={vi.fn()} onRefresh={vi.fn()} />)
+    expect(screen.getAllByText('简介结构纠正失败，请人工处理').length).toBeGreaterThan(0)
+    expect(screen.getByText('reader_blurb 与 editorial_brief 不能相同')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '接受并继续' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '提交修复后的简介' })).toBeDisabled()
+    fireEvent.change(screen.getByLabelText('内部简报'), { target: { value: '用于总纲推演的完整因果' } })
+    fireEvent.click(screen.getByRole('button', { name: '提交修复后的简介' }))
+    expect(onResume).toHaveBeenCalledWith({
+      proposal_id: 'summary-repair', decision: 'replace',
+      value: { reader_blurb: '相同内容', editorial_brief: '用于总纲推演的完整因果' },
+    })
+  })
+})
+
+describe('WorkflowPanel connection state', () => {
+  it('shows background progress with the last successful sync age', () => {
+    const lastSyncedAt = new Date(Date.now() - 5_000).toISOString()
+    render(<WorkflowPanel state={{
+      status: 'running', connection: 'detached', draft: '', issues: [], events: [],
+      activeNode: 'chapter_writer_node', lastSyncedAt, connectionRecovering: false,
+    }} autoMode onResume={vi.fn()} onRetry={vi.fn()} onCancel={vi.fn()} onRefresh={vi.fn()} />)
+    expect(screen.getByText(/后台运行中，最近同步于 \d+ 秒前/)).toBeInTheDocument()
+    expect(screen.queryByText(/实时连接已结束/)).not.toBeInTheDocument()
+  })
+
+  it('uses recovery wording only after repeated sync failures', () => {
+    render(<WorkflowPanel state={{
+      status: 'running', connection: 'detached', draft: '', issues: [], events: [],
+      activeNode: 'chapter_writer_node', connectionRecovering: true, consecutiveSyncFailures: 2,
+    }} autoMode onResume={vi.fn()} onRetry={vi.fn()} onCancel={vi.fn()} onRefresh={vi.fn()} />)
+    expect(screen.getByText(/连接恢复中/)).toBeInTheDocument()
+    expect(screen.queryByText(/后台运行中/)).not.toBeInTheDocument()
   })
 })
 
@@ -326,5 +422,25 @@ describe('WorkflowPanel recovery', () => {
     expect(screen.getByText('草稿已保留，等待继续')).toBeInTheDocument()
     expect(screen.queryByText('尚未开始执行')).not.toBeInTheDocument()
     expect(screen.queryByText('空闲')).not.toBeInTheDocument()
+  })
+})
+
+describe('WorkflowPanel persistence stages', () => {
+  it('shows chapter context for summary and story-state persistence nodes', () => {
+    const props = {
+      autoMode: true, onResume: vi.fn(), onRetry: vi.fn(), onCancel: vi.fn(), onRefresh: vi.fn(),
+    }
+    const { rerender } = render(<WorkflowPanel {...props} state={{
+      status: 'running', connection: 'streaming', draft: '', issues: [], events: [],
+      activeNode: 'chapter_summary', currentChapter: 2,
+    }} />)
+    expect(screen.getByText('本章生成章节摘要')).toBeInTheDocument()
+    expect(screen.getByText('正在为已完成章节生成可检索摘要。')).toBeInTheDocument()
+    rerender(<WorkflowPanel {...props} state={{
+      status: 'running', connection: 'streaming', draft: '', issues: [], events: [],
+      activeNode: 'story_state', currentChapter: 2,
+    }} />)
+    expect(screen.getByText('本章更新故事状态')).toBeInTheDocument()
+    expect(screen.getByText('正在更新人物、线索和连续性状态。')).toBeInTheDocument()
   })
 })

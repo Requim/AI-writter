@@ -53,13 +53,17 @@ async def current_usage(
     context: TenantContext = Depends(get_tenant_context),
     identity: IdentityRepository = Depends(get_identity_repository),
 ) -> dict[str, Any]:
-    used = await identity.quota_usage(context.tenant_id, current_period_start())
+    """返回当前租户本月额度总量、分类统计与最近扣费流水。"""
+    period_start = current_period_start()
+    details = await identity.quota_usage_details(context.tenant_id, period_start)
+    used = sum(details["breakdown"].values())
     return {
         "used": used,
         "limit": context.monthly_generation_limit,
         "remaining": max(context.monthly_generation_limit - used, 0),
         "ai_enabled": context.ai_enabled,
-        "period_start": current_period_start(),
+        "period_start": period_start,
+        **details,
     }
 
 

@@ -104,6 +104,12 @@ export interface ProgressResponse {
   status: string
 }
 
+export type ChapterReviewStatus =
+  | 'passed'
+  | 'accepted_with_issues'
+  | 'accepted_unreviewed'
+  | 'unknown'
+
 export interface ChapterSummary {
   id: string
   chapter_index: number
@@ -111,6 +117,8 @@ export interface ChapterSummary {
   word_count: number
   status: string
   version: number
+  review_status: ChapterReviewStatus
+  quality_score: number | null
 }
 
 export interface ChapterDetail extends ChapterSummary {
@@ -163,6 +171,12 @@ export interface PendingProposal {
   prompt_version?: string
 }
 
+export type ReviewDecision =
+  | { proposal_id: string; decision: 'accept' }
+  | { proposal_id: string; decision: 'regenerate'; feedback?: string }
+  | { proposal_id: string; decision: 'revise'; instruction: string }
+  | { proposal_id: string; decision: 'replace'; value: JsonValue }
+
 export type ReviewInterruptAction =
   | 'review_or_modify_creative_brief'
   | 'review_or_modify_character_design'
@@ -174,6 +188,7 @@ export type ReviewInterruptAction =
   | 'quality_gate_exhausted'
   | 'quality_gate_human_review'
   | 'quality_review_unavailable'
+  | 'summary_review_required'
   | 'confirm_revision'
 
 export type SystemInterruptAction = 'require_novel_type' | 'ready_for_next_chapter'
@@ -225,6 +240,7 @@ export interface WorkflowExecutionSnapshot {
 export interface WorkflowSnapshot {
   thread_id: string
   status: 'running' | 'paused' | 'idle' | 'unknown'
+  is_completed?: boolean
   has_interrupt: boolean
   interrupts: InterruptInfo[]
   next_nodes?: string[]

@@ -24,6 +24,24 @@ export function proposalPayload(interrupt: InterruptInfo): JsonRecord | undefine
   return asRecord(proposalFrom(interrupt)?.payload)
 }
 
+export function summaryTextsDistinct(reader?: string, editorial?: string): boolean {
+  if (!reader || !editorial) return false
+  return reader.replace(/\s+/g, '') !== editorial.replace(/\s+/g, '')
+}
+
+export function summaryReviewDetails(interrupt: InterruptInfo) {
+  const payload = proposalPayload(interrupt)
+  const reader = asText(payload?.reader_blurb) || interrupt.ai_generated_summary
+  const legacy = payload?.legacy_single_view === true || !proposalFrom(interrupt)
+  const editorial = asText(payload?.editorial_brief) || (legacy ? reader : undefined)
+  const distinct = summaryTextsDistinct(reader, editorial)
+  return { reader, editorial, legacy, complete: Boolean(reader && editorial && (legacy || distinct)) }
+}
+
+export function summaryValidationErrors(interrupt: InterruptInfo): string[] {
+  return asTextList(proposalPayload(interrupt)?.validation_errors)
+}
+
 export function outlineFrom(interrupt: InterruptInfo): JsonRecord | undefined {
   const proposal = proposalFrom(interrupt)
   const payload = proposalPayload(interrupt)

@@ -1,13 +1,21 @@
 """Tenant-scoped novel, chapter and rewrite endpoints."""
 
+import asyncio
 from datetime import datetime
-from typing import Any
-from uuid import UUID, uuid4
+from typing import Any, Literal
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from api.dependencies import get_tenant_context
+from api.workflow_commands import (
+    ClaimedWorkflowCommand,
+    claim_command,
+    finalize_command_or_http,
+    get_workflow_command_store,
+    release_command_or_http,
+)
 from application.checkpoint_reconciliation import reconcile_pending_checkpoint
 from application.errors import QualityGateReviewRequired, WorkflowBusyError
 from application.orchestrator import NovelOrchestrator
@@ -19,6 +27,7 @@ from infrastructure.database.identity_repository import (
 from infrastructure.database.repository import PostgresNovelRepository
 from service.entities.identity import TenantContext
 from service.entities.novel import Novel
+from service.ports.workflow_command_store import WorkflowCommandStore
 from service.value_objects.novel_type import NovelType
 from service.value_objects.outline import Outline
 from service.value_objects.progress import Progress
@@ -26,6 +35,7 @@ from service.value_objects.progress import Progress
 router = APIRouter()
 REWRITE_MAX_REVISION_ATTEMPTS = 5
 REWRITE_MAX_NODE_STEPS = REWRITE_MAX_REVISION_ATTEMPTS * 2 + 2
+_REWRITE_PERSISTENCE_STARTED = "_rewrite_persistence_started"
 
 
 def get_repository(request: Request) -> PostgresNovelRepository:
@@ -64,6 +74,10 @@ class ChapterResponse(BaseModel):
     word_count: int
     status: str
     version: int
+    review_status: Literal[
+        "passed", "accepted_with_issues", "accepted_unreviewed", "unknown"
+    ] = Field(default="unknown", description="章节质量审读状态")
+    quality_score: float | None = Field(default=None, description="章节质量综合分")
 
 
 class ChapterUpdateRequest(BaseModel):
@@ -118,6 +132,35 @@ def _chapter_response(
         version=chapter.version,
         updated_at=chapter.updated_at,
         checkpoint_status=checkpoint_status,
+        **_chapter_review_fields(chapter),
+    )
+
+
+def _chapter_review_fields(chapter: Any) -> dict[str, Any]:
+    decision = chapter.user_decision if isinstance(chapter.user_decision, dict) else {}
+    valid_statuses = {
+        "passed", "accepted_with_issues", "accepted_unreviewed", "unknown",
+    }
+    status = decision.get("review_status", "unknown")
+    if status == "pass":
+        status = "passed"
+    score = decision.get("quality_score")
+    return {
+        "review_status": status if status in valid_statuses else "unknown",
+        "quality_score": (
+            float(score)
+            if isinstance(score, (int, float)) and not isinstance(score, bool)
+            else None
+        ),
+    }
+
+
+def _chapter_summary_response(chapter: Any) -> ChapterResponse:
+    return ChapterResponse(
+        id=str(chapter.id), chapter_index=chapter.chapter_index,
+        title=chapter.title or f"第{chapter.chapter_index + 1}章",
+        word_count=chapter.word_count, status=chapter.status, version=chapter.version,
+        **_chapter_review_fields(chapter),
     )
 
 
@@ -210,17 +253,7 @@ async def list_chapters(
     novel = await repo.find_by_id_with_chapters(_tenant_id(context), novel_id)
     if novel is None:
         raise HTTPException(status_code=404, detail="小说不存在")
-    return [
-        ChapterResponse(
-            id=str(chapter.id),
-            chapter_index=chapter.chapter_index,
-            title=chapter.title,
-            word_count=chapter.word_count,
-            status=chapter.status,
-            version=chapter.version,
-        )
-        for chapter in novel.chapters
-    ]
+    return [_chapter_summary_response(chapter) for chapter in novel.chapters]
 
 
 @router.get("/{novel_id}/chapters/{chapter_id}", response_model=ChapterDetailResponse)
@@ -352,6 +385,8 @@ async def _generate_rewritten_chapter(
 
     node_name = "reflection_node"
     for _ in range(REWRITE_MAX_NODE_STEPS):
+        if node_name == "persist_node":
+            state[_REWRITE_PERSISTENCE_STARTED] = True
         try:
             goto = await _run_rewrite_node(node_name, state, config)
         except QualityGateReviewRequired as exc:
@@ -447,6 +482,77 @@ async def _finish_rewrite(
     return _chapter_response(persisted, checkpoint_status)
 
 
+def _rewrite_run_id(
+    context: TenantContext, novel_id: str, command_id: str
+) -> UUID:
+    identity = f"{_tenant_id(context)}:{novel_id}:{command_id}"
+    return uuid5(NAMESPACE_URL, f"novel-rewrite:{identity}")
+
+
+async def _prepare_rewrite(
+    request: Request,
+    context: TenantContext,
+    repo: PostgresNovelRepository,
+    novel_id: str,
+    chapter_id: str,
+    command: ClaimedWorkflowCommand,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    quota: QuotaService = request.app.state.quota_service
+    orchestrator: NovelOrchestrator = request.app.state.orchestrator
+    chapter, novel = await _load_rewrite_target(
+        repo, context, novel_id, chapter_id
+    )
+    run_id = _rewrite_run_id(context, novel_id, command.command_id)
+    await _reserve_rewrite(quota, context, run_id, chapter.chapter_index)
+    memory = await request.app.state.memory_service.get_hierarchical_context(
+        _tenant_id(context), novel_id, chapter.chapter_index
+    )
+    state = _rewrite_state(novel, chapter, str(run_id), memory)
+    config = _rewrite_config(request, context, novel_id, repo, quota, orchestrator)
+    return state, config
+
+
+async def _release_replayable_rewrite(
+    store: WorkflowCommandStore,
+    context: TenantContext,
+    novel_id: str,
+    command: ClaimedWorkflowCommand,
+    state: dict[str, Any] | None,
+) -> None:
+    if state and state.get(_REWRITE_PERSISTENCE_STARTED):
+        return
+    await release_command_or_http(store, context, novel_id, command)
+
+
+async def _execute_rewrite_command(
+    request: Request,
+    context: TenantContext,
+    repo: PostgresNovelRepository,
+    novel_id: str,
+    chapter_id: str,
+    command: ClaimedWorkflowCommand,
+    store: WorkflowCommandStore,
+) -> ChapterDetailResponse:
+    orchestrator: NovelOrchestrator = request.app.state.orchestrator
+    state: dict[str, Any] | None = None
+    try:
+        async with orchestrator.exclusive_operation(context, novel_id, "正在重写章节"):
+            state, config = await _prepare_rewrite(
+                request, context, repo, novel_id, chapter_id, command
+            )
+            state = await _generate_rewritten_chapter(state, config)
+            response = await _finish_rewrite(
+                repo, orchestrator, context, novel_id, state
+            )
+    except (Exception, asyncio.CancelledError):
+        await _release_replayable_rewrite(
+            store, context, novel_id, command, state
+        )
+        raise
+    await finalize_command_or_http(store, context, novel_id, command)
+    return response
+
+
 @router.post(
     "/{novel_id}/chapters/{chapter_id}/rewrite",
     response_model=ChapterDetailResponse,
@@ -455,44 +561,16 @@ async def rewrite_chapter(
     novel_id: str,
     chapter_id: str,
     request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     context: TenantContext = Depends(get_tenant_context),
     repo: PostgresNovelRepository = Depends(get_repository),
-):
-    quota: QuotaService = request.app.state.quota_service
-    orchestrator: NovelOrchestrator = request.app.state.orchestrator
+    store: WorkflowCommandStore = Depends(get_workflow_command_store),
+) -> ChapterDetailResponse:
+    command = await claim_command(store, context, novel_id, idempotency_key)
     try:
-        async with orchestrator.exclusive_operation(context, novel_id, "正在重写章节"):
-            chapter, novel = await _load_rewrite_target(
-                repo, context, novel_id, chapter_id
-            )
-            workflow_run_id = uuid4()
-            await _reserve_rewrite(
-                quota, context, workflow_run_id, chapter.chapter_index
-            )
-            config = _rewrite_config(
-                request, context, novel_id, repo, quota, orchestrator
-            )
-            memory_context = (
-                await request.app.state.memory_service.get_hierarchical_context(
-                    _tenant_id(context), novel_id, chapter.chapter_index
-                )
-            )
-            state = await _generate_rewritten_chapter(
-                _rewrite_state(
-                    novel,
-                    chapter,
-                    str(workflow_run_id),
-                    memory_context,
-                ),
-                config,
-            )
-            return await _finish_rewrite(
-                repo,
-                orchestrator,
-                context,
-                novel_id,
-                state,
-            )
+        return await _execute_rewrite_command(
+            request, context, repo, novel_id, chapter_id, command, store
+        )
     except WorkflowBusyError as exc:
         raise _workflow_busy_error(exc) from exc
 

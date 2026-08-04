@@ -12,13 +12,13 @@ from application.prompts.outline_prompts import (
     build_outline_prompt,
     validate_outline,
 )
+from application.prompts.review_feedback import append_review_feedback
 from application.prompts.version import PROMPT_VERSION
 from application.proposals import (
+    decide_proposal,
     proposal_update,
     proposal_matches,
     require_proposal,
-    request_decision,
-    unpack_decision,
 )
 from application.schemas.agent_state import NovelAgentState
 from application.streaming import emit_workflow_event
@@ -142,14 +142,15 @@ async def _generate_outline_proposal(
     )
     design = state.get("character_design") or {}
     planning_summary = state.get("editorial_summary") or state.get("summary", "")
-    generated = await llm.structured_generate(
-        prompt=build_outline_prompt(
+    prompt = build_outline_prompt(
             state.get("novel_type", ""), title, planning_summary,
             target_total_chapters=state.get("target_total_chapters"),
             requested_writing_style=state.get("requested_writing_style"),
             creative_brief=state.get("creative_brief"),
             main_characters=design.get("characters", []),
-        ),
+        )
+    generated = await llm.structured_generate(
+        prompt=append_review_feedback(prompt, state.get("outline_feedback")),
         schema=OUTLINE_SCHEMA, temperature=0.75, top_p=0.9,
     )
     if not generated:
@@ -176,14 +177,9 @@ async def outline_generator_node(
         )
     generated = await _generate_outline_proposal(state, config, title)
     ai_outline = _prepare_outline(state, generated)
-    if config["configurable"].get("auto_mode", False):
-        return Command(
-            goto="persist_node",
-            update={"total_outline": ai_outline, "__next_node__": "progress_check_node"},
-        )
     return Command(
         goto="outline_review_node",
-        update=proposal_update(state, "outline", ai_outline),
+        update={**proposal_update(state, "outline", ai_outline), "outline_feedback": None},
     )
 
 
@@ -192,27 +188,25 @@ async def outline_review_node(
     config: RunnableConfig,
 ) -> Command[Literal["persist_node", "outline_node"]]:
     """审核已保存的宏观总纲，本节点不得调用 LLM。"""
-    del config
     proposal = require_proposal(state, "outline")
     validation = validate_outline(proposal["payload"])
-    raw_decision = request_decision(
+    decision = decide_proposal(
         state,
         proposal,
+        config,
         action="review_or_modify_outline",
         message="AI 已生成宏观总纲，请审阅后进入逐章创作",
         ai_generated_outline=proposal["payload"],
         validation=validation,
     )
-    decision = unpack_decision(raw_decision, proposal)
-    if decision == "regenerate":
-        return Command(
-            goto="outline_node",
-            update={
-                "pending_proposal": None,
-                "pending_proposal_decision": None,
-            },
+    if decision.action in {"regenerate", "revise"}:
+        feedback = (
+            decision.instruction
+            if decision.action == "revise"
+            else decision.feedback
         )
-    selected = proposal["payload"] if decision == "accept" else decision
+        return _regenerate_outline(feedback)
+    selected = proposal["payload"] if decision.action == "accept" else decision.value
     if not isinstance(selected, dict):
         raise RuntimeError("宏观总纲生成失败：用户提交的总纲格式无效")
     selected = _prepare_outline(state, selected)
@@ -220,8 +214,20 @@ async def outline_review_node(
         goto="persist_node",
         update={
             "total_outline": selected,
+            "outline_feedback": None,
             "pending_proposal": None,
             "pending_proposal_decision": None,
             "__next_node__": "progress_check_node",
+        },
+    )
+
+
+def _regenerate_outline(feedback: str) -> Command:
+    return Command(
+        goto="outline_node",
+        update={
+            "pending_proposal": None,
+            "pending_proposal_decision": None,
+            "outline_feedback": feedback or None,
         },
     )

@@ -32,8 +32,19 @@ describe('parseSseStream', () => {
     }
     const payload = `id: 1\nevent: content_delta\ndata: ${JSON.stringify(event)}\n\n`
     const received: WorkflowEvent[] = []
-    await parseSseStream(responseFrom([payload.slice(0, 17), payload.slice(17, 49), payload.slice(49)]), (item) => received.push(item))
+    const result = await parseSseStream(responseFrom([payload.slice(0, 17), payload.slice(17, 49), payload.slice(49)]), (item) => received.push(item))
     expect(received).toEqual([event])
+    expect(result.terminal).toBe(false)
+  })
+
+  it('recognizes an interrupt as a normal terminal event', async () => {
+    const event: WorkflowEvent = {
+      id: 2, type: 'interrupt', thread_id: 'thread-1', data: { interrupts: [] },
+      timestamp: '2026-07-15T00:00:01Z',
+    }
+    const payload = `event: interrupt\ndata: ${JSON.stringify(event)}\n\n`
+    const result = await parseSseStream(responseFrom([payload]), () => undefined)
+    expect(result.terminal).toBe(true)
   })
 
   it('sends bearer and tenant context with the SSE request', async () => {

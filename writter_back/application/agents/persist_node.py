@@ -36,6 +36,7 @@ STORY_STATE_FIELDS = {
     "timeline", "characters", "open_conflicts", "foreshadowing",
     "immutable_facts", "last_transition",
 }
+ACCEPTED_WITH_ISSUES = frozenset({"user_accepted", "user_accepted_revision"})
 
 
 def _outline_value(raw: Any) -> tuple[Outline | None, int]:
@@ -79,6 +80,41 @@ async def _persist_setup(
         logger.info("【持久化节点】novels 表已更新 | title=%s, total_chapters=%s", novel.title, total)
 
 
+def _quality_score(gate: dict[str, Any]) -> float | None:
+    value = gate.get("score")
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def _review_status(gate: dict[str, Any]) -> str:
+    decision = gate.get("decision")
+    if decision == "pass":
+        return "passed"
+    if decision == "user_accepted_without_ai_review":
+        return "accepted_unreviewed"
+    return "accepted_with_issues" if decision in ACCEPTED_WITH_ISSUES else "unknown"
+
+
+def _chapter_review_metadata(state: NovelAgentState) -> dict[str, Any]:
+    raw_gate = state.get("quality_gate")
+    gate = dict(raw_gate) if isinstance(raw_gate, dict) else {}
+    raw_decision = state.get("user_decision")
+    decision = dict(raw_decision) if isinstance(raw_decision, dict) else {}
+    decision.update({
+        "review_status": _review_status(gate),
+        "quality_score": _quality_score(gate),
+        "source_score_scale": gate.get("source_score_scale"),
+        "prompt_version": gate.get("prompt_version") or state.get("prompt_version"),
+    })
+    issues = state.get("reflection_issues") or []
+    history = state.get("revision_history") or []
+    return {
+        "reflection_issues": [dict(item) for item in issues if isinstance(item, dict)],
+        "user_decision": decision,
+        "revision_count": int(state.get("revision_attempts", 0) or 0),
+        "revision_history": [dict(item) for item in history if isinstance(item, dict)],
+    }
+
+
 def _completed_chapter(state: NovelAgentState, content: str, index: int) -> dict[str, Any]:
     outlines = state.get("chapter_outlines") or []
     outline = outlines[-1] if outlines and isinstance(outlines[-1], dict) else {}
@@ -86,6 +122,7 @@ def _completed_chapter(state: NovelAgentState, content: str, index: int) -> dict
         "id": str(uuid4()), "chapter_index": index,
         "title": outline.get("title", f"第{index + 1}章"), "content": content,
         "word_count": len(content), "outline": outline, "status": "completed",
+        **_chapter_review_metadata(state),
     }
 
 
@@ -110,11 +147,21 @@ def _chapter_entity(chapter: dict[str, Any], novel_id: str) -> Chapter:
         id=UUID(chapter["id"]), novel_id=UUID(novel_id),
         chapter_index=chapter["chapter_index"], title=chapter["title"],
         outline=chapter["outline"], content=chapter["content"],
-        word_count=chapter["word_count"], status="completed", created_at=now, updated_at=now,
+        word_count=chapter["word_count"], status="completed",
+        reflection_issues=chapter["reflection_issues"],
+        user_decision=chapter["user_decision"],
+        revision_count=chapter["revision_count"],
+        revision_history=chapter["revision_history"],
+        created_at=now, updated_at=now,
     )
 
 
 async def _generate_summary(llm: Any, chapter: dict[str, Any]) -> str:
+    emit_workflow_event(
+        "status",
+        {"status": "started", "message": "正在生成章节摘要", "stage": "chapter_summary"},
+        "chapter_summary",
+    )
     prompt = build_chapter_summary_prompt(chapter["title"], chapter["content"])
     for _attempt in range(2):
         generated = await llm.structured_generate(
@@ -154,6 +201,11 @@ def _recent_patterns(
 async def _generate_story_state(
     llm: Any, chapter: dict[str, Any], previous: str, index: int,
 ) -> dict[str, Any]:
+    emit_workflow_event(
+        "status",
+        {"status": "started", "message": "正在更新故事状态", "stage": "story_state"},
+        "story_state",
+    )
     prompt = build_story_state_prompt(
         index, chapter["title"], chapter["content"], previous_state=previous,
         chapter_outline=chapter["outline"],

@@ -11,6 +11,7 @@ const statusMeta = {
   stalled: { label: '状态异常', color: 'error' as const, icon: <WarningOutlined /> },
   cancelling: { label: '正在结束', color: 'processing' as const, icon: <LoadingOutlined /> },
   error: { label: '失败', color: 'error' as const, icon: <WarningOutlined /> },
+  completed: { label: '已完稿', color: 'success' as const, icon: <CheckCircleOutlined /> },
   idle: { label: '空闲', color: 'default' as const, icon: <CheckCircleOutlined /> },
 }
 

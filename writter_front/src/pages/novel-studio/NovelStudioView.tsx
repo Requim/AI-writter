@@ -1,10 +1,11 @@
 import { Button, Input, Progress, Segmented, Tooltip } from 'antd'
 import {
-  EditOutlined, FileTextOutlined, HistoryOutlined, LeftOutlined, PauseCircleOutlined,
+  EditOutlined, FileDoneOutlined, FileTextOutlined, HistoryOutlined, LeftOutlined, PauseCircleOutlined,
   PlayCircleOutlined, ReloadOutlined, SaveOutlined, StopOutlined, UnorderedListOutlined,
 } from '@ant-design/icons'
 import { MarkdownManuscript } from '@/components/MarkdownManuscript'
 import { WorkflowPanel } from '@/components/WorkflowPanel'
+import { qualityScoreOutOfFive } from '@/components/workflow/presentation'
 import type { ChapterSummary } from '@/types/novel'
 import type { NovelStudioController } from './useNovelStudioController'
 
@@ -12,6 +13,9 @@ function WorkflowAction({ controller }: { controller: NovelStudioController }) {
   const { workflow, autoMode, autoRunActive } = controller
   const status = workflow.state.status
   const busy = ['running', 'stalled', 'cancelling'].includes(status)
+  if (controller.isCompleted) return (
+    <Button type="primary" icon={<FileDoneOutlined />} onClick={() => controller.setEditor({ mobilePanel: 'editor' })}>查看完稿</Button>
+  )
   if (busy) return (
     <Button danger icon={<StopOutlined />} loading={status === 'cancelling'} onClick={controller.stopWriting}>停止</Button>
   )
@@ -33,7 +37,7 @@ function StudioHeader({ controller }: { controller: NovelStudioController }) {
     <header className="studio-header">
       <Button type="text" icon={<LeftOutlined />} onClick={controller.goBack}>书架</Button>
       <div className="studio-title">
-        <span>{novel?.status === 'completed' ? '已完稿' : '创作中'}</span>
+        <span>{controller.isCompleted ? '已完稿' : '创作中'}</span>
         <h1>{novel?.title || '未命名作品'}</h1>
       </div>
       <div className="studio-actions">
@@ -90,9 +94,43 @@ function ChapterItem({ chapter, controller }: { chapter: ChapterSummary; control
     <li className={selected ? 'active' : ''}>
       <button onClick={() => controller.openChapter(chapter)}>
         <span>{String(chapter.chapter_index + 1).padStart(2, '0')}</span>
-        <div><strong>{chapter.title}</strong><small>{chapter.word_count.toLocaleString()} 字</small></div>
+        <div><strong>{chapter.title}</strong><ChapterReviewMeta chapter={chapter} /></div>
       </button>
     </li>
+  )
+}
+
+function ChapterReviewMeta({ chapter }: { chapter: ChapterSummary }) {
+  const score = chapter.quality_score == null
+    ? undefined : `${qualityScoreOutOfFive(chapter.quality_score).toFixed(1)} / 5`
+  if (chapter.review_status === 'accepted_unreviewed') return (
+    <small><span>{chapter.word_count.toLocaleString()} 字</span><b className="review-badge warning">未审读</b></small>
+  )
+  if (chapter.review_status === 'accepted_with_issues') return (
+    <small><span>{chapter.word_count.toLocaleString()} 字</span><b className="review-badge issue">带问题通过{score ? ` · ${score}` : ''}</b></small>
+  )
+  if (chapter.review_status === 'unknown') return (
+    <small><span>{chapter.word_count.toLocaleString()} 字</span><b className="review-badge muted">审读未知</b></small>
+  )
+  return <small><span>{chapter.word_count.toLocaleString()} 字</span>{score && <b className="review-score">{score}</b>}</small>
+}
+
+function CompletionSummary({ controller }: { controller: NovelStudioController }) {
+  if (!controller.isCompleted) return null
+  const chapters = controller.document.chapters
+  const words = chapters.reduce((total, chapter) => total + chapter.word_count, 0)
+  const unreviewed = chapters.filter((chapter) => chapter.review_status === 'accepted_unreviewed').length
+  const unknown = chapters.filter((chapter) => chapter.review_status === 'unknown').length
+  return (
+    <section className="completion-summary" aria-label="完稿摘要">
+      <FileDoneOutlined />
+      <div><strong>完稿摘要</strong><span>{chapters.length} 章 · {words.toLocaleString()} 字</span></div>
+      <div className="completion-review-status">
+        {unreviewed > 0 && <b className="review-badge warning">未审读 {unreviewed} 章</b>}
+        {unknown > 0 && <b className="review-badge muted">审读未知 {unknown} 章</b>}
+        {!unreviewed && !unknown && <span>全部章节已完成审读</span>}
+      </div>
+    </section>
   )
 }
 
@@ -116,7 +154,8 @@ function ChapterSidebar({ controller }: { controller: NovelStudioController }) {
 
 function EditorActions({ controller }: { controller: NovelStudioController }) {
   const { selectedChapter, editorMode } = controller.document
-  const busy = ['running', 'stalled', 'cancelling'].includes(controller.workflow.state.status)
+  const busy = controller.document.rewriting
+    || ['running', 'stalled', 'cancelling'].includes(controller.workflow.state.status)
   if (!selectedChapter) return null
   return (
     <div className="editor-actions">
@@ -127,9 +166,12 @@ function EditorActions({ controller }: { controller: NovelStudioController }) {
         aria-label="章节查看模式"
       />
       {controller.hasUnsavedChanges && <span className="editor-dirty-indicator">未保存</span>}
+      <Tooltip title="AI 重写本章">
+        <Button type="text" aria-label="AI 重写本章" icon={<ReloadOutlined />} disabled={busy} loading={controller.document.rewriting} onClick={controller.rewriteChapter} />
+      </Tooltip>
       {controller.canDelete && (
         <Tooltip title="从本章重新创作">
-          <Button danger type="text" aria-label="从本章重新创作" icon={<HistoryOutlined />} onClick={controller.deleteChapter} />
+          <Button danger disabled={busy} type="text" aria-label="从本章重新创作" icon={<HistoryOutlined />} onClick={controller.deleteChapter} />
         </Tooltip>
       )}
       {editorMode === 'edit' && (
@@ -198,9 +240,11 @@ function ChapterEditor({ controller }: { controller: NovelStudioController }) {
 function WorkflowSidebar({ controller }: { controller: NovelStudioController }) {
   const workflow = controller.workflow
   const active = controller.document.mobilePanel === 'workflow' ? 'mobile-active' : ''
+  const state = controller.isCompleted && workflow.state.status === 'idle'
+    ? { ...workflow.state, status: 'completed' as const } : workflow.state
   return (
     <WorkflowPanel
-      className={`studio-pane ${active}`} state={workflow.state}
+      className={`studio-pane ${active}`} state={state}
       autoMode={controller.autoMode && controller.autoRunActive}
       onResume={controller.resumeWriting} onRetry={controller.startWriting}
       onCancel={controller.stopWriting}
@@ -214,6 +258,7 @@ export function NovelStudioView({ controller }: { controller: NovelStudioControl
     <div className="studio-page page-enter">
       <StudioHeader controller={controller} />
       <StudioProgress controller={controller} />
+      <CompletionSummary controller={controller} />
       <StudioMobileTabs controller={controller} />
       <div className="studio-grid">
         <ChapterSidebar controller={controller} />

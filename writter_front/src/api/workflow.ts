@@ -34,17 +34,31 @@ function postWorkflow(
 export class WorkflowRequestError extends Error {
   readonly status: number
   readonly code?: string
+  readonly node?: string
+  readonly retryable?: boolean
+  readonly retryAfter?: number
+  readonly retryCount?: number
 
   constructor(
     message: string,
     status: number,
-    code?: string,
+    details: string | {
+      code?: string
+      node?: string
+      retryable?: boolean
+      retryAfter?: number
+      retryCount?: number
+    } = {},
   ) {
     super(message)
     this.name = 'WorkflowRequestError'
     this.status = status
-    this.code = code
+    Object.assign(this, typeof details === 'string' ? { code: details } : details)
   }
+}
+
+function numeric(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }
 
 function responseError(response: Response, raw: string): WorkflowRequestError {
@@ -56,12 +70,18 @@ function responseError(response: Response, raw: string): WorkflowRequestError {
     // Non-JSON upstream responses are presented as plain text.
   }
   if (detail && typeof detail === 'object') {
-    const value = detail as { code?: unknown; message?: unknown }
+    const value = detail as Record<string, unknown>
     const message = typeof value.message === 'string' ? value.message : `请求失败（HTTP ${response.status}）`
     return new WorkflowRequestError(
       message,
       response.status,
-      typeof value.code === 'string' ? value.code : undefined,
+      {
+        code: typeof value.code === 'string' ? value.code : undefined,
+        node: typeof value.node === 'string' ? value.node : undefined,
+        retryable: typeof value.retryable === 'boolean' ? value.retryable : undefined,
+        retryAfter: numeric(value.retry_after),
+        retryCount: numeric(value.retry_count ?? value.attempt),
+      },
     )
   }
   return new WorkflowRequestError(
@@ -73,7 +93,7 @@ function responseError(response: Response, raw: string): WorkflowRequestError {
 export async function parseSseStream(
   response: Response,
   onEvent: (event: WorkflowEvent) => void,
-): Promise<void> {
+): Promise<{ terminal: boolean }> {
   if (!response.ok) {
     throw responseError(response, await response.text())
   }
@@ -82,6 +102,7 @@ export async function parseSseStream(
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
+  let terminal = false
   while (true) {
     const { done, value } = await reader.read()
     buffer += decoder.decode(value, { stream: !done })
@@ -91,10 +112,14 @@ export async function parseSseStream(
       const dataLine = frame.split(/\r?\n/).find((line) => line.startsWith('data:'))
       if (!dataLine) continue
       const parsed: unknown = JSON.parse(dataLine.slice(5).trim())
-      if (isWorkflowEvent(parsed)) onEvent(parsed)
+      if (isWorkflowEvent(parsed)) {
+        onEvent(parsed)
+        terminal ||= ['interrupt', 'completed', 'error'].includes(parsed.type)
+      }
     }
     if (done) break
   }
+  return { terminal }
 }
 
 export async function streamWorkflow(
@@ -103,7 +128,7 @@ export async function streamWorkflow(
   onEvent: (event: WorkflowEvent) => void,
   signal?: AbortSignal,
   idempotencyKey?: string,
-): Promise<void> {
+): Promise<{ terminal: boolean }> {
   const body = JSON.stringify(payload)
   let response = await postWorkflow(threadId, body, signal, idempotencyKey)
   if (response.status === 401) {

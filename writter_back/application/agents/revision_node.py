@@ -21,11 +21,11 @@ from application.prompts.revision_prompts import (
     format_issues_for_prompt,
 )
 from application.proposals import (
+    ReviewDecision,
+    decide_proposal,
     proposal_update,
     proposal_matches,
-    request_decision,
     require_proposal,
-    unpack_decision,
 )
 from application.schemas.agent_state import NovelAgentState
 from application.streaming import collect_streamed_text, emit_workflow_event
@@ -177,18 +177,7 @@ async def _generate_refactor(
     return await _expand_if_needed(llm, revised, content, outline, context, bible, index)
 
 
-def _next_after_revision(
-    state: NovelAgentState, revised: str, config: RunnableConfig
-) -> Command:
-    if config["configurable"].get("auto_mode", False):
-        attempts = state.get("revision_attempts", 0)
-        history = (state.get("revision_history", []) or []) + [
-            {"attempt": attempts + 1, "issues_before": state.get("reflection_issues", [])}
-        ]
-        return Command(
-            goto="reflection_node",
-            update={"current_chapter_content": revised, "revision_attempts": attempts + 1, "revision_history": history},
-        )
+def _next_after_revision(state: NovelAgentState, revised: str) -> Command:
     chapter_number = state.get("current_chapter_index", 0) + 1
     update = proposal_update(
         state,
@@ -211,40 +200,74 @@ def _revision_review_fields(proposal: dict[str, Any]) -> dict[str, Any]:
 
 async def revision_review_node(
     state: NovelAgentState, config: RunnableConfig
-) -> Command[Literal["persist_node", "revision_node"]]:
+) -> Command[Literal["persist_node", "reflection_node", "revision_node"]]:
     """审核 checkpoint 中的修订提案，不再次调用模型。"""
-    del config
     chapter_number = state.get("current_chapter_index", 0) + 1
     proposal = require_proposal(state, "revision", chapter_number)
-    raw = request_decision(state, proposal, **_revision_review_fields(proposal))
-    choice = unpack_decision(raw, proposal)
+    decision = decide_proposal(
+        state, proposal, config, **_revision_review_fields(proposal)
+    )
     payload = proposal.get("payload") or {}
     revised = str(payload.get("revised_content") or "")
-    if choice == "accept":
-        gate = {
-            **(state.get("quality_gate") or {}),
-            "decision": "user_accepted_revision",
-        }
-        return Command(
-            goto="persist_node",
-            update={
-                "current_chapter_content": revised,
-                "quality_gate": gate,
-                "quality_results": [gate],
-                "pending_proposal": None,
-                "pending_proposal_decision": None,
-            },
-        )
-    instructions = choice if isinstance(choice, str) and choice != "regenerate" else None
+    auto_mode = bool(config.get("configurable", {}).get("auto_mode", False))
+    if decision.action == "accept":
+        return _accept_revision(state, revised, auto_mode=auto_mode)
+    if decision.action == "replace":
+        return _accept_revision(state, str(decision.value), auto_mode=auto_mode)
+    return _retry_revision(revised, decision)
+
+
+def _revision_audit(state: NovelAgentState) -> dict[str, Any]:
+    attempts = int(state.get("revision_attempts", 0) or 0) + 1
+    issues = [
+        dict(item) for item in state.get("reflection_issues", []) or []
+        if isinstance(item, dict)
+    ]
+    history = list(state.get("revision_history", []) or [])
+    history.append({"attempt": attempts, "issues_before": issues})
+    return {"revision_attempts": attempts, "revision_history": history}
+
+
+def _accept_revision(
+    state: NovelAgentState, revised: str, *, auto_mode: bool = False,
+) -> Command:
+    common = {
+        "current_chapter_content": revised,
+        "pending_proposal": None,
+        "pending_proposal_decision": None,
+        **_revision_audit(state),
+    }
+    if auto_mode:
+        return Command(goto="reflection_node", update=common)
+    gate = {
+        **(state.get("quality_gate") or {}),
+        "decision": "user_accepted_revision",
+    }
+    return Command(
+        goto="persist_node",
+        update={
+            **common,
+            "quality_gate": gate,
+            "quality_results": [gate],
+        },
+    )
+
+
+def _retry_revision(revised: str, decision: ReviewDecision) -> Command:
+    instructions = (
+        decision.instruction if decision.action == "revise" else decision.feedback
+    )
     update: dict[str, Any] = {
         "pending_proposal": None,
         "pending_proposal_decision": None,
-        "user_decision": {"action": "revise"},
+        "user_decision": {
+            "action": "revise",
+            "instructions": instructions or None,
+        },
     }
-    if instructions:
+    if decision.action == "revise":
         update.update({
             "current_chapter_content": revised,
-            "user_decision": {"action": "revise", "instructions": instructions},
         })
     return Command(goto="revision_node", update=update)
 
@@ -293,4 +316,4 @@ async def revision_node(
             revised = await _generate_refactor(llm, state, content, outline, context, bible)
     else:
         revised = await _generate_refactor(llm, state, content, outline, context, bible)
-    return _next_after_revision(state, revised, config)
+    return _next_after_revision(state, revised)

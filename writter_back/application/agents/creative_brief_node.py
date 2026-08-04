@@ -15,11 +15,10 @@ from application.prompts.creative_brief_prompts import (
 )
 from application.prompts.version import PROMPT_VERSION
 from application.proposals import (
+    decide_proposal,
     proposal_update,
     proposal_matches,
     require_proposal,
-    request_decision,
-    unpack_decision,
 )
 from application.schemas.agent_state import NovelAgentState
 from application.streaming import emit_workflow_event
@@ -65,11 +64,12 @@ async def creative_brief_node(
             update={"creative_brief": legacy, "prompt_version": PROMPT_VERSION},
         )
     brief = await _generate_brief(state, config, seed)
-    if config["configurable"].get("auto_mode", False):
-        return _accept_brief(state, brief)
     return Command(
         goto="creative_brief_review_node",
-        update=proposal_update(state, "creative_brief", brief),
+        update={
+            **proposal_update(state, "creative_brief", brief),
+            "creative_brief_feedback": None,
+        },
     )
 
 
@@ -112,26 +112,26 @@ async def creative_brief_review_node(
     config: RunnableConfig,
 ) -> Command[Literal["character_design_node", "title_node", "creative_brief_node"]]:
     """审核已保存的创作简报，本节点不得调用 LLM。"""
-    del config
     proposal = require_proposal(state, "creative_brief")
-    raw_decision = request_decision(
+    decision = decide_proposal(
         state,
         proposal,
+        config,
         action="review_or_modify_creative_brief",
         message="AI 已形成创作简报，请确认故事承诺与核心冲突",
         ai_generated_creative_brief=proposal["payload"],
     )
-    decision = unpack_decision(raw_decision, proposal)
-    if decision == "accept":
+    if decision.action == "accept":
         return _accept_brief(state, proposal["payload"])
-    if decision == "regenerate":
-        feedback = raw_decision.get("feedback", "") if isinstance(raw_decision, dict) else ""
-        return _regenerate_brief(feedback or "请生成不同方案")
-    if isinstance(decision, dict):
-        selected = _merge_seed(proposal["payload"], decision)
+    if decision.action == "regenerate":
+        return _regenerate_brief(decision.feedback or "请生成不同方案")
+    if decision.action == "revise":
+        return _regenerate_brief(decision.instruction or "请按审核意见修改")
+    if isinstance(decision.value, dict):
+        selected = _merge_seed(proposal["payload"], decision.value)
         if not validate_creative_brief(selected):
             return _accept_brief(state, selected)
-    return _regenerate_brief(str(decision or ""))
+    return _regenerate_brief("请生成满足创作简报契约的新方案")
 
 
 def _accept_brief(state: NovelAgentState, brief: dict) -> Command:
@@ -139,6 +139,7 @@ def _accept_brief(state: NovelAgentState, brief: dict) -> Command:
         goto=_brief_next_node(state),
         update={
             "creative_brief": brief,
+            "creative_brief_feedback": None,
             "pending_proposal": None,
             "pending_proposal_decision": None,
         },

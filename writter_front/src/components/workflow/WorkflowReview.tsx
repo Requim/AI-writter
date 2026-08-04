@@ -1,13 +1,16 @@
 import { PauseCircleOutlined } from '@ant-design/icons'
 import { Button, Input } from 'antd'
 import { useState } from 'react'
-import type { InterruptInfo, TitleSuggestion } from '@/types/novel'
+import type { InterruptInfo, JsonValue, ReviewDecision, TitleSuggestion } from '@/types/novel'
+import { requiresHumanReview } from '@/workflowReviewPolicy'
 import {
   ChapterOutlineReview, CreativeBriefReview, MacroOutlineReview, QualityReview,
   RevisionReview, SummaryReview, TitleReview,
 } from './ReviewContents'
 import { CharacterDesignReview } from './CharacterDesignReview'
-import { outlineFrom, proposalPayload, titleCandidates } from './valueHelpers'
+import {
+  outlineFrom, proposalPayload, summaryReviewDetails, summaryTextsDistinct, titleCandidates,
+} from './valueHelpers'
 
 interface Props {
   interrupt?: InterruptInfo
@@ -16,16 +19,23 @@ interface Props {
   onRetry: () => void
 }
 
-type Decision = 'accept' | 'regenerate' | 'modify'
-
 function proposalIdentity(interrupt: InterruptInfo): string | undefined {
   return interrupt.proposal?.proposal_id || interrupt.proposal_id
 }
 
-function proposalDecision(interrupt: InterruptInfo, decision: Decision, value?: unknown, feedback?: string) {
+function proposalDecision(
+  interrupt: InterruptInfo,
+  decision: ReviewDecision['decision'],
+  value?: unknown,
+): ReviewDecision | undefined {
   const proposalId = proposalIdentity(interrupt)
   if (!proposalId) return undefined
-  return { proposal_id: proposalId, decision, ...(value === undefined ? {} : { value }), ...(feedback ? { feedback } : {}) }
+  if (decision === 'accept') return { proposal_id: proposalId, decision }
+  if (decision === 'regenerate') {
+    return { proposal_id: proposalId, decision, ...(typeof value === 'string' ? { feedback: value } : {}) }
+  }
+  if (decision === 'revise') return { proposal_id: proposalId, decision, instruction: String(value || '') }
+  return { proposal_id: proposalId, decision, value: value as JsonValue }
 }
 
 function legacyAcceptedValue(interrupt: InterruptInfo): unknown {
@@ -36,7 +46,11 @@ function legacyAcceptedValue(interrupt: InterruptInfo): unknown {
   return 'accept'
 }
 
-function decisionValue(interrupt: InterruptInfo, decision: Decision, value?: unknown): unknown {
+function decisionValue(
+  interrupt: InterruptInfo,
+  decision: ReviewDecision['decision'],
+  value?: unknown,
+): unknown {
   const command = proposalDecision(interrupt, decision, value)
   if (command) return command
   if (decision === 'accept') return legacyAcceptedValue(interrupt)
@@ -56,10 +70,16 @@ function primaryLabel(action: string): string {
   return '接受并继续'
 }
 
-function reviewContent(interrupt: InterruptInfo, onSelect: (item: TitleSuggestion) => void) {
+interface TitleActions { confirm: (item: TitleSuggestion) => void; regenerate: () => void }
+
+function reviewContent(interrupt: InterruptInfo, title: TitleActions) {
   if (interrupt.action === 'review_or_modify_creative_brief') return <CreativeBriefReview interrupt={interrupt} />
-  if (interrupt.action === 'confirm_or_provide_title') return <TitleReview interrupt={interrupt} onSelect={onSelect} />
-  if (interrupt.action === 'confirm_or_provide_summary') return <SummaryReview interrupt={interrupt} />
+  if (interrupt.action === 'confirm_or_provide_title') {
+    return <TitleReview interrupt={interrupt} onConfirm={title.confirm} onRegenerate={title.regenerate} />
+  }
+  if (['confirm_or_provide_summary', 'summary_review_required'].includes(interrupt.action)) {
+    return <SummaryReview interrupt={interrupt} />
+  }
   if (interrupt.action === 'review_or_modify_outline') return <MacroOutlineReview interrupt={interrupt} />
   if (interrupt.action === 'review_or_provide_chapter_outline') return <ChapterOutlineReview interrupt={interrupt} />
   if (['review_reflection_issues', 'quality_gate_exhausted', 'quality_gate_human_review', 'quality_review_unavailable'].includes(interrupt.action)) return <QualityReview interrupt={interrupt} />
@@ -69,7 +89,7 @@ function reviewContent(interrupt: InterruptInfo, onSelect: (item: TitleSuggestio
 
 function QualityActions({ interrupt, onResume }: Omit<Props, 'autoMode' | 'onRetry' | 'interrupt'> & { interrupt: InterruptInfo }) {
   const accept = () => onResume(decisionValue(interrupt, 'accept'))
-  const revise = () => onResume(decisionValue(interrupt, 'modify', 'revise'))
+  const revise = () => onResume(decisionValue(interrupt, 'revise', 'revise'))
   const regenerate = () => onResume(decisionValue(interrupt, 'regenerate'))
   return <div className="interrupt-actions">
     <Button type="primary" onClick={accept}>{primaryLabel(interrupt.action)}</Button>
@@ -79,7 +99,7 @@ function QualityActions({ interrupt, onResume }: Omit<Props, 'autoMode' | 'onRet
 }
 
 function UnavailableActions({ interrupt, onResume }: Omit<Props, 'autoMode' | 'onRetry' | 'interrupt'> & { interrupt: InterruptInfo }) {
-  const retry = () => onResume(decisionValue(interrupt, 'modify', 'retry'))
+  const retry = () => onResume(decisionValue(interrupt, 'revise', 'retry'))
   const accept = () => onResume(decisionValue(interrupt, 'accept'))
   const rewrite = () => onResume(decisionValue(interrupt, 'regenerate'))
   return <div className="interrupt-actions">
@@ -89,6 +109,29 @@ function UnavailableActions({ interrupt, onResume }: Omit<Props, 'autoMode' | 'o
   </div>
 }
 
+function SummaryRepairActions({ interrupt, onResume }: Omit<Props, 'autoMode' | 'onRetry' | 'interrupt'> & { interrupt: InterruptInfo }) {
+  const details = summaryReviewDetails(interrupt)
+  const [reader, setReader] = useState(details.reader || '')
+  const [editorial, setEditorial] = useState(details.editorial || '')
+  const readerValue = reader.trim()
+  const editorialValue = editorial.trim()
+  const valid = summaryTextsDistinct(readerValue, editorialValue)
+  const replace = () => onResume(decisionValue(interrupt, 'replace', {
+    reader_blurb: readerValue, editorial_brief: editorialValue,
+  }))
+  const regenerate = () => onResume(decisionValue(interrupt, 'regenerate'))
+  return <>
+    <div className="summary-repair-fields">
+      <label>读者文案<Input.TextArea value={reader} onChange={(event) => setReader(event.target.value)} autoSize={{ minRows: 2, maxRows: 5 }} /></label>
+      <label>内部简报<Input.TextArea value={editorial} onChange={(event) => setEditorial(event.target.value)} autoSize={{ minRows: 2, maxRows: 5 }} /></label>
+    </div>
+    <div className="interrupt-actions">
+      <Button type="primary" disabled={!valid} onClick={replace}>提交修复后的简介</Button>
+      <Button onClick={regenerate}>重新生成简介</Button>
+    </div>
+  </>
+}
+
 interface InstructionProps { interrupt: InterruptInfo; onResume: (value: unknown) => void }
 
 function InstructionEditor({ interrupt, onResume }: InstructionProps) {
@@ -96,10 +139,7 @@ function InstructionEditor({ interrupt, onResume }: InstructionProps) {
   const submit = () => {
     const text = instruction.trim()
     if (!text) return
-    const regenerate = ['review_or_modify_creative_brief', 'review_or_modify_character_design'].includes(interrupt.action)
-    const command = regenerate
-      ? proposalDecision(interrupt, 'regenerate', undefined, text)
-      : proposalDecision(interrupt, 'modify', text)
+    const command = proposalDecision(interrupt, 'revise', text)
     onResume(command || text)
     setInstruction('')
   }
@@ -109,23 +149,36 @@ function InstructionEditor({ interrupt, onResume }: InstructionProps) {
   </div>
 }
 
-function StandardActions({ interrupt, onResume }: Omit<Props, 'autoMode' | 'onRetry' | 'interrupt'> & { interrupt: InterruptInfo }) {
+interface StandardActionProps {
+  interrupt: InterruptInfo
+  onResume: (value: unknown) => void
+  acceptDisabled?: boolean
+}
+
+function StandardActions({ interrupt, onResume, acceptDisabled }: StandardActionProps) {
   const accept = () => onResume(decisionValue(interrupt, 'accept'))
   const regenerate = () => onResume(decisionValue(interrupt, 'regenerate'))
   const canRegenerate = interrupt.action !== 'ready_for_next_chapter'
   return <div className="interrupt-actions">
-    <Button type="primary" onClick={accept}>{primaryLabel(interrupt.action)}</Button>
+    <Button type="primary" disabled={acceptDisabled} onClick={accept}>{primaryLabel(interrupt.action)}</Button>
     {canRegenerate && <Button onClick={regenerate}>重新生成</Button>}
   </div>
 }
 
 export function WorkflowReview({ interrupt, autoMode, onResume }: Props) {
   if (!interrupt) return null
-  const humanReview = ['quality_gate_exhausted', 'quality_gate_human_review', 'quality_review_unavailable'].includes(interrupt.action)
+  const humanReview = requiresHumanReview(interrupt.action)
   if (autoMode && !humanReview) return null
-  const selectTitle = (item: TitleSuggestion) => onResume(decisionValue(interrupt, 'modify', item))
+  const titleActions = {
+    confirm: (item: TitleSuggestion) => onResume(decisionValue(interrupt, 'replace', item)),
+    regenerate: () => onResume(decisionValue(interrupt, 'regenerate')),
+  }
   const characterDesign = interrupt.action === 'review_or_modify_character_design'
-  const confirmCharacters = (value?: unknown) => onResume(decisionValue(interrupt, value ? 'modify' : 'accept', value))
+  const titleReview = interrupt.action === 'confirm_or_provide_title'
+  const summaryRequired = interrupt.action === 'summary_review_required'
+  const summaryComplete = interrupt.action !== 'confirm_or_provide_summary'
+    || summaryReviewDetails(interrupt).complete
+  const confirmCharacters = (value?: unknown) => onResume(decisionValue(interrupt, value ? 'replace' : 'accept', value))
   const regenerateCharacters = () => onResume(decisionValue(interrupt, 'regenerate'))
   const canInstruct = !['ready_for_next_chapter', 'require_novel_type'].includes(interrupt.action)
   return <section className="interrupt-block">
@@ -133,11 +186,13 @@ export function WorkflowReview({ interrupt, autoMode, onResume }: Props) {
     <p>{interrupt.message || '请审阅当前结果后继续。'}</p>
     {characterDesign
       ? <CharacterDesignReview key={proposalIdentity(interrupt)} interrupt={interrupt} onConfirm={confirmCharacters} onRegenerate={regenerateCharacters} />
-      : reviewContent(interrupt, selectTitle)}
+      : reviewContent(interrupt, titleActions)}
     {!characterDesign && (interrupt.action === 'quality_review_unavailable'
       ? <UnavailableActions interrupt={interrupt} onResume={onResume} />
+      : summaryRequired ? <SummaryRepairActions interrupt={interrupt} onResume={onResume} />
       : humanReview ? <QualityActions interrupt={interrupt} onResume={onResume} />
-      : <StandardActions interrupt={interrupt} onResume={onResume} />)}
-    {canInstruct && !humanReview && <InstructionEditor interrupt={interrupt} onResume={onResume} />}
+      : titleReview ? null
+      : <StandardActions interrupt={interrupt} onResume={onResume} acceptDisabled={!summaryComplete} />)}
+    {canInstruct && (!humanReview || summaryRequired) && <InstructionEditor interrupt={interrupt} onResume={onResume} />}
   </section>
 }

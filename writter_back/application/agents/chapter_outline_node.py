@@ -16,12 +16,12 @@ from application.prompts.chapter_outline_prompts import (
     CHAPTER_OUTLINE_SCHEMA,
     build_chapter_outline_prompt,
 )
+from application.prompts.review_feedback import append_review_feedback
 from application.proposals import (
+    decide_proposal,
     proposal_update,
     proposal_matches,
     require_proposal,
-    request_decision,
-    unpack_decision,
 )
 from application.schemas.agent_state import NovelAgentState
 from application.streaming import emit_workflow_event
@@ -66,14 +66,15 @@ async def _generate_outline(
         "status", {"status": "started", "message": f"正在生成第{chapter_number}章细纲"},
         "chapter_outline_node",
     )
-    generated = await llm.structured_generate(
-        prompt=build_chapter_outline_prompt(
+    prompt = build_chapter_outline_prompt(
             chapter_index=chapter_number,
             novel_type=state.get("novel_type", ""),
             title=state.get("title", ""),
             total_outline=_total_outline(state.get("total_outline")),
             memory_context=state.get("memory_context", ""),
-        ),
+        )
+    generated = await llm.structured_generate(
+        prompt=append_review_feedback(prompt, state.get("chapter_outline_feedback")),
         schema=CHAPTER_OUTLINE_SCHEMA,
         temperature=0.45,
     )
@@ -116,11 +117,12 @@ async def chapter_outline_node(
             },
         )
     outline = await _generate_outline(state, config, chapter_number)
-    if config["configurable"].get("auto_mode", False):
-        return Command(goto="router_agent", update=_accept_outline_update(state, outline))
     return Command(
         goto="chapter_outline_review_node",
-        update=proposal_update(state, "chapter_outline", outline, chapter_number),
+        update={
+            **proposal_update(state, "chapter_outline", outline, chapter_number),
+            "chapter_outline_feedback": None,
+        },
     )
 
 
@@ -129,30 +131,42 @@ async def chapter_outline_review_node(
     config: RunnableConfig,
 ) -> Command[Literal["router_agent", "chapter_outline_node"]]:
     """审核已保存的章节细纲，本节点不得调用 LLM。"""
-    del config
     chapter_number = int(state.get("current_chapter_index", 0) or 0) + 1
     proposal = require_proposal(state, "chapter_outline", chapter_number)
-    raw_decision = request_decision(
+    decision = decide_proposal(
         state,
         proposal,
+        config,
         action="review_or_provide_chapter_outline",
         message=f"第{chapter_number}章细纲已生成，请审阅或修改",
         ai_generated_outline=proposal["payload"],
     )
-    decision = unpack_decision(raw_decision, proposal)
-    if decision == "regenerate":
-        return Command(
-            goto="chapter_outline_node",
-            update={
-                "pending_proposal": None,
-                "pending_proposal_decision": None,
-            },
+    if decision.action in {"regenerate", "revise"}:
+        feedback = (
+            decision.instruction
+            if decision.action == "revise"
+            else decision.feedback
         )
-    selected = proposal["payload"] if decision == "accept" else decision
+        return _regenerate_chapter_outline(feedback)
+    selected = proposal["payload"] if decision.action == "accept" else decision.value
     outline = _validated_outline(
         selected, chapter_number, _total_outline(state.get("total_outline")),
     )
     return Command(
         goto="router_agent",
-        update=_accept_outline_update(state, outline, clear_proposal=True),
+        update={
+            **_accept_outline_update(state, outline, clear_proposal=True),
+            "chapter_outline_feedback": None,
+        },
+    )
+
+
+def _regenerate_chapter_outline(feedback: str) -> Command:
+    return Command(
+        goto="chapter_outline_node",
+        update={
+            "pending_proposal": None,
+            "pending_proposal_decision": None,
+            "chapter_outline_feedback": feedback or None,
+        },
     )
