@@ -7,6 +7,7 @@ from application.continuity import (
     compact_story_bible,
     compact_text,
 )
+from application.prompts.genre_strategy import genre_strategy_block
 from application.prompts.template_loader import render_prompt
 
 
@@ -61,6 +62,8 @@ def build_chunk_reflection_prompt(
     main_characters: list,
     memory_context: str,
     story_bible: str = "",
+    novel_type: str = "",
+    creative_brief: dict | None = None,
 ) -> str:
     """生成只审核当前文本块的提示词。"""
     return render_prompt(
@@ -75,6 +78,7 @@ def build_chunk_reflection_prompt(
         main_characters=_json(main_characters),
         memory_context=build_budgeted_context(memory_context, max_chars=1800),
         story_bible=compact_story_bible(story_bible, 1400) if story_bible else "无",
+        genre_strategy=genre_strategy_block(novel_type, creative_brief, "reflection"),
     )
 
 
@@ -103,6 +107,8 @@ def build_aggregation_prompt(
     content_length: int,
     story_bible: str = "",
     previous_issues: list[dict] | None = None,
+    novel_type: str = "",
+    creative_brief: dict | None = None,
 ) -> str:
     """聚合局部结论，并基于完整正文完成全局审核。"""
     return render_prompt(
@@ -116,6 +122,7 @@ def build_aggregation_prompt(
         story_bible=compact_story_bible(story_bible, 2200) if story_bible else "无",
         previous_issues=_json(previous_issues or []),
         content_length=content_length,
+        genre_strategy=genre_strategy_block(novel_type, creative_brief, "reflection"),
     )
 
 
@@ -127,6 +134,8 @@ def build_reflection_prompt(
     content_length: int,
     story_bible: str = "",
     previous_issues: list[dict] | None = None,
+    novel_type: str = "",
+    creative_brief: dict | None = None,
 ) -> str:
     """生成有评分锚点和原文证据约束的整章审核提示词。"""
     return render_prompt(
@@ -139,6 +148,7 @@ def build_reflection_prompt(
         story_bible=compact_story_bible(story_bible, 2200) if story_bible else "无",
         previous_issues=_json(previous_issues or []),
         content_length=content_length,
+        genre_strategy=genre_strategy_block(novel_type, creative_brief, "reflection"),
     )
 
 

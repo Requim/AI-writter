@@ -1,7 +1,7 @@
 import { CheckCircleOutlined, TeamOutlined } from '@ant-design/icons'
 import { App, Button, Result } from 'antd'
 import { useEffect, useState } from 'react'
-import { Navigate, useNavigate, useParams } from 'react-router-dom'
+import { Navigate, useNavigate, useParams } from 'react-router'
 import { tenantApi } from '@/api/auth'
 import { useAuthStore } from '@/stores/authStore'
 

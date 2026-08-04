@@ -1,6 +1,6 @@
 import { ArrowRightOutlined, BankOutlined, LockOutlined, MailOutlined } from '@ant-design/icons'
 import { App, Button, Form, Input } from 'antd'
-import { Link, Navigate, useNavigate, useSearchParams } from 'react-router-dom'
+import { Link, Navigate, useNavigate, useSearchParams } from 'react-router'
 import { AuthLayout } from '@/components/AuthLayout'
 import { authApi } from '@/api/auth'
 import { useAuthStore } from '@/stores/authStore'

@@ -17,6 +17,30 @@ export interface CreativeBrief {
   naming_preference?: string
   style_fingerprint?: JsonValue
   trope_contract?: JsonValue
+  genre_context?: GenreContext
+}
+
+export interface GenreContext {
+  main_type?: string
+  subgenre?: string
+  reader_experience?: string
+  narrative_pace?: string
+}
+
+export interface GenreOption {
+  value: string
+  label: string
+  description?: string
+}
+
+export interface GenreProfile {
+  value: string
+  label: string
+  description: string
+  subgenres: GenreOption[]
+  reader_experiences: GenreOption[]
+  pace_options: GenreOption[]
+  prompt_axes: Record<string, JsonValue>
 }
 
 export interface CharacterNameCandidate {

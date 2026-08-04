@@ -27,7 +27,7 @@ class NovelType(str, Enum):
             cls.XIANXIA.value: "仙侠",
             cls.URBAN.value: "都市",
             cls.HISTORY.value: "历史",
-            cls.HORROR.value: "恐怖",
+            cls.HORROR.value: "惊悚",
             cls.COMEDY.value: "喜剧",
         }
         return display_names.get(value, value)

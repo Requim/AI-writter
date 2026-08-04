@@ -4,6 +4,7 @@ import json
 
 from typing import Any
 
+from application.prompts.genre_strategy import genre_strategy_block
 from application.prompts.template_loader import render_prompt
 
 
@@ -57,6 +58,7 @@ def build_outline_prompt(
         title=title,
         summary=summary,
         creative_brief=json.dumps(creative_brief or {}, ensure_ascii=False, indent=2),
+        genre_strategy=genre_strategy_block(novel_type, creative_brief, "outline"),
         main_characters=json.dumps(characters, ensure_ascii=False, indent=2) if characters else "未提供",
         character_requirement=requirement,
         main_characters_json=characters_json,

@@ -86,6 +86,19 @@ async def test_invalid_type_and_missing_novel(async_client):
 
 
 @pytest.mark.asyncio
+async def test_genre_taxonomy_endpoint_returns_authoritative_profiles(async_client):
+    response = await async_client.get("/api/v1/novels/genre-taxonomy")
+
+    assert response.status_code == 200
+    taxonomy = response.json()
+    assert len(taxonomy) == 10
+    horror = next(item for item in taxonomy if item["value"] == "horror")
+    assert horror["label"] == "惊悚"
+    assert taxonomy[0]["subgenres"][0]["value"]
+    assert any(item["value"] == "balanced" for item in taxonomy[0]["pace_options"])
+
+
+@pytest.mark.asyncio
 async def test_outline_round_trip(repository, tenant_context, sample_novel_with_outline):
     await repository.save(str(tenant_context.tenant_id), sample_novel_with_outline)
     saved = await repository.find_by_id(

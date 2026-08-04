@@ -14,6 +14,7 @@ from application.continuity import (
     compact_story_bible,
     compact_text,
 )
+from application.prompts.genre_strategy import genre_strategy_block
 from application.prompts.template_loader import render_prompt
 from application.word_budget import chapter_target_words
 
@@ -112,6 +113,7 @@ def _build_contract_block(chapter_outline: dict) -> str:
         "price_paid": chapter_outline.get("price_paid", ""),
         "state_delta": chapter_outline.get("state_delta", ""),
         "ending_mode": chapter_outline.get("ending_mode", ""),
+        "genre_contract": chapter_outline.get("genre_contract", {}),
         "entry_state": chapter_outline.get("entry_state", {}),
         "causal_chain": chapter_outline.get("causal_chain", []),
         "state_changes": chapter_outline.get("state_changes", []),
@@ -144,6 +146,7 @@ def build_first_scene_prompt(
     internal_monologue: str,
     prev_chapter_tail: str = "",
     story_bible: str = "",
+    creative_brief: dict | None = None,
 ) -> str:
     """生成章节第一个场景的提示词——全量上下文"""
     scene_block = _build_scene_block(1, scene)
@@ -173,6 +176,7 @@ def build_first_scene_prompt(
         setup=setup_str,
         memory_context=ctx,
         previous_tail=prev_tail_block,
+        genre_strategy=genre_strategy_block(novel_type, creative_brief, "chapter_writer"),
         writing_principles=_writing_principles(),
     )
 
@@ -195,6 +199,7 @@ def build_next_scene_prompt(
     memory_context: str,
     story_bible: str = "",
     scene_ledger: list[dict] | None = None,
+    creative_brief: dict | None = None,
 ) -> str:
     """生成后续场景的提示词（带前文摘要和动态校准）"""
     scene_block = _build_scene_block(scene_index, scene)
@@ -224,6 +229,7 @@ def build_next_scene_prompt(
         setup=setup_str,
         memory_context=ctx,
         correction=correction,
+        genre_strategy=genre_strategy_block(novel_type, creative_brief, "chapter_writer"),
         writing_principles=_writing_principles(),
     )
 
@@ -262,6 +268,7 @@ def build_chapter_writer_prompt(
     memory_context: str,
     prev_chapter_tail: str = "",
     story_bible: str = "",
+    creative_brief: dict | None = None,
 ) -> str:
     """生成章节内容的提示词——保守模式：单次生成整章
 
@@ -305,6 +312,7 @@ def build_chapter_writer_prompt(
         setup=logic_hooks.get("setup", "无"),
         memory_context=ctx,
         previous_tail=prev_tail_block,
+        genre_strategy=genre_strategy_block(novel_type, creative_brief, "chapter_writer"),
         writing_principles=_writing_principles(),
     )
 

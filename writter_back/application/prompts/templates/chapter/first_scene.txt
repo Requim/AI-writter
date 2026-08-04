@@ -17,6 +17,8 @@ $story_bible
 【本章状态契约】
 $contract
 
+$genre_strategy
+
 【本章主角心理轨迹】
 $internal_monologue
 

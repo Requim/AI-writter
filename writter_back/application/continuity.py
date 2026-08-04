@@ -213,6 +213,7 @@ def normalize_chapter_contract(
     normalized.setdefault("price_paid", "目标推进伴随真实代价")
     normalized.setdefault("state_delta", "人物、关系、信息或资源状态发生变化")
     normalized.setdefault("ending_mode", "decision")
+    normalized.setdefault("genre_contract", {})
     normalized.setdefault("key_events", [])
     normalized.setdefault("entry_state", {})
     normalized.setdefault("exit_state", {})
@@ -235,7 +236,7 @@ def normalize_chapter_contract(
     ):
         if not isinstance(normalized.get(field), list):
             normalized[field] = []
-    for field in ("entry_state", "exit_state", "logic_hooks"):
+    for field in ("entry_state", "exit_state", "logic_hooks", "genre_contract"):
         if not isinstance(normalized.get(field), dict):
             normalized[field] = {}
     normalized["logic_hooks"].setdefault("callback", "无")

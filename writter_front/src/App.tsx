@@ -6,7 +6,7 @@ import {
   Outlet,
   RouterProvider,
   useParams,
-} from 'react-router-dom'
+} from 'react-router'
 import { lazy, Suspense } from 'react'
 import { PlatformAdminRoute, ProtectedRoute } from '@/components/ProtectedRoute'
 

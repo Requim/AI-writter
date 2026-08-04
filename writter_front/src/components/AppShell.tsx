@@ -7,7 +7,7 @@ import {
   SettingOutlined,
 } from '@ant-design/icons'
 import { Button, Progress, Select, Tooltip } from 'antd'
-import { NavLink, useNavigate } from 'react-router-dom'
+import { NavLink, useNavigate } from 'react-router'
 import { authApi } from '@/api/auth'
 import { currentTenant, useAuthStore } from '@/stores/authStore'
 import { useQuota } from '@/stores/quotaStore'

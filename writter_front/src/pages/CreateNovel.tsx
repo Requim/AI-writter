@@ -1,22 +1,19 @@
 import { ArrowLeftOutlined, ArrowRightOutlined, BookOutlined, SettingOutlined } from '@ant-design/icons'
-import { App, Button, Collapse, Form, Input, InputNumber, Segmented, Select, Skeleton } from 'antd'
-import { useCallback, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Alert, App, Button, Collapse, Form, Input, InputNumber, Segmented, Select, Skeleton } from 'antd'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useNavigate } from 'react-router'
 import type { FormInstance } from 'antd'
 import { AppShell } from '@/components/AppShell'
 import { useUnsavedChangesGuard, type DiscardConfirmation } from '@/hooks/useUnsavedChangesGuard'
 import { novelApi } from '@/api/novel'
+import { useGenreTaxonomy } from '@/hooks/useGenreTaxonomy'
 import { useQuota } from '@/stores/quotaStore'
 import { useNovelStore } from '@/stores/novelStore'
 import type { QuotaUsage } from '@/types/auth'
+import type { GenreProfile } from '@/types/novel'
 import { buildCreationSubmission, type CreationForm } from './creationSubmission'
 import { quotaBlocksCreation, quotaNoticeDetails } from './creationQuota'
-
-const genreOptions = [
-  ['suspense', '悬疑'], ['sci_fi', '科幻'], ['romance', '言情'], ['fantasy', '奇幻'],
-  ['wuxia', '武侠'], ['xianxia', '仙侠'], ['urban', '都市'], ['history', '历史'],
-  ['horror', '惊悚'], ['comedy', '喜剧'],
-].map(([value, label]) => ({ value, label }))
+import { genreDefaults, selectedGenreProfile } from './genreSelection'
 
 function useDiscardDraft(form: FormInstance<CreationForm>, submitting: boolean) {
   const { modal } = App.useApp()
@@ -32,11 +29,46 @@ function useDiscardDraft(form: FormInstance<CreationForm>, submitting: boolean) 
   return useUnsavedChangesGuard(dirty, request)
 }
 
-function CoreFields({ autoMode, onModeChange }: { autoMode: boolean; onModeChange: (value: boolean) => void }) {
+interface CoreFieldsProps {
+  autoMode: boolean
+  genreError: boolean
+  genreLoading: boolean
+  genreProfiles: GenreProfile[]
+  selectedProfile?: GenreProfile
+  onModeChange: (value: boolean) => void
+  onGenreChange: (value: string) => void
+}
+
+function CoreFields({
+  autoMode,
+  genreError,
+  genreLoading,
+  genreProfiles,
+  selectedProfile,
+  onModeChange,
+  onGenreChange,
+}: CoreFieldsProps) {
+  const profileOptions = genreProfiles.map((profile) => ({ value: profile.value, label: profile.label }))
   return <>
+    {genreError && <Alert type="error" showIcon message="题材分类无法读取，请确认后端服务已启动" />}
     <Form.Item label="小说类型" name="novel_type" rules={[{ required: true, message: '请选择小说类型' }]}>
-      <Select size="large" options={genreOptions} />
+      <Select size="large" loading={genreLoading} disabled={genreLoading || genreError} options={profileOptions}
+        onChange={onGenreChange} />
     </Form.Item>
+    <div className="genre-grid">
+      <Form.Item label="子类型" name="subgenre" rules={[{ required: true, message: '请选择子类型' }]}>
+        <Select size="large" disabled={!selectedProfile || genreError}
+          options={(selectedProfile?.subgenres || []).map((item) => ({ value: item.value, label: item.label }))} />
+      </Form.Item>
+      <Form.Item label="读者快感" name="reader_experience" rules={[{ required: true, message: '请选择读者快感' }]}>
+        <Select size="large" disabled={!selectedProfile || genreError}
+          options={(selectedProfile?.reader_experiences || []).map((item) => ({ value: item.value, label: item.label }))} />
+      </Form.Item>
+      <Form.Item label="叙事节奏" name="narrative_pace" rules={[{ required: true, message: '请选择叙事节奏' }]}>
+        <Select size="large" disabled={!selectedProfile || genreError}
+          options={(selectedProfile?.pace_options || []).map((item) => ({ value: item.value, label: item.label }))} />
+      </Form.Item>
+    </div>
     <Form.Item label="核心设想" name="core_premise">
       <Input.TextArea rows={3} maxLength={800} placeholder="这个故事最独特的处境、矛盾或反常识设定" showCount />
     </Form.Item>
@@ -83,13 +115,32 @@ function QuotaNotice({ quota, loading, chapters }: QuotaNoticeProps) {
   </div>
 }
 
-function CreationPreview({ title, genre }: { title?: string; genre?: string }) {
+function CreationPreview({ title, genreLabel }: { title?: string; genreLabel?: string }) {
   return <aside className="creation-preview" aria-label="书稿预览">
     <div className="preview-folio">NO. {new Date().getFullYear()}</div><BookOutlined />
-    <span>{genreOptions.find((item) => item.value === genre)?.label || '小说'}</span>
+    <span>{genreLabel || '小说'}</span>
     <h2>{title || '未命名作品'}</h2><div className="preview-rule" />
     <p>一部正在形成的长篇小说</p><small>墨间编辑部 · 私人创作稿</small>
   </aside>
+}
+
+function useCreationGenreFields(form: FormInstance<CreationForm>) {
+  const { profiles, loading, error } = useGenreTaxonomy()
+  const genre = Form.useWatch('novel_type', form)
+  const selectedProfile = useMemo(
+    () => selectedGenreProfile(profiles, genre),
+    [profiles, genre],
+  )
+  const genreLabel = selectedProfile && selectedProfile.value === genre ? selectedProfile.label : undefined
+  useEffect(() => {
+    if (!profiles.length) return
+    const profile = selectedGenreProfile(profiles, form.getFieldValue('novel_type'))
+    if (profile) form.setFieldsValue(genreDefaults(profile))
+  }, [form, profiles])
+  const onGenreChange = useCallback((value: string) => {
+    form.setFieldsValue(genreDefaults(selectedGenreProfile(profiles, value)))
+  }, [form, profiles])
+  return { profiles, loading, error, selectedProfile, genreLabel, onGenreChange }
 }
 
 export default function CreateNovel() {
@@ -97,10 +148,10 @@ export default function CreateNovel() {
   const { message } = App.useApp()
   const [form] = Form.useForm<CreationForm>()
   const [submitting, setSubmitting] = useState(false)
+  const genreState = useCreationGenreFields(form)
   const autoMode = useNovelStore((state) => state.autoMode)
   const setAutoMode = useNovelStore((state) => state.setAutoMode)
   const title = Form.useWatch('title', form)
-  const genre = Form.useWatch('novel_type', form)
   const chapters = Form.useWatch('total_chapters', form)
   const { quota, loading: quotaLoading } = useQuota()
   const confirmDiscard = useDiscardDraft(form, submitting)
@@ -119,13 +170,17 @@ export default function CreateNovel() {
       <div className="creation-layout"><section className="creation-form">
         <span className="eyebrow">新建选题</span><h1>为故事定下第一笔</h1>
         <p className="section-lead">先给出故事方向；空白内容由 AI 提案，手动模式会逐项交给你确认。</p>
-        <Form form={form} layout="vertical" initialValues={{ novel_type: 'suspense', total_chapters: 12 }} onFinish={(values) => void submit(values)} requiredMark={false}>
-          <CoreFields autoMode={autoMode} onModeChange={setAutoMode} />
+        <Form form={form} layout="vertical" initialValues={{ total_chapters: 12 }} onFinish={(values) => void submit(values)} requiredMark={false}>
+          <CoreFields autoMode={autoMode} genreError={genreState.error} genreLoading={genreState.loading}
+            genreProfiles={genreState.profiles} selectedProfile={genreState.selectedProfile}
+            onGenreChange={genreState.onGenreChange} onModeChange={setAutoMode} />
           <Collapse ghost className="advanced-settings" items={[{ key: 'advanced', label: <span><SettingOutlined /> 更多创作约束</span>, children: <AdvancedFields /> }]} />
           <QuotaNotice quota={quota} loading={quotaLoading} chapters={chapters} />
-          <Button type="primary" size="large" htmlType="submit" disabled={quotaBlocked} loading={submitting} icon={<ArrowRightOutlined />} iconPlacement="end">创建并进入工作台</Button>
+          <Button type="primary" size="large" htmlType="submit"
+            disabled={quotaBlocked || genreState.loading || genreState.error}
+            loading={submitting} icon={<ArrowRightOutlined />} iconPlacement="end">创建并进入工作台</Button>
         </Form>
-      </section><CreationPreview title={title} genre={genre} /></div>
+      </section><CreationPreview title={title} genreLabel={genreState.genreLabel} /></div>
     </div>
   </AppShell>
 }

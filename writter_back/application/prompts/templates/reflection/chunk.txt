@@ -10,6 +10,11 @@
 
 $editorial_checks
 
+$genre_strategy
+
+【题材专项检查】
+- 若本块明显没有服务题材承诺、母题变体或读者快感，可输出 issue.type 为 genre_promise、trope_misuse 或 genre_logic。
+
 【严重等级与优先级】
 - low / can_ignore：笔误、标点或不影响叙事的轻微风格问题。
 - medium / optional：局部场景功能、节奏或表达问题。
@@ -34,7 +39,7 @@ $story_bible
 只输出 JSON：
 {
   "issues": [{
-    "type": "consistency|character|padding|pacing|plot_hole|voice|cliche",
+    "type": "consistency|character|padding|pacing|plot_hole|voice|cliche|genre_promise|trope_misuse|genre_logic",
     "issue_id": "留空，由服务端生成",
     "severity": "low|medium|high",
     "priority_action": "must_fix|optional|can_ignore",

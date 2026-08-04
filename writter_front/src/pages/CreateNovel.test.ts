@@ -1,11 +1,35 @@
 import { describe, expect, it } from 'vitest'
+import type { GenreProfile } from '@/types/novel'
 import { buildCreationSubmission } from './creationSubmission'
 import { quotaBlocksCreation, quotaNoticeDetails } from './creationQuota'
+import { genreDefaults } from './genreSelection'
+
+const suspenseProfile: GenreProfile = {
+  value: 'suspense',
+  label: '悬疑',
+  description: '谜团驱动',
+  subgenres: [
+    { value: 'cold_case', label: '旧案重启' },
+    { value: 'fair_play', label: '本格推理' },
+  ],
+  reader_experiences: [
+    { value: 'clue_puzzle', label: '线索推理' },
+    { value: 'truth_shock', label: '真相震荡' },
+  ],
+  pace_options: [
+    { value: 'hook_dense', label: '强钩子快节奏' },
+    { value: 'balanced', label: '起伏均衡' },
+  ],
+  prompt_axes: {},
+}
 
 describe('buildCreationSubmission', () => {
   it('passes user-authored fields to both persistence and workflow input', () => {
     const result = buildCreationSubmission({
       novel_type: 'romance',
+      subgenre: ' second_chance ',
+      reader_experience: ' emotional_tension ',
+      narrative_pace: ' slow_burn ',
       title: '  郫西往事  ',
       summary: ' 姚奇伶和吴梓银的青春爱情故事 ',
       core_premise: ' 两位旧友因一封迟到十年的信重逢 ',
@@ -26,6 +50,12 @@ describe('buildCreationSubmission', () => {
         total_chapters: 36,
         writing_style: '幽默诙谐',
         creative_brief: {
+          genre_context: {
+            main_type: 'romance',
+            subgenre: 'second_chance',
+            reader_experience: 'emotional_tension',
+            narrative_pace: 'slow_burn',
+          },
           core_premise: '两位旧友因一封迟到十年的信重逢',
           reader_promise: '克制的情感拉扯与逐层揭晓的旧事',
           content_boundaries: '不使用失忆梗',
@@ -41,6 +71,12 @@ describe('buildCreationSubmission', () => {
       target_total_chapters: 36,
       requested_writing_style: '幽默诙谐',
       creative_brief: {
+        genre_context: {
+          main_type: 'romance',
+          subgenre: 'second_chance',
+          reader_experience: 'emotional_tension',
+          narrative_pace: 'slow_burn',
+        },
         core_premise: '两位旧友因一封迟到十年的信重逢',
         reader_promise: '克制的情感拉扯与逐层揭晓的旧事',
         content_boundaries: '不使用失忆梗',
@@ -68,6 +104,18 @@ describe('buildCreationSubmission', () => {
     expect(result.startInput).toEqual({
       novel_type: 'suspense',
       target_total_chapters: 12,
+      creative_brief: {
+        genre_context: { main_type: 'suspense' },
+      },
+    })
+  })
+
+  it('selects default subtype, reader experience and balanced pace for a genre', () => {
+    expect(genreDefaults(suspenseProfile)).toEqual({
+      novel_type: 'suspense',
+      subgenre: 'cold_case',
+      reader_experience: 'clue_puzzle',
+      narrative_pace: 'balanced',
     })
   })
 })

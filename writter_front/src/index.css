@@ -104,6 +104,7 @@ h1, h2, h3 { color: var(--ink); }
 .section-lead { max-width: 620px; margin-bottom: 34px; color: var(--muted); line-height: 1.8; }
 .creation-form .ant-form { max-width: 680px; }
 .creation-form .ant-form-item { margin-bottom: 22px; }
+.genre-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; }
 .advanced-settings { margin: 2px 0 20px; border-block: 1px solid var(--line); border-radius: 0; }
 .advanced-settings .ant-collapse-header { padding-inline: 0 !important; color: var(--ink) !important; font-weight: 600; }
 .advanced-settings .ant-collapse-content-box { padding-inline: 0 !important; padding-bottom: 0 !important; }
@@ -395,7 +396,7 @@ h1, h2, h3 { color: var(--ink); }
   .creation-preview { min-height: 300px; position: static; }
   .creation-preview > .anticon { margin-top: 24px; }
   .creation-form .ant-segmented { width: 100%; }
-  .form-row, .setting-row { grid-template-columns: 1fr; gap: 0; }
+  .genre-grid, .form-row, .setting-row { grid-template-columns: 1fr; gap: 0; }
   .studio-header { padding: 10px 12px; grid-template-columns: auto 1fr; }
   .studio-header > .ant-btn { padding-inline: 4px; }
   .studio-actions { grid-column: 1 / -1; margin-top: 8px; justify-content: space-between; }

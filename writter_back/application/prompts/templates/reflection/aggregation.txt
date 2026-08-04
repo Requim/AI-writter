@@ -14,6 +14,11 @@ $chunks_summary
 
 $editorial_checks
 
+$genre_strategy
+
+【题材专项检查】
+- 若整章没有兑现题材承诺、误用母题或违反禁用解法，可输出 issue.type 为 genre_promise、trope_misuse 或 genre_logic。
+
 【输入数据】
 完整章节正文：
 $chapter_content

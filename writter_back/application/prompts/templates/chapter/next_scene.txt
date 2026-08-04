@@ -20,6 +20,8 @@ $story_bible
 【本章状态契约与剩余义务】
 $contract
 
+$genre_strategy
+
 【本场景细纲】
 $scene_block
 

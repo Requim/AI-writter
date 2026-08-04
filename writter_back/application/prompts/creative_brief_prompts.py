@@ -3,6 +3,7 @@
 import json
 from typing import Any
 
+from application.prompts.genre_strategy import genre_strategy_block
 from application.prompts.template_loader import render_prompt
 
 
@@ -18,6 +19,7 @@ CREATIVE_BRIEF_SCHEMA = {
     "naming_preference": "string",
     "style_fingerprint": "string",
     "trope_contract": "object",
+    "genre_context": "object",
     "content_boundaries": "array",
 }
 
@@ -32,6 +34,12 @@ _REQUIRED_TEXT_FIELDS = (
 )
 _OPTIONAL_TEXT_FIELDS = ("naming_preference", "style_fingerprint")
 _OBJECT_FIELDS = ("setting_context", "trope_contract")
+_GENRE_CONTEXT_FIELDS = (
+    "main_type",
+    "subgenre",
+    "reader_experience",
+    "narrative_pace",
+)
 
 
 def normalize_creative_brief(value: Any) -> dict[str, Any]:
@@ -41,6 +49,12 @@ def normalize_creative_brief(value: Any) -> dict[str, Any]:
     brief = {field: str(raw.get(field, "") or "").strip() for field in text_fields}
     for field in _OBJECT_FIELDS:
         brief[field] = raw.get(field, {}) if isinstance(raw.get(field), dict) else {}
+    context = raw.get("genre_context", {})
+    brief["genre_context"] = {
+        field: str(context.get(field) or "").strip()
+        for field in _GENRE_CONTEXT_FIELDS
+        if isinstance(context, dict) and str(context.get(field) or "").strip()
+    }
     boundaries = raw.get("content_boundaries", [])
     if isinstance(boundaries, str):
         boundaries = [item.strip() for item in boundaries.split("；") if item.strip()]
@@ -101,5 +115,6 @@ def build_creative_brief_prompt(
         title=title or "未提供",
         summary=summary or "未提供",
         seed_json=seed_json,
+        genre_strategy=genre_strategy_block(novel_type, seed or {}, "creative_brief"),
         feedback_block=feedback_block,
     )

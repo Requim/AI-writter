@@ -5,6 +5,8 @@
 【本卷目标】
 $volume_json
 
+$genre_strategy
+
 【静态故事圣经，不可违背】
 $story_bible
 
@@ -27,6 +29,7 @@ $reserved_name_pool
 10. 对照 recent_narrative_patterns，POV、地点、冲突手段、转折类型、结尾类型或高频意象不得无理由连续重复。
 11. 每个场景只选择 1-2 个 sensory_anchors，且细节必须参与行动、判断或冲突，不得填写感官清单。
 12. 新增长期角色只能写入 new_long_term_characters，并从保留池提交 candidate_id；临时路人使用身份称谓，不得另造姓名。
+13. genre_contract 写清本章如何兑现题材快感、使用哪些母题变体、避开哪些禁用解法；不要写空泛标签。
 
 【JSON 结构】
 {
@@ -43,6 +46,7 @@ $reserved_name_pool
   "state_delta": "与入场相比不可逆的状态变化",
   "ending_mode": "revelation|decision|reversal|arrival|deadline|emotional_shift",
   "narrative_pattern": {"pov": "", "locations": [], "conflict_method": "", "turn_type": "", "ending_mode": "", "motifs": []},
+  "genre_contract": {"promise": "", "payoff_action": "", "trope_variation": "", "avoidance": ""},
   "new_long_term_characters": [{
     "character_id": "稳定角色ID", "candidate_id": "保留池candidate_id",
     "role_type": "long_term_supporting",

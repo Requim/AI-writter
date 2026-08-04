@@ -147,6 +147,30 @@ def test_chapter_contract_prompt_is_reproducible_and_allows_adaptive_scenes() ->
     assert "desire" in first and "price_paid" in first and "state_delta" in first
 
 
+def test_genre_strategy_falls_back_to_novel_type_and_renders_contract() -> None:
+    outline_prompt = build_chapter_outline_prompt(
+        chapter_index=1,
+        novel_type="suspense",
+        title="回声来信",
+        total_outline={"total_chapters": 12, "volumes": []},
+        memory_context="无",
+    )
+    writer_prompt = build_next_scene_prompt(
+        scene={}, chapter_outline={
+            "genre_contract": {"promise": "本章用线索推理兑现悬疑快感"},
+        },
+        novel_type="suspense", title="回声来信",
+        chapter_num=1, ch_title="雨夜", scene_index=2, total_scenes=3,
+        prev_scene_digest="上一场景发现旧信", prev_word_count=1000,
+        correction_note="", target_words=1500, logic_hooks={},
+        internal_monologue="", memory_context="",
+    )
+
+    assert "【题材策略】" in outline_prompt and "悬疑" in outline_prompt
+    assert "genre_contract" in outline_prompt
+    assert "本章用线索推理兑现悬疑快感" in writer_prompt
+
+
 def test_scene_ledger_keeps_planned_delta_and_actual_generated_ending() -> None:
     content = "主角试图说服证人。\n\n证人最终把钥匙扔进河里。"
     ledger = _build_scene_ledger_entry(

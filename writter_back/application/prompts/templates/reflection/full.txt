@@ -12,6 +12,11 @@
 
 $editorial_checks
 
+$genre_strategy
+
+【题材专项检查】
+- 若正文没有兑现题材承诺、误用母题或违反禁用解法，可输出 issue.type 为 genre_promise、trope_misuse 或 genre_logic。
+
 【严重等级】
 - low：笔误、标点或不影响叙事的轻微风格问题。
 - medium：局部场景功能、节奏、表达或次要细纲遗漏。
@@ -55,7 +60,7 @@ $previous_issues
     "is_valid_word_count": true
   },
   "issues": [{
-    "type": "logic|consistency|plot_hole|character|padding|pacing|power_system|tension_gap|voice|cliche",
+    "type": "logic|consistency|plot_hole|character|padding|pacing|power_system|tension_gap|voice|cliche|genre_promise|trope_misuse|genre_logic",
     "issue_id": "上一轮已有则沿用，否则留空",
     "severity": "low|medium|high",
     "priority_action": "must_fix|optional|can_ignore",

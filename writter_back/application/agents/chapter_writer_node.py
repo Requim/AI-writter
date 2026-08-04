@@ -119,6 +119,7 @@ async def _conservative_generate(context: ChapterDraftContext, llm: LLMService) 
     prompt = build_chapter_writer_prompt(
         context.outline, context.novel_type, context.title, context.memory_context,
         prev_chapter_tail=context.previous_tail, story_bible=context.story_bible,
+        creative_brief=context.total_outline.get("creative_brief", {}),
     )
     return await collect_streamed_text(
         llm, prompt, node="chapter_writer_node", chapter_index=context.chapter_index,

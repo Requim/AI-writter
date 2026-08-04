@@ -3,6 +3,7 @@
 import json
 
 from application.continuity import build_budgeted_context, build_story_bible
+from application.prompts.genre_strategy import genre_strategy_block
 from application.prompts.outline_prompts import volume_for_chapter
 from application.prompts.template_loader import render_prompt
 
@@ -40,6 +41,7 @@ def build_chapter_outline_prompt(
         title=title,
         chapter_index=chapter_index,
         novel_type=novel_type,
+        genre_strategy=genre_strategy_block(novel_type, brief, "chapter_outline"),
         volume_json=volume_json,
         story_bible=story_bible,
         memory_context=context,
@@ -64,6 +66,7 @@ CHAPTER_OUTLINE_SCHEMA = {
     "state_delta": "string",
     "ending_mode": "string",
     "narrative_pattern": "object",
+    "genre_contract": "object",
     "new_long_term_characters": "array",
     "key_events": "array",
     "entry_state": "object",

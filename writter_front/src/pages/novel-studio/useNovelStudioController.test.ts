@@ -23,7 +23,7 @@ const { apiMock, appMock, quotaRefreshMock, setAutoModeMock, workflowMock } = vi
 }))
 
 vi.mock('antd', () => ({ App: { useApp: () => appMock } }))
-vi.mock('react-router-dom', () => ({
+vi.mock('react-router', () => ({
   useLocation: () => ({ state: undefined }), useNavigate: () => vi.fn(),
   useParams: () => ({ novelId: 'novel-1' }),
 }))

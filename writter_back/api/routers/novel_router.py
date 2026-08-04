@@ -28,6 +28,7 @@ from infrastructure.database.repository import PostgresNovelRepository
 from service.entities.identity import TenantContext
 from service.entities.novel import Novel
 from service.ports.workflow_command_store import WorkflowCommandStore
+from service.value_objects.genre_profile import get_genre_taxonomy
 from service.value_objects.novel_type import NovelType
 from service.value_objects.outline import Outline
 from service.value_objects.progress import Progress
@@ -65,6 +66,22 @@ class ProgressResponse(BaseModel):
     total_chapters: int
     percentage: float
     status: str
+
+
+class GenreOptionResponse(BaseModel):
+    value: str
+    label: str
+    description: str = ""
+
+
+class GenreProfileResponse(BaseModel):
+    value: str
+    label: str
+    description: str
+    subgenres: list[GenreOptionResponse]
+    reader_experiences: list[GenreOptionResponse]
+    pace_options: list[GenreOptionResponse]
+    prompt_axes: dict[str, Any]
 
 
 class ChapterResponse(BaseModel):
@@ -212,6 +229,14 @@ async def list_novels(
     return [
         _novel_response(novel) for novel in await repo.find_all(_tenant_id(context))
     ]
+
+
+@router.get("/genre-taxonomy", response_model=list[GenreProfileResponse])
+async def genre_taxonomy(
+    context: TenantContext = Depends(get_tenant_context),
+) -> list[dict[str, Any]]:
+    _tenant_id(context)
+    return get_genre_taxonomy()
 
 
 @router.get("/{novel_id}", response_model=NovelResponse)

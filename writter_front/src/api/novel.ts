@@ -3,6 +3,7 @@ import { createIdempotencyKey } from './idempotency'
 import type {
   ChapterDetail,
   ChapterSummary,
+  GenreProfile,
   NovelCreateRequest,
   NovelResponse,
   ProgressResponse,
@@ -18,6 +19,7 @@ export const novelApi = {
     data<{ novel_id: string; thread_id: string; status: string }>(apiClient.post('/v1/novels', payload)),
   list: () => data<NovelResponse[]>(apiClient.get('/v1/novels')),
   get: (novelId: string) => data<NovelResponse>(apiClient.get(`/v1/novels/${novelId}`)),
+  genreTaxonomy: () => data<GenreProfile[]>(apiClient.get('/v1/novels/genre-taxonomy')),
   progress: (novelId: string) =>
     data<ProgressResponse>(apiClient.get(`/v1/novels/${novelId}/progress`)),
   chapters: (novelId: string) =>

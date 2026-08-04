@@ -110,6 +110,7 @@ def _scene_prompt(context: SceneQueueContext, index: int, target: int) -> tuple[
         "total_scenes": len(context.scenes),
         "logic_hooks": outline.get("logic_hooks", {}),
         "internal_monologue": outline.get("internal_monologue", ""),
+        "creative_brief": context.total_outline.get("creative_brief", {}),
     }
     if index == 0:
         return build_first_scene_prompt(

@@ -31,6 +31,24 @@ function unauthorized(config: InternalAxiosRequestConfig): AxiosError {
 }
 
 describe('novelApi rewriteChapter', () => {
+  it('loads genre taxonomy from the novels API namespace', async () => {
+    const adapter: AxiosAdapter = vi.fn(async (request) => ({
+      data: [{ value: 'horror', label: '惊悚', subgenres: [], reader_experiences: [], pace_options: [], prompt_axes: {} }],
+      status: 200,
+      statusText: 'OK',
+      headers: {},
+      config: request as InternalAxiosRequestConfig,
+    }))
+    apiClient.defaults.adapter = adapter
+
+    await expect(novelApi.genreTaxonomy()).resolves.toEqual([
+      { value: 'horror', label: '惊悚', subgenres: [], reader_experiences: [], pace_options: [], prompt_axes: {} },
+    ])
+    expect(vi.mocked(adapter).mock.calls[0][0]).toMatchObject({
+      url: '/v1/novels/genre-taxonomy',
+    })
+  })
+
   it('reuses one idempotency key when a 401 response is refreshed and replayed', async () => {
     useAuthStore.setState({ accessToken: 'expired', refreshToken: 'refresh', currentTenantId: 'tenant-1' })
     vi.spyOn(axios, 'post').mockResolvedValue({ data: session })

@@ -2,6 +2,9 @@ import type { NovelCreateRequest } from '@/types/novel'
 
 export interface CreationForm {
   novel_type: string
+  subgenre?: string
+  reader_experience?: string
+  narrative_pace?: string
   title?: string
   summary?: string
   core_premise?: string
@@ -22,7 +25,14 @@ function creativeBriefFrom(values: CreationForm) {
   const era = trimmed(values.setting_era)
   const region = trimmed(values.setting_region)
   const settingContext = { ...(era ? { era } : {}), ...(region ? { region } : {}) }
+  const genreContext = {
+    main_type: values.novel_type,
+    ...(trimmed(values.subgenre) ? { subgenre: trimmed(values.subgenre) } : {}),
+    ...(trimmed(values.reader_experience) ? { reader_experience: trimmed(values.reader_experience) } : {}),
+    ...(trimmed(values.narrative_pace) ? { narrative_pace: trimmed(values.narrative_pace) } : {}),
+  }
   return {
+    genre_context: genreContext,
     ...(trimmed(values.core_premise) ? { core_premise: trimmed(values.core_premise) } : {}),
     ...(trimmed(values.reader_promise) ? { reader_promise: trimmed(values.reader_promise) } : {}),
     ...(trimmed(values.content_boundaries) ? { content_boundaries: trimmed(values.content_boundaries) } : {}),

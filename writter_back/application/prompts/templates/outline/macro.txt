@@ -10,6 +10,8 @@
 【创作简报（最高优先级）】
 $creative_brief
 
+$genre_strategy
+
 【角色设计】
 $main_characters
 $character_requirement

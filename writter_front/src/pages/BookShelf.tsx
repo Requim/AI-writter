@@ -1,19 +1,14 @@
 import { App, Button, Empty, Input, Progress, Segmented, Skeleton } from 'antd'
 import { CheckOutlined, DeleteOutlined, EditOutlined, PlusOutlined, SearchOutlined, SelectOutlined } from '@ant-design/icons'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router'
 import { AppShell } from '@/components/AppShell'
 import { novelApi } from '@/api/novel'
+import { useGenreTaxonomy } from '@/hooks/useGenreTaxonomy'
 import { useNovelStore } from '@/stores/novelStore'
 import type { NovelResponse } from '@/types/novel'
 import { currentTenant } from '@/stores/authStore'
 import { filterNovels, type ShelfStatusFilter } from './bookShelfUtils'
-
-const typeLabels: Record<string, string> = {
-  suspense: '悬疑', sci_fi: '科幻', romance: '言情', fantasy: '奇幻',
-  wuxia: '武侠', xianxia: '仙侠', urban: '都市', history: '历史',
-  horror: '惊悚', comedy: '喜剧',
-}
 
 export default function BookShelf() {
   const navigate = useNavigate()
@@ -26,6 +21,7 @@ export default function BookShelf() {
   const [selected, setSelected] = useState<string[]>([])
   const [query, setQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState<ShelfStatusFilter>('all')
+  const { labels: genreLabels } = useGenreTaxonomy()
   const canDelete = ['owner', 'admin'].includes(currentTenant()?.role || '')
   const filteredNovels = useMemo(
     () => filterNovels(novels, query, statusFilter),
@@ -191,7 +187,7 @@ export default function BookShelf() {
                         {checked && <CheckOutlined />}
                       </span>
                     )}
-                    <span>{typeLabels[novel.novel_type] || novel.novel_type}</span>
+                    <span>{genreLabels[novel.novel_type] || novel.novel_type}</span>
                     <strong>{novel.title || '未命名作品'}</strong>
                     <small>墨间 · 创作稿</small>
                   </div>

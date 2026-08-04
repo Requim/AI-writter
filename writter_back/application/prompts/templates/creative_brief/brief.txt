@@ -8,6 +8,8 @@
 用户创作意图：
 $seed_json$feedback_block
 
+$genre_strategy
+
 【约束】
 1. 用户已提供的书名、简介和创作意图是正史约束，只能补全，不能替换。
 2. core_premise 用一句话表达“谁因什么异常处境，不得不做什么，否则失去什么”。
@@ -21,6 +23,7 @@ $seed_json$feedback_block
 10. naming_preference 写明命名语域、避用倾向及典故偏好；没有用户偏好时写“服从时代、地域和家庭背景”。
 11. style_fingerprint 明确视角、句式节奏、词汇密度、意象策略和不同角色的对话潜台词倾向。
 12. trope_contract 包含 allowed_tropes、variations、avoid_solutions、distinctive_payoff，约束母题如何变体与兑现。
-13. content_boundaries 列出用户要求避开的内容；没有则为空数组。
+13. genre_context 如已有则原样保留；没有则依据类型策略只补入 main_type，不要创造未选择的子类型。
+14. content_boundaries 列出用户要求避开的内容；没有则为空数组。
 
 只输出与给定 schema 对应的 JSON 对象，不要 Markdown、解释或备选方案。

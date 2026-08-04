@@ -264,7 +264,7 @@ async def _review_chunks(
         prompt = build_chunk_reflection_prompt(
             chunk["text"], chunk["chunk_index"], len(chunks), chunk["start"], chunk["end"],
             context["chapter_outline"], context["main_characters"], context["memory_context"],
-            context["story_bible"],
+            context["story_bible"], context["novel_type"], context["creative_brief"],
         )
         result = await llm.structured_generate(prompt, CHUNK_REFLECTION_SCHEMA, temperature=0.1)
         issues = _normalize_issues(result.get("issues") if isinstance(result, dict) else None)
@@ -322,6 +322,7 @@ async def _review_content(
         prompt = build_reflection_prompt(
             content, context["chapter_outline"], context["main_characters"],
             context["memory_context"], len(content), context["story_bible"], previous,
+            context["novel_type"], context["creative_brief"],
         ) + build_score_contract()
         result = await _generate_valid_review(llm, prompt, REFLECTION_SCHEMA)
     else:
@@ -329,6 +330,7 @@ async def _review_content(
         prompt = build_aggregation_prompt(
             chunks, content, context["chapter_outline"], context["main_characters"],
             context["memory_context"], len(content), context["story_bible"], previous,
+            context["novel_type"], context["creative_brief"],
         ) + build_score_contract()
         result = await _generate_valid_review(llm, prompt, AGGREGATION_SCHEMA)
         result["issues"] = _merge_issues(result.get("issues"), chunks)
@@ -474,6 +476,8 @@ def _review_context(state: NovelAgentState) -> tuple[str, dict[str, Any]]:
         "main_characters": related_character_cards(total, related),
         "memory_context": state.get("memory_context", ""),
         "story_bible": build_story_bible(total, related_context=related),
+        "novel_type": state.get("novel_type", ""),
+        "creative_brief": total.get("creative_brief", {}),
     }
     return content, context
 

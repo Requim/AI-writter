@@ -1,7 +1,7 @@
 import { App } from 'antd'
 import axios from 'axios'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useLocation, useNavigate, useParams } from 'react-router-dom'
+import { useLocation, useNavigate, useParams } from 'react-router'
 import { novelApi } from '@/api/novel'
 import { useWorkflowStream, type WorkflowViewState } from '@/hooks/useWorkflowStream'
 import { useUnsavedChangesGuard, type DiscardConfirmation } from '@/hooks/useUnsavedChangesGuard'

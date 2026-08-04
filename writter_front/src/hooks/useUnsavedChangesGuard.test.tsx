@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { createMemoryRouter, RouterProvider, useNavigate } from 'react-router-dom'
+import { createMemoryRouter, RouterProvider, useNavigate } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
