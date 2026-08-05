@@ -444,6 +444,7 @@ docker compose down -v
 | `SSE_HEARTBEAT_SECONDS` | `15` | Heartbeat 间隔 |
 | `WORKFLOW_IDEMPOTENCY_REQUIRED` | `false` | 新前端部署完成后再强制 `Idempotency-Key` |
 | `WORKFLOW_REVIEW_V3_ENABLED` | `false` | 只让新启动流程写入 v3 提案式审核 checkpoint |
+| `NOVEL_PLANNING_V1_ENABLED` | `false` | 灰度启用整书规模契约、分卷与章节骨架规划 |
 | `ADAPTIVE_COMPACTION_ENABLED` | `false` | 命中确定性长度条件时最多压缩一次 |
 | `MAX_REFLECTION_LOOPS` | `3` | 配置的审读循环上限 |
 | `REFLECTION_THRESHOLD` | `0.8` | 质量通过阈值 |
