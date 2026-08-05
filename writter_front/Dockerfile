@@ -1,7 +1,7 @@
 FROM docker.m.daocloud.io/library/node:24-alpine AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm config set registry https://registry.npmmirror.com && npm ci
+RUN npm ci
 COPY . .
 RUN npm run build
 
