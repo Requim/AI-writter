@@ -49,6 +49,25 @@ describe('novelApi rewriteChapter', () => {
     })
   })
 
+  it('loads planning options, the current plan, and compact version history from dedicated endpoints', async () => {
+    const adapter: AxiosAdapter = vi.fn(async (request) => {
+      const url = String(request.url)
+      const response = url.endsWith('/planning-options') ? { constraints: {}, presets: [] }
+        : url.endsWith('/plan/versions') ? [{ version: 2, source: 'replan', created_at: '2026-08-05T08:00:00Z' }]
+        : { version: 2, scale: { target_chapters: 80 }, volumes: [], arcs: [], chapter_slots: [] }
+      return { data: response, status: 200, statusText: 'OK', headers: {}, config: request as InternalAxiosRequestConfig }
+    })
+    apiClient.defaults.adapter = adapter
+
+    await Promise.all([
+      novelApi.planningOptions(), novelApi.plan('novel-1'), novelApi.planVersions('novel-1'),
+    ])
+
+    expect(vi.mocked(adapter).mock.calls.map(([request]) => request.url)).toEqual([
+      '/v1/novels/planning-options', '/v1/novels/novel-1/plan', '/v1/novels/novel-1/plan/versions',
+    ])
+  })
+
   it('reuses one idempotency key when a 401 response is refreshed and replayed', async () => {
     useAuthStore.setState({ accessToken: 'expired', refreshToken: 'refresh', currentTenantId: 'tenant-1' })
     vi.spyOn(axios, 'post').mockResolvedValue({ data: session })

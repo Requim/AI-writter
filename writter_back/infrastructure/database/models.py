@@ -5,11 +5,13 @@ from uuid import uuid4
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     Column,
     Date,
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
+    func,
     Index,
     Integer,
     String,
@@ -115,6 +117,125 @@ class NovelModel(Base):
 
     chapters = relationship("ChapterModel", back_populates="novel", cascade="all, delete-orphan")
     memories = relationship("MemoryModel", back_populates="novel", cascade="all, delete-orphan")
+    plan_versions = relationship(
+        "NovelPlanVersionModel", back_populates="novel", cascade="all, delete-orphan"
+    )
+    plan_executions = relationship(
+        "NovelPlanExecutionModel", back_populates="novel", cascade="all, delete-orphan"
+    )
+
+
+class NovelPlanVersionModel(Base):
+    __tablename__ = "novel_plan_versions"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "novel_id"],
+            ["novels.tenant_id", "novels.id"],
+            ondelete="CASCADE",
+            name="fk_plan_versions_tenant_novel",
+        ),
+        UniqueConstraint(
+            "tenant_id", "novel_id", "version", name="uq_plan_versions_version"
+        ),
+        Index(
+            "ix_plan_versions_tenant_novel",
+            "tenant_id",
+            "novel_id",
+            "version",
+        ),
+        CheckConstraint("version >= 1", name="ck_plan_versions_positive_version"),
+        CheckConstraint("source <> ''", name="ck_plan_versions_source"),
+        CheckConstraint(
+            "trigger_chapter IS NULL OR trigger_chapter >= 1",
+            name="ck_plan_versions_trigger_chapter",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(plan) = 'object'", name="ck_plan_versions_plan_object"
+        ),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    tenant_id = Column(UUID(as_uuid=True), nullable=False)
+    novel_id = Column(UUID(as_uuid=True), nullable=False)
+    version = Column(Integer, nullable=False)
+    source = Column(String(30), nullable=False)
+    trigger_chapter = Column(Integer, nullable=True)
+    change_summary = Column(Text, nullable=False, default="", server_default="")
+    plan_data = Column("plan", JSONB, nullable=False)
+    created_by_user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, default=utc_now, server_default=func.now()
+    )
+
+    novel = relationship("NovelModel", back_populates="plan_versions")
+
+
+class NovelPlanExecutionModel(Base):
+    __tablename__ = "novel_plan_executions"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "novel_id"],
+            ["novels.tenant_id", "novels.id"],
+            ondelete="CASCADE",
+            name="fk_plan_executions_tenant_novel",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "novel_id", "plan_version"],
+            [
+                "novel_plan_versions.tenant_id",
+                "novel_plan_versions.novel_id",
+                "novel_plan_versions.version",
+            ],
+            ondelete="CASCADE",
+            name="fk_plan_executions_plan_version",
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "novel_id",
+            "chapter_number",
+            name="uq_plan_executions_chapter",
+        ),
+        Index(
+            "ix_plan_executions_tenant_novel",
+            "tenant_id",
+            "novel_id",
+            "chapter_number",
+        ),
+        CheckConstraint("chapter_number >= 1", name="ck_plan_execution_chapter"),
+        CheckConstraint("plan_version >= 1", name="ck_plan_execution_version"),
+        CheckConstraint("actual_words >= 0", name="ck_plan_execution_words"),
+        CheckConstraint("status <> ''", name="ck_plan_execution_status"),
+        CheckConstraint(
+            "drift_severity IN ('none', 'minor', 'major')",
+            name="ck_plan_execution_drift",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(fulfillment) = 'object'",
+            name="ck_plan_execution_fulfillment_object",
+        ),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    tenant_id = Column(UUID(as_uuid=True), nullable=False)
+    novel_id = Column(UUID(as_uuid=True), nullable=False)
+    chapter_number = Column(Integer, nullable=False)
+    plan_version = Column(Integer, nullable=False)
+    status = Column(String(30), nullable=False)
+    actual_words = Column(Integer, nullable=False, default=0, server_default="0")
+    fulfillment = Column(JSONB, nullable=False, default=dict, server_default="{}")
+    drift_severity = Column(
+        String(10), nullable=False, default="none", server_default="none"
+    )
+    updated_at = Column(
+        DateTime(timezone=True), nullable=False, default=utc_now,
+        server_default=func.now(), onupdate=utc_now
+    )
+
+    novel = relationship("NovelModel", back_populates="plan_executions")
 
 
 class ChapterModel(Base):

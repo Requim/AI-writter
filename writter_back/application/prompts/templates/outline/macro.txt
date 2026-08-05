@@ -33,7 +33,7 @@ $character_requirement
 7. relationship_turns：列出核心关系的关键转折、触发行动与不可逆后果。
 8. writing_style（150-300字）：$style_requirement
 9. total_chapters：$chapter_requirement
-10. volumes：规划 4-6 卷，连续覆盖第1章到 total_chapters。每卷包含 volume_name、volume_number、start_chapter、end_chapter、core_conflict、main_character_arc、climax_event、next_volume_hook。
+10. volumes：$volume_requirement 每卷包含 volume_name、volume_number、start_chapter、end_chapter、core_conflict、main_character_arc、climax_event、next_volume_hook。
 
 【重要边界】
 - 禁止输出 chapters 字段或逐章事件列表。

@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const { apiMock, appMock, quotaRefreshMock, setAutoModeMock, workflowMock } = vi.hoisted(() => ({
   apiMock: {
     get: vi.fn(), progress: vi.fn(), chapters: vi.fn(), chapter: vi.fn(),
-    updateChapter: vi.fn(), rewriteChapter: vi.fn(), batchDeleteChapters: vi.fn(),
+    plan: vi.fn(), updateChapter: vi.fn(), rewriteChapter: vi.fn(), batchDeleteChapters: vi.fn(),
   },
   appMock: {
     message: { success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn() },
@@ -52,6 +52,7 @@ describe('useNovelStudioController auto preference', () => {
     apiMock.get.mockResolvedValue({ id: 'novel-1', novel_type: 'suspense', status: 'writing' })
     apiMock.progress.mockResolvedValue({ current_chapter: 0, total_chapters: 3, percentage: 0, status: 'writing' })
     apiMock.chapters.mockResolvedValue([])
+    apiMock.plan.mockResolvedValue(null)
   })
 
   it('keeps the current automatic run active when changing the next-command preference', () => {
@@ -85,5 +86,24 @@ describe('useNovelStudioController auto preference', () => {
     expect(quotaRefreshMock).toHaveBeenCalled()
     expect(result.current.document.selectedChapter?.content).toBe('最新正文')
     expect(appMock.message.info).toHaveBeenCalledWith(expect.stringContaining('已同步'))
+  })
+
+  it('starts manual replanning with the accepted plan version', async () => {
+    apiMock.plan.mockResolvedValue({ version: 7 })
+    const { result } = renderHook(() => useNovelStudioController())
+    await waitFor(() => expect(result.current.document.plan?.version).toBe(7))
+
+    act(() => result.current.startWriting())
+    expect(result.current.autoRunActive).toBe(true)
+    act(() => result.current.replanPlan({ scope: 'scale', instruction: '压缩为两卷并保留结局' }))
+
+    expect(workflowMock.run).toHaveBeenLastCalledWith({
+      command: {
+        plan_replan: { expected_version: 7, scope: 'scale', instruction: '压缩为两卷并保留结局' },
+        _auto_mode: false,
+      },
+    })
+    expect(result.current.autoRunActive).toBe(false)
+    expect(result.current.document.mobilePanel).toBe('workflow')
   })
 })

@@ -115,6 +115,39 @@ describe('WorkflowPanel character design', () => {
   })
 })
 
+describe('WorkflowPanel novel plan', () => {
+  it('forces a structured plan review in automatic mode and accepts by proposal id', () => {
+    const onResume = vi.fn()
+    render(<WorkflowPanel state={{
+      status: 'paused', connection: 'idle', draft: '', activeNode: 'novel_plan_review_node', issues: [], events: [],
+      interrupt: {
+        action: 'review_novel_plan', proposal_id: 'plan-1', message: '整书规划已完成，请确认',
+        proposal: { proposal_id: 'plan-1', kind: 'novel_plan', version: 1, payload: {
+          schema_version: 1, version: 1, source: 'initial', created_at: '2026-08-05T08:00:00Z',
+          scale: { preset: 'short', target_chapters: 2, target_total_words: 8400,
+            tolerance_ratio: 0.1, average_chapter_words: 4200, target_volumes: 1, lock_window: 5 },
+          ending_contract: { final_state: '谜题闭合' },
+          volumes: [{ volume_id: 'vol-1', title: '第一卷', start_chapter: 1, end_chapter: 2,
+            target_words: 8400, opening_state: '危机出现', midpoint_turn: '线索翻转', climax: '揭晓',
+            ending_state: '危机解除', reader_promises: [], setup_ids: [], payoff_ids: [] }],
+          arcs: [{ arc_id: 'main', arc_type: 'main', start_chapter: 1, end_chapter: 2,
+            goal: '查明真相', escalation_points: [], resolution_condition: '案件解决', is_core: true }],
+          chapter_slots: [{ chapter_number: 1, volume_id: 'vol-1', arc_ids: ['main'],
+            story_function: '危机进入', must_happen: ['收到来信'], planned_state_delta: '主角接案',
+            target_words: 4200, setup_ids: [], payoff_ids: [], detail_level: 'detailed', status: 'planned' },
+          { chapter_number: 2, volume_id: 'vol-1', arc_ids: ['main'], story_function: '真相揭晓',
+            must_happen: ['找到真凶'], planned_state_delta: '危机解除', target_words: 4200,
+            setup_ids: [], payoff_ids: [], detail_level: 'skeleton', status: 'planned' }],
+        } },
+      },
+    }} autoMode onResume={onResume} onRetry={vi.fn()} onCancel={vi.fn()} onRefresh={vi.fn()} />)
+    expect(screen.getByText('整书规划提案')).toBeInTheDocument()
+    expect(screen.getAllByText('8,400 字')).toHaveLength(2)
+    fireEvent.click(screen.getByRole('button', { name: '确认整书规划' }))
+    expect(onResume).toHaveBeenCalledWith({ proposal_id: 'plan-1', decision: 'accept' })
+  })
+})
+
 describe('WorkflowPanel chapter outline', () => {
   it('shows a chapter outline review instead of the internal router stage', () => {
     const state: WorkflowViewState = {

@@ -8,7 +8,9 @@ import { useUnsavedChangesGuard, type DiscardConfirmation } from '@/hooks/useUns
 import { currentTenant } from '@/stores/authStore'
 import { useNovelStore } from '@/stores/novelStore'
 import { refreshQuota } from '@/stores/quotaStore'
-import type { ChapterDetail, ChapterSummary, NovelResponse, ProgressResponse } from '@/types/novel'
+import type {
+  ChapterDetail, ChapterSummary, NovelPlan, NovelResponse, PlanReplanRequest, ProgressResponse,
+} from '@/types/novel'
 import {
   autoResumeValue, hasChapterChanges, interruptKey, rewindImpactText, shouldAutoResume,
 } from '../novelStudioUtils'
@@ -20,13 +22,16 @@ type DocumentLoadError = 'not_found' | 'forbidden' | 'network'
 
 interface DocumentState {
   novel?: NovelResponse
+  plan?: NovelPlan
+  planLoadFailed?: boolean
   progress?: ProgressResponse
   chapters: ChapterSummary[]
   selectedChapter?: ChapterDetail
   editorTitle: string
   editorContent: string
   editorMode: 'read' | 'edit'
-  mobilePanel: 'chapters' | 'editor' | 'workflow'
+  workspaceMode: 'chapter' | 'plan'
+  mobilePanel: 'chapters' | 'plan' | 'editor' | 'workflow'
   loading: boolean
   loadError?: DocumentLoadError
   saving: boolean
@@ -44,7 +49,8 @@ interface DocumentModel {
 
 const initialDocumentState: DocumentState = {
   chapters: [], editorTitle: '', editorContent: '', editorMode: 'read',
-  mobilePanel: 'editor', loading: true, saving: false, saveFailed: false, rewriting: false,
+  workspaceMode: 'chapter', mobilePanel: 'editor', loading: true,
+  saving: false, saveFailed: false, rewriting: false,
 }
 
 const REWRITE_SYNC_CODES = new Set([
@@ -85,7 +91,8 @@ function applySelectedChapter(
   selectedRef.current = detail
   setState((current) => ({
     ...current, selectedChapter: detail, editorTitle: detail.title,
-    editorContent: detail.content, editorMode: 'read', mobilePanel: 'editor', saveFailed: false,
+    editorContent: detail.content, editorMode: 'read', workspaceMode: 'chapter',
+    mobilePanel: 'editor', saveFailed: false,
     lastSavedAt: current.selectedChapter?.id === detail.id ? current.lastSavedAt : undefined,
   }))
 }
@@ -100,11 +107,14 @@ function useDocumentRefresh(
     if (!novelId) return
     if (!loadedRef.current) setState((current) => ({ ...current, loading: true, loadError: undefined }))
     try {
-      const [novel, progress, chapters] = await Promise.all([
-        novelApi.get(novelId), novelApi.progress(novelId), novelApi.chapters(novelId),
+      const [novel, progress, chapters, planning] = await Promise.all([
+        novelApi.get(novelId), novelApi.progress(novelId), novelApi.chapters(novelId), loadOptionalPlan(novelId),
       ])
       loadedRef.current = true
-      setState((current) => ({ ...current, novel, progress, chapters, loadError: undefined }))
+      setState((current) => ({
+        ...current, novel, progress, chapters, plan: planning.plan,
+        planLoadFailed: planning.failed, loadError: undefined,
+      }))
       if (!selectedRef.current && chapters.length > 0) {
         applySelectedChapter(setState, selectedRef, await novelApi.chapter(novelId, chapters.at(-1)!.id))
       }
@@ -115,6 +125,16 @@ function useDocumentRefresh(
       setState((current) => ({ ...current, loading: false }))
     }
   }, [loadedRef, message, novelId, selectedRef, setState])
+}
+
+async function loadOptionalPlan(novelId: string): Promise<{ plan?: NovelPlan; failed?: boolean }> {
+  try {
+    const plan = await novelApi.plan(novelId)
+    return plan ? { plan } : {}
+  } catch (error) {
+    if (axios.isAxiosError(error) && error.response?.status === 404) return {}
+    return { failed: true }
+  }
 }
 
 function useInitialRefresh(refresh: () => Promise<void> | undefined): void {
@@ -365,11 +385,11 @@ function useInitialWorkflowSync(
 }
 
 async function fetchPersistedData(novelId: string, chapterId: string) {
-  const [novel, progress, chapters, detail] = await Promise.all([
+  const [novel, progress, chapters, detail, planning] = await Promise.all([
     novelApi.get(novelId), novelApi.progress(novelId), novelApi.chapters(novelId),
-    novelApi.chapter(novelId, chapterId),
+    novelApi.chapter(novelId, chapterId), loadOptionalPlan(novelId),
   ])
-  return { novel, progress, chapters, detail }
+  return { novel, progress, chapters, detail, planning }
 }
 
 function applyPersistedData(
@@ -378,7 +398,10 @@ function applyPersistedData(
   data: Awaited<ReturnType<typeof fetchPersistedData>>,
   keepEditor: boolean,
 ): void {
-  setState((current) => ({ ...current, novel: data.novel, progress: data.progress, chapters: data.chapters }))
+  setState((current) => ({
+    ...current, novel: data.novel, progress: data.progress, chapters: data.chapters,
+    plan: data.planning.plan, planLoadFailed: data.planning.failed,
+  }))
   if (!keepEditor) applySelectedChapter(setState, selectedRef, data.detail)
 }
 
@@ -470,7 +493,14 @@ function useWorkflowCommands(params: WorkflowCommandParams) {
     await params.workflow.cancel()
     await params.refresh()
   }, [params])
-  return { start, resume, continueAuto, stop }
+  const replan = useCallback((expectedVersion: number, request: PlanReplanRequest) => {
+    setInterruptRef(params.lastInterruptRef, undefined)
+    params.setActive(false)
+    return params.workflow.run({
+      command: { plan_replan: { expected_version: expectedVersion, ...request }, _auto_mode: false },
+    })
+  }, [params])
+  return { start, resume, continueAuto, stop, replan }
 }
 
 function useSaveGate(
@@ -486,6 +516,20 @@ function useSaveGate(
       onOk: async () => { if (await save()) return action() },
     })
   }, [hasChanges, modal, save])
+}
+
+function runPlanReplan(
+  model: DocumentModel,
+  plan: NovelPlan | undefined,
+  request: PlanReplanRequest,
+  gate: ReturnType<typeof useSaveGate>,
+  replan: ReturnType<typeof useWorkflowCommands>['replan'],
+): void {
+  if (!plan) return
+  gate(async () => {
+    model.setState((current) => ({ ...current, mobilePanel: 'workflow' }))
+    await replan(plan.version, request)
+  })
 }
 
 /** 小说工作台视图所需的状态与操作。 */
@@ -509,6 +553,7 @@ export interface NovelStudioController {
   startWriting: () => void
   resumeWriting: (value: unknown) => void
   continueAutoWriting: () => void
+  replanPlan: (request: PlanReplanRequest) => void
   stopWriting: () => void
   setAutoMode: (value: boolean) => void
   setEditor: (patch: Partial<DocumentState>) => void
@@ -616,6 +661,9 @@ export function useNovelStudioController(): NovelStudioController {
     startWriting: () => gated(commands.start),
     resumeWriting: (value) => gated(() => commands.resume(value)),
     continueAutoWriting: () => gated(commands.continueAuto),
+    replanPlan: (request) => runPlanReplan(
+      document.model, state.plan, request, gated, commands.replan,
+    ),
     stopWriting: () => void commands.stop(), setAutoMode: interactions.changeAutoMode, setEditor: interactions.setEditor,
     goBack: () => confirmDiscard(() => navigate('/')),
     notifySyncError: () => app.message.error('暂时无法同步任务状态'),

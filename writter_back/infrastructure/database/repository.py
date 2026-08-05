@@ -2,18 +2,36 @@
 
 import json
 import uuid
+from dataclasses import replace
 from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
-from sqlalchemy import delete, select, text, update
+from sqlalchemy import delete, func, select, text, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from typing import Optional, List
 
 from service.entities.novel import Novel
 from service.entities.chapter import Chapter
 from service.ports.novel_repository import NovelRepository
+from service.ports.novel_plan_repository import (
+    NovelPlanRepository,
+    PlanVersionConflictError,
+)
+from service.value_objects.novel_plan import (
+    NovelPlan,
+    NovelPlanVersionSummary,
+    PlanExecution,
+)
 from service.value_objects.outline import Outline
 from service.value_objects.progress import Progress
-from .models import Base, ChapterModel, MemoryModel, NovelModel
+from .models import (
+    Base,
+    ChapterModel,
+    MemoryModel,
+    NovelModel,
+    NovelPlanExecutionModel,
+    NovelPlanVersionModel,
+)
 
 
 async def _lock_novel(
@@ -216,6 +234,35 @@ async def _delete_replaced_data(
         from_index=discard_following,
     )
     await _delete_memory_types(session, tenant_id, novel_id, invalidated_types)
+    await _delete_plan_executions(
+        session,
+        tenant_id,
+        novel_id,
+        chapter_index + 1,
+        from_chapter=discard_following,
+    )
+
+
+async def _delete_plan_executions(
+    session: AsyncSession,
+    tenant_id: uuid.UUID,
+    novel_id: uuid.UUID,
+    chapter_number: int,
+    *,
+    from_chapter: bool,
+) -> None:
+    predicate = (
+        NovelPlanExecutionModel.chapter_number >= chapter_number
+        if from_chapter
+        else NovelPlanExecutionModel.chapter_number == chapter_number
+    )
+    await session.execute(
+        delete(NovelPlanExecutionModel).where(
+            NovelPlanExecutionModel.tenant_id == tenant_id,
+            NovelPlanExecutionModel.novel_id == novel_id,
+            predicate,
+        )
+    )
 
 
 async def _set_novel_progress(
@@ -225,11 +272,14 @@ async def _set_novel_progress(
     progress: Progress,
     updated_at: datetime,
 ) -> None:
+    payload = await _merge_plan_progress(
+        session, tenant_id, novel_id, progress.to_dict()
+    )
     await session.execute(
         update(NovelModel)
         .where(NovelModel.tenant_id == tenant_id, NovelModel.id == novel_id)
         .values(
-            progress=progress.to_dict(),
+            progress=payload,
             status=progress.status,
             updated_at=updated_at,
         )
@@ -282,6 +332,13 @@ async def _delete_chapters_from(
     await _delete_memory_types(
         session, tenant_id, novel_id, ["story_state", "rolling_plan"]
     )
+    await _delete_plan_executions(
+        session,
+        tenant_id,
+        novel_id,
+        rewind_to + 1,
+        from_chapter=True,
+    )
     return len(rows)
 
 
@@ -298,6 +355,183 @@ def _rewind_novel_progress(novel: NovelModel, rewind_to: int) -> None:
     )
     novel.progress = progress_data
     novel.status = progress_data["status"]
+
+
+async def _latest_plan_model(
+    session: AsyncSession, tenant_id: uuid.UUID, novel_id: uuid.UUID
+) -> NovelPlanVersionModel | None:
+    result = await session.execute(
+        select(NovelPlanVersionModel)
+        .where(
+            NovelPlanVersionModel.tenant_id == tenant_id,
+            NovelPlanVersionModel.novel_id == novel_id,
+        )
+        .order_by(NovelPlanVersionModel.version.desc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
+def _plan_from_model(model: NovelPlanVersionModel) -> NovelPlan:
+    payload = dict(model.plan_data or {})
+    payload.update(
+        version=model.version,
+        source=model.source,
+        created_at=model.created_at,
+    )
+    return NovelPlan.from_dict(payload)
+
+
+def _execution_from_model(model: NovelPlanExecutionModel) -> PlanExecution:
+    return PlanExecution.from_dict(
+        {
+            "chapter_number": model.chapter_number,
+            "plan_version": model.plan_version,
+            "status": model.status,
+            "actual_words": model.actual_words,
+            "fulfillment": model.fulfillment or {},
+            "drift_severity": model.drift_severity,
+            "updated_at": model.updated_at,
+        }
+    )
+
+
+async def _sync_plan_mirrors(
+    session: AsyncSession, novel: NovelModel, plan: NovelPlan
+) -> None:
+    outline = dict(novel.total_outline or {})
+    outline.pop("chapters", None)
+    outline["total_chapters"] = plan.scale.target_chapters
+    outline["volumes"] = plan.to_dict()["volumes"]
+    outline["scale"] = plan.scale.to_dict()
+    novel.total_outline = outline
+    progress = dict(novel.progress or {})
+    completed_words = await _completed_word_count(
+        session, novel.tenant_id, novel.id
+    )
+    progress.update(_plan_progress_fields(plan, progress, completed_words))
+    novel.progress = progress
+
+
+async def _completed_word_count(
+    session: AsyncSession, tenant_id: uuid.UUID, novel_id: uuid.UUID
+) -> int:
+    result = await session.execute(
+        select(func.coalesce(func.sum(ChapterModel.word_count), 0)).where(
+            ChapterModel.tenant_id == tenant_id,
+            ChapterModel.novel_id == novel_id,
+        )
+    )
+    return int(result.scalar_one())
+
+
+def _volume_progress_fields(plan: NovelPlan, current: int) -> dict[str, int | float]:
+    if not plan.volumes:
+        return {"current_volume": 0, "total_volumes": 0, "volume_percentage": 0.0}
+    chapter = min(max(current + 1, 1), plan.scale.target_chapters)
+    volume = next(
+        item
+        for item in plan.volumes
+        if item.start_chapter <= chapter <= item.end_chapter
+    )
+    length = volume.end_chapter - volume.start_chapter + 1
+    completed = max(0, min(current, volume.end_chapter) - volume.start_chapter + 1)
+    return {
+        "current_volume": plan.volumes.index(volume) + 1,
+        "total_volumes": len(plan.volumes),
+        "volume_percentage": completed / length * 100 if length else 0.0,
+    }
+
+
+def _plan_progress_fields(
+    plan: NovelPlan,
+    progress: dict,
+    completed_words: int,
+    *,
+    plan_status: str = "accepted",
+    drift_severity: str = "none",
+) -> dict[str, object]:
+    target_words = plan.scale.target_total_words
+    fields: dict[str, object] = {
+        "total_chapters": plan.scale.target_chapters,
+        "target_words": target_words,
+        "completed_words": completed_words,
+        "word_percentage": completed_words / target_words * 100,
+        "plan_version": plan.version,
+        "plan_status": plan_status,
+        "drift_severity": drift_severity,
+    }
+    fields.update(_volume_progress_fields(plan, int(progress.get("current_chapter", 0))))
+    return fields
+
+
+async def _merge_plan_progress(
+    session: AsyncSession,
+    tenant_id: uuid.UUID,
+    novel_id: uuid.UUID,
+    progress: dict,
+) -> dict:
+    model = await _latest_plan_model(session, tenant_id, novel_id)
+    if model is None:
+        return progress
+    stored = (
+        await session.execute(
+            select(NovelModel.progress).where(
+                NovelModel.tenant_id == tenant_id,
+                NovelModel.id == novel_id,
+            )
+        )
+    ).scalar_one_or_none() or {}
+    completed_words = await _completed_word_count(session, tenant_id, novel_id)
+    progress.update(
+        _plan_progress_fields(
+            _plan_from_model(model),
+            progress,
+            completed_words,
+            plan_status=str(stored.get("plan_status") or "accepted"),
+            drift_severity=str(stored.get("drift_severity") or "none"),
+        )
+    )
+    return progress
+
+
+async def _mark_rewind_progress(
+    session: AsyncSession, novel: NovelModel
+) -> None:
+    progress = dict(novel.progress or {})
+    completed_words = await _completed_word_count(session, novel.tenant_id, novel.id)
+    model = await _latest_plan_model(session, novel.tenant_id, novel.id)
+    if model is None:
+        target = int(progress.get("target_words", 0) or 0)
+        progress.update(
+            completed_words=completed_words,
+            word_percentage=completed_words / target * 100 if target else 0.0,
+        )
+    else:
+        progress.update(
+            _plan_progress_fields(
+                _plan_from_model(model), progress, completed_words,
+                plan_status="needs_reconciliation", drift_severity="minor",
+            )
+        )
+    novel.progress = progress
+
+
+def _record_execution_progress(
+    novel: NovelModel, execution: PlanExecution
+) -> None:
+    statuses = {
+        "none": "accepted",
+        "minor": "needs_reconciliation",
+        "major": "needs_review",
+    }
+    progress = dict(novel.progress or {})
+    progress.update(
+        plan_version=execution.plan_version,
+        plan_status=statuses[execution.drift_severity],
+        drift_severity=execution.drift_severity,
+    )
+    novel.progress = progress
 
 
 async def _update_chapter_row(
@@ -335,11 +569,14 @@ def _mark_edit_checkpoint_sync(novel: NovelModel, updated_at: datetime) -> None:
         current_index,
         is_completed,
     )
+    if int(progress_data.get("plan_version", 0) or 0) > 0:
+        progress_data["plan_status"] = "needs_reconciliation"
+        progress_data["drift_severity"] = "minor"
     novel.progress = progress_data
     novel.updated_at = updated_at
 
 
-class PostgresNovelRepository(NovelRepository):
+class PostgresNovelRepository(NovelRepository, NovelPlanRepository):
     """PostgreSQL小说仓储实现"""
 
     def __init__(
@@ -569,31 +806,45 @@ class PostgresNovelRepository(NovelRepository):
 
     async def delete_chapter(self, tenant_id: str, chapter_id: str) -> None:
         """删除单个章节"""
-        from .models import ChapterModel
-
-        async with self.async_session() as session:
-            stmt = delete(ChapterModel).where(
+        tenant_uuid = uuid.UUID(tenant_id)
+        chapter_uuid = uuid.UUID(chapter_id)
+        async with self.async_session() as session, session.begin():
+            location = (
+                await session.execute(
+                    select(ChapterModel.novel_id, ChapterModel.chapter_index).where(
+                        ChapterModel.tenant_id == tenant_uuid,
+                        ChapterModel.id == chapter_uuid,
+                    )
+                )
+            ).one_or_none()
+            if location is None:
+                return
+            await session.execute(delete(ChapterModel).where(
                 ChapterModel.tenant_id == uuid.UUID(tenant_id),
-                ChapterModel.id == uuid.UUID(chapter_id),
+                ChapterModel.id == chapter_uuid,
+            ))
+            await _delete_plan_executions(
+                session, tenant_uuid, location.novel_id,
+                location.chapter_index + 1, from_chapter=False,
             )
-            await session.execute(stmt)
-            await session.commit()
 
     async def delete_chapters_by_index(
         self, tenant_id: str, novel_id: str, chapter_index: int
     ) -> None:
         """删除指定小说和章节索引的所有旧版本章节（upsert 用）"""
-        from .models import ChapterModel
-
-        async with self.async_session() as session:
-            stmt = (
+        tenant_uuid = uuid.UUID(tenant_id)
+        novel_uuid = uuid.UUID(novel_id)
+        async with self.async_session() as session, session.begin():
+            await session.execute(
                 delete(ChapterModel)
-                .where(ChapterModel.tenant_id == uuid.UUID(tenant_id))
-                .where(ChapterModel.novel_id == uuid.UUID(novel_id))
+                .where(ChapterModel.tenant_id == tenant_uuid)
+                .where(ChapterModel.novel_id == novel_uuid)
                 .where(ChapterModel.chapter_index == chapter_index)
             )
-            await session.execute(stmt)
-            await session.commit()
+            await _delete_plan_executions(
+                session, tenant_uuid, novel_uuid,
+                chapter_index + 1, from_chapter=False,
+            )
 
     # --- Chapter operations ---
 
@@ -703,6 +954,7 @@ class PostgresNovelRepository(NovelRepository):
                 session, tenant_uuid, novel_uuid, rewind_to
             )
             _rewind_novel_progress(novel, rewind_to)
+            await _mark_rewind_progress(session, novel)
         return deleted, rewind_to
 
     async def delete_chapters_atomically(
@@ -780,6 +1032,13 @@ class PostgresNovelRepository(NovelRepository):
                 memory_metadata,
                 chapter_summary,
             )
+            await _delete_plan_executions(
+                session,
+                tenant_uuid,
+                novel_uuid,
+                chapter.chapter_index + 1,
+                from_chapter=False,
+            )
             _mark_edit_checkpoint_sync(novel, chapter.updated_at)
         chapter.version = next_version
         return chapter
@@ -803,3 +1062,161 @@ class PostgresNovelRepository(NovelRepository):
             progress_data.pop("checkpoint_sync", None)
             novel.progress = progress_data
         return True
+
+    async def get_latest_plan(
+        self, tenant_id: str, novel_id: str
+    ) -> NovelPlan | None:
+        async with self.async_session() as session:
+            model = await _latest_plan_model(
+                session, uuid.UUID(tenant_id), uuid.UUID(novel_id)
+            )
+            return _plan_from_model(model) if model else None
+
+    async def list_plan_versions(
+        self, tenant_id: str, novel_id: str
+    ) -> list[NovelPlan]:
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(NovelPlanVersionModel)
+                .where(
+                    NovelPlanVersionModel.tenant_id == uuid.UUID(tenant_id),
+                    NovelPlanVersionModel.novel_id == uuid.UUID(novel_id),
+                )
+                .order_by(NovelPlanVersionModel.version.desc())
+            )
+            return [_plan_from_model(model) for model in result.scalars()]
+
+    async def list_plan_version_summaries(
+        self, tenant_id: str, novel_id: str
+    ) -> list[NovelPlanVersionSummary]:
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(NovelPlanVersionModel)
+                .where(
+                    NovelPlanVersionModel.tenant_id == uuid.UUID(tenant_id),
+                    NovelPlanVersionModel.novel_id == uuid.UUID(novel_id),
+                )
+                .order_by(NovelPlanVersionModel.version.desc())
+            )
+            return [
+                NovelPlanVersionSummary(
+                    version=model.version,
+                    source=model.source,
+                    trigger_chapter=model.trigger_chapter,
+                    change_summary=model.change_summary,
+                    created_by_user_id=(
+                        str(model.created_by_user_id)
+                        if model.created_by_user_id
+                        else None
+                    ),
+                    created_at=model.created_at,
+                )
+                for model in result.scalars()
+            ]
+
+    async def accept_plan(
+        self,
+        tenant_id: str,
+        novel_id: str,
+        plan: NovelPlan,
+        expected_version: int,
+        *,
+        created_by_user_id: str | None = None,
+        trigger_chapter: int | None = None,
+        change_summary: str = "",
+    ) -> NovelPlan:
+        plan.assert_valid()
+        if trigger_chapter is not None and trigger_chapter < 1:
+            raise ValueError("触发章节必须大于等于 1")
+        tenant_uuid = uuid.UUID(tenant_id)
+        novel_uuid = uuid.UUID(novel_id)
+        async with self.async_session() as session, session.begin():
+            novel = await _lock_novel(session, tenant_uuid, novel_uuid)
+            if novel is None:
+                raise RuntimeError("计划保存失败：目标小说不存在")
+            current = await _latest_plan_model(session, tenant_uuid, novel_uuid)
+            current_version = current.version if current else 0
+            if current_version != expected_version:
+                raise PlanVersionConflictError("计划已更新，请刷新后重试")
+            accepted_plan = replace(plan, version=current_version + 1)
+            session.add(
+                NovelPlanVersionModel(
+                    tenant_id=tenant_uuid,
+                    novel_id=novel_uuid,
+                    version=accepted_plan.version,
+                    source=accepted_plan.source,
+                    trigger_chapter=trigger_chapter,
+                    change_summary=change_summary,
+                    plan_data=accepted_plan.to_dict(),
+                    created_by_user_id=(
+                        uuid.UUID(created_by_user_id) if created_by_user_id else None
+                    ),
+                    created_at=accepted_plan.created_at,
+                )
+            )
+            await _sync_plan_mirrors(session, novel, accepted_plan)
+        return accepted_plan
+
+    async def list_plan_executions(
+        self, tenant_id: str, novel_id: str
+    ) -> list[PlanExecution]:
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(NovelPlanExecutionModel)
+                .where(
+                    NovelPlanExecutionModel.tenant_id == uuid.UUID(tenant_id),
+                    NovelPlanExecutionModel.novel_id == uuid.UUID(novel_id),
+                )
+                .order_by(NovelPlanExecutionModel.chapter_number)
+            )
+            return [_execution_from_model(model) for model in result.scalars()]
+
+    async def upsert_plan_execution(
+        self, tenant_id: str, novel_id: str, execution: PlanExecution
+    ) -> PlanExecution:
+        values = {
+            "tenant_id": uuid.UUID(tenant_id),
+            "novel_id": uuid.UUID(novel_id),
+            "chapter_number": execution.chapter_number,
+            "plan_version": execution.plan_version,
+            "status": execution.status,
+            "actual_words": execution.actual_words,
+            "fulfillment": execution.fulfillment,
+            "drift_severity": execution.drift_severity,
+            "updated_at": execution.updated_at,
+        }
+        async with self.async_session() as session, session.begin():
+            novel = await _lock_novel(
+                session, values["tenant_id"], values["novel_id"]
+            )
+            if novel is None:
+                raise RuntimeError("计划执行记录保存失败：目标小说不存在")
+            current = await _latest_plan_model(
+                session, values["tenant_id"], values["novel_id"]
+            )
+            if current is None or current.version != execution.plan_version:
+                raise PlanVersionConflictError("计划已更新，执行记录已过期")
+            statement = pg_insert(NovelPlanExecutionModel).values(**values)
+            await session.execute(
+                statement.on_conflict_do_update(
+                    constraint="uq_plan_executions_chapter",
+                    set_={key: values[key] for key in (
+                        "plan_version", "status", "actual_words", "fulfillment",
+                        "drift_severity", "updated_at",
+                    )},
+                )
+            )
+            _record_execution_progress(novel, execution)
+        return execution
+
+    async def delete_plan_executions_from(
+        self, tenant_id: str, novel_id: str, chapter_number: int
+    ) -> None:
+        async with self.async_session() as session, session.begin():
+            await session.execute(
+                delete(NovelPlanExecutionModel).where(
+                    NovelPlanExecutionModel.tenant_id == uuid.UUID(tenant_id),
+                    NovelPlanExecutionModel.novel_id == uuid.UUID(novel_id),
+                    NovelPlanExecutionModel.chapter_number >= chapter_number,
+                )
+            )

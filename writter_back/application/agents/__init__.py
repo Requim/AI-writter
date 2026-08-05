@@ -17,6 +17,13 @@ from application.agents.outline_generator_node import (
     outline_generator_node,
     outline_review_node,
 )
+from application.agents.novel_plan_node import (
+    novel_plan_initialize_node,
+    novel_plan_volume_node,
+    novel_plan_finalize_node,
+    novel_plan_review_node,
+    plan_reconciliation_node,
+)
 from application.agents.chapter_outline_node import (
     chapter_outline_node,
     chapter_outline_review_node,
@@ -43,6 +50,11 @@ __all__ = [
     "summary_review_node",
     "outline_generator_node",
     "outline_review_node",
+    "novel_plan_initialize_node",
+    "novel_plan_volume_node",
+    "novel_plan_finalize_node",
+    "novel_plan_review_node",
+    "plan_reconciliation_node",
     "chapter_outline_node",
     "chapter_outline_review_node",
     "metadata_persist_node",

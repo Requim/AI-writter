@@ -11,6 +11,7 @@ $chunks_summary
 4. 按七项 rubric 分别给 0-5 分；必须以以下 1/3/5 锚点为准，不能用总体印象代替。
 5. hard_failures 只列力量体系违例、因果断裂、严重 OOC、知识越界或核心场景缺失。
 6. 每个问题必须引用正文中连续、可精确查找的 evidence；找不到原句就不要报。
+7. 对照章节细纲中的 plan_context 判断本章计划兑现；非结构性延后与结局、卷边界、核心弧、规模违约必须分开标记。
 
 $editorial_checks
 
@@ -53,5 +54,16 @@ $previous_issues
   },
   "issues": [],
   "logic_chain_status": "本章与前文的衔接情况",
-  "foreshadowing_check": "伏笔是否已提及"
+  "foreshadowing_check": "伏笔是否已提及",
+  "plan_fulfillment": {
+    "must_happen_covered": [],
+    "missing_required_events": [],
+    "state_delta_fulfilled": true,
+    "deferred_items": [],
+    "volume_boundary_breached": false,
+    "core_arc_breached": false,
+    "ending_contract_breached": false,
+    "scale_change_required": false,
+    "notes": ""
+  }
 }

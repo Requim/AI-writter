@@ -8,6 +8,7 @@ import {
   RevisionReview, SummaryReview, TitleReview,
 } from './ReviewContents'
 import { CharacterDesignReview } from './CharacterDesignReview'
+import { NovelPlanProposalReview } from './NovelPlanProposalReview'
 import {
   outlineFrom, proposalPayload, summaryReviewDetails, summaryTextsDistinct, titleCandidates,
 } from './valueHelpers'
@@ -61,6 +62,7 @@ function decisionValue(
 function primaryLabel(action: string): string {
   if (action === 'review_or_modify_creative_brief') return '确认创作简报'
   if (action === 'review_or_modify_character_design') return '确认角色设计'
+  if (['review_or_modify_novel_plan', 'review_novel_plan'].includes(action)) return '确认整书规划'
   if (action === 'review_or_provide_chapter_outline') return '使用细纲，生成正文'
   if (action === 'review_reflection_issues') return '接受本章'
   if (action === 'ready_for_next_chapter') return '生成下一章'
@@ -79,6 +81,10 @@ function reviewContent(interrupt: InterruptInfo, title: TitleActions) {
   }
   if (['confirm_or_provide_summary', 'summary_review_required'].includes(interrupt.action)) {
     return <SummaryReview interrupt={interrupt} />
+  }
+  if (['review_or_modify_novel_plan', 'review_novel_plan'].includes(interrupt.action)
+    || interrupt.proposal?.kind === 'novel_plan') {
+    return <NovelPlanProposalReview interrupt={interrupt} />
   }
   if (interrupt.action === 'review_or_modify_outline') return <MacroOutlineReview interrupt={interrupt} />
   if (interrupt.action === 'review_or_provide_chapter_outline') return <ChapterOutlineReview interrupt={interrupt} />
@@ -167,7 +173,9 @@ function StandardActions({ interrupt, onResume, acceptDisabled }: StandardAction
 
 export function WorkflowReview({ interrupt, autoMode, onResume }: Props) {
   if (!interrupt) return null
-  const humanReview = requiresHumanReview(interrupt.action)
+  const novelPlanReview = ['review_or_modify_novel_plan', 'review_novel_plan'].includes(interrupt.action)
+    || interrupt.proposal?.kind === 'novel_plan'
+  const humanReview = requiresHumanReview(interrupt.action, interrupt.proposal?.kind)
   if (autoMode && !humanReview) return null
   const titleActions = {
     confirm: (item: TitleSuggestion) => onResume(decisionValue(interrupt, 'replace', item)),
@@ -190,9 +198,10 @@ export function WorkflowReview({ interrupt, autoMode, onResume }: Props) {
     {!characterDesign && (interrupt.action === 'quality_review_unavailable'
       ? <UnavailableActions interrupt={interrupt} onResume={onResume} />
       : summaryRequired ? <SummaryRepairActions interrupt={interrupt} onResume={onResume} />
+      : novelPlanReview ? <StandardActions interrupt={interrupt} onResume={onResume} />
       : humanReview ? <QualityActions interrupt={interrupt} onResume={onResume} />
       : titleReview ? null
       : <StandardActions interrupt={interrupt} onResume={onResume} acceptDisabled={!summaryComplete} />)}
-    {canInstruct && (!humanReview || summaryRequired) && <InstructionEditor interrupt={interrupt} onResume={onResume} />}
+    {canInstruct && (!humanReview || summaryRequired || novelPlanReview) && <InstructionEditor interrupt={interrupt} onResume={onResume} />}
   </section>
 }

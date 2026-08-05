@@ -31,7 +31,7 @@ export function shouldAutoResume(
   lastInterruptKey: string | undefined,
 ): boolean {
   if (!autoMode || !autoRunActive || !interrupt) return false
-  if (requiresHumanReview(interrupt.action)) return false
+  if (requiresHumanReview(interrupt.action, interrupt.proposal?.kind)) return false
   return interruptKey(interrupt) !== lastInterruptKey
 }
 

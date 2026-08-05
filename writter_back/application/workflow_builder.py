@@ -14,6 +14,11 @@ from application.agents import (
     summary_review_node,
     outline_generator_node,
     outline_review_node,
+    novel_plan_initialize_node,
+    novel_plan_volume_node,
+    novel_plan_finalize_node,
+    novel_plan_review_node,
+    plan_reconciliation_node,
     progress_check_node,
     memory_retrieval_node,
     chapter_outline_node,
@@ -41,6 +46,11 @@ WORKFLOW_NODES = {
     "summary_review_node": summary_review_node,
     "outline_node": outline_generator_node,
     "outline_review_node": outline_review_node,
+    "novel_plan_initialize_node": novel_plan_initialize_node,
+    "novel_plan_volume_node": novel_plan_volume_node,
+    "novel_plan_finalize_node": novel_plan_finalize_node,
+    "novel_plan_review_node": novel_plan_review_node,
+    "plan_reconciliation_node": plan_reconciliation_node,
     "progress_check_node": progress_check_node,
     "memory_retrieval_node": memory_retrieval_node,
     "chapter_outline_node": chapter_outline_node,
@@ -70,7 +80,6 @@ def _add_nodes(workflow: StateGraph) -> None:
 
 def _add_deterministic_edges(workflow: StateGraph) -> None:
     """注册不会由节点 Command 自行决定的固定边。"""
-    workflow.add_edge("persist_node", "progress_check_node")
     workflow.add_edge("memory_retrieval_node", "router_agent")
     workflow.add_edge("chapter_writer_node", "router_agent")
     workflow.add_edge("chapter_compaction_node", "router_agent")

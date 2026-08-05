@@ -1,9 +1,11 @@
 import { Button, Dropdown, Input, Progress, Segmented, Tooltip, type MenuProps } from 'antd'
 import {
   EditOutlined, FileDoneOutlined, FileTextOutlined, HistoryOutlined, LeftOutlined, MoreOutlined, PauseCircleOutlined,
-  PlayCircleOutlined, ReloadOutlined, SaveOutlined, StopOutlined, UnorderedListOutlined,
+  PlayCircleOutlined, ProjectOutlined, ReloadOutlined, SaveOutlined, StopOutlined, UnorderedListOutlined,
 } from '@ant-design/icons'
 import { MarkdownManuscript } from '@/components/MarkdownManuscript'
+import { NovelPlanView } from '@/components/novel-plan/NovelPlanView'
+import { PlanReplanDialog } from '@/components/novel-plan/PlanReplanDialog'
 import { WorkflowPanel } from '@/components/WorkflowPanel'
 import { qualityScoreOutOfFive } from '@/components/workflow/presentation'
 import type { ChapterSummary } from '@/types/novel'
@@ -14,7 +16,7 @@ function WorkflowAction({ controller }: { controller: NovelStudioController }) {
   const status = workflow.state.status
   const busy = ['running', 'stalled', 'cancelling'].includes(status)
   if (controller.isCompleted) return (
-    <Button type="primary" icon={<FileDoneOutlined />} onClick={() => controller.setEditor({ mobilePanel: 'editor' })}>查看完稿</Button>
+    <Button type="primary" icon={<FileDoneOutlined />} onClick={() => controller.setEditor({ workspaceMode: 'chapter', mobilePanel: 'editor' })}>查看完稿</Button>
   )
   if (busy) return (
     <Button danger icon={<StopOutlined />} loading={status === 'cancelling'} onClick={controller.stopWriting}>停止</Button>
@@ -57,16 +59,21 @@ function StudioProgress({ controller }: { controller: NovelStudioController }) {
   const state = controller.workflow.state
   const current = state.currentChapter ?? progress?.current_chapter ?? 0
   const total = progress?.total_chapters || novel?.total_outline?.total_chapters || 0
-  return (
-    <div className="studio-progress">
-      <span>第 {current} / {total} 章</span>
-      <Progress percent={Math.round(state.progress ?? progress?.percentage ?? 0)} showInfo={false} strokeColor="#176b5b" />
-    </div>
-  )
+  const chapterPercentage = Math.round(progress?.chapter_progress?.percentage ?? state.progress ?? progress?.percentage ?? 0)
+  const tracks = [
+    { key: 'chapter', label: `第 ${current} / ${total} 章`, value: chapterPercentage },
+    ...(progress?.word_progress ? [{ key: 'word', label: `${progress.word_progress.current.toLocaleString()} / ${progress.word_progress.target.toLocaleString()} 字`, value: Math.round(progress.word_progress.percentage) }] : []),
+    ...(progress?.volume_progress ? [{ key: 'volume', label: `第 ${progress.volume_progress.current} / ${progress.volume_progress.total} 卷`, value: Math.round(progress.volume_progress.percentage) }] : []),
+  ]
+  return <div className="studio-progress" data-tracks={tracks.length}>
+    {tracks.map((track) => <div key={track.key}><span>{track.label}</span>
+      <Progress percent={track.value} showInfo={false} strokeColor="#176b5b" /></div>)}
+  </div>
 }
 
 const mobileTabs = [
   { value: 'chapters', label: '目录', icon: <UnorderedListOutlined /> },
+  { value: 'plan', label: '规划', icon: <ProjectOutlined /> },
   { value: 'editor', label: '正文', icon: <FileTextOutlined /> },
   { value: 'workflow', label: '执行', icon: <HistoryOutlined /> },
 ] as const
@@ -79,7 +86,11 @@ function StudioMobileTabs({ controller }: { controller: NovelStudioController })
         <button
           key={tab.value} type="button" role="tab" aria-selected={current === tab.value}
           className={current === tab.value ? 'active' : ''}
-          onClick={() => controller.setEditor({ mobilePanel: tab.value })}
+          onClick={() => controller.setEditor({
+            mobilePanel: tab.value,
+            ...(tab.value === 'editor' ? { workspaceMode: 'chapter' as const } : {}),
+            ...(tab.value === 'plan' ? { workspaceMode: 'plan' as const } : {}),
+          })}
         >
           {tab.icon}{tab.label}
         </button>
@@ -136,21 +147,36 @@ function CompletionSummary({ controller }: { controller: NovelStudioController }
 }
 
 function ChapterSidebar({ controller }: { controller: NovelStudioController }) {
-  const { chapters, mobilePanel } = controller.document
+  const { chapters, mobilePanel, workspaceMode } = controller.document
+  const showPlan = workspaceMode === 'plan'
   return (
     <aside className={`manuscript-panel studio-pane ${mobilePanel === 'chapters' ? 'mobile-active' : ''}`}>
       <div className="panel-heading">
-        <div><span className="eyebrow">Manuscript</span><h2>章节目录</h2></div>
+        <div><span className="eyebrow">Manuscript</span><h2>{showPlan ? '规划索引' : '章节目录'}</h2></div>
         <Tooltip title="刷新目录">
           <Button type="text" icon={<ReloadOutlined />} onClick={() => void controller.refresh()} />
         </Tooltip>
       </div>
-      <ol className="chapter-list">
-        {chapters.map((chapter) => <ChapterItem key={chapter.id} chapter={chapter} controller={controller} />)}
-        {chapters.length === 0 && <li className="chapter-empty">章节将在这里归档</li>}
-      </ol>
+      <Segmented className="studio-navigation-switch" size="small" block value={showPlan ? 'plan' : 'chapters'}
+        onChange={(value) => controller.setEditor(value === 'plan'
+          ? { workspaceMode: 'plan', mobilePanel: 'plan' }
+          : { workspaceMode: 'chapter', mobilePanel: 'chapters' })}
+        options={[{ label: '目录', value: 'chapters' }, { label: '规划', value: 'plan' }]} />
+      {showPlan ? <PlanIndex controller={controller} /> : <ol className="chapter-list">
+          {chapters.map((chapter) => <ChapterItem key={chapter.id} chapter={chapter} controller={controller} />)}
+          {chapters.length === 0 && <li className="chapter-empty">章节将在这里归档</li>}
+        </ol>}
     </aside>
   )
+}
+
+function PlanIndex({ controller }: { controller: NovelStudioController }) {
+  const { plan, planLoadFailed } = controller.document
+  if (planLoadFailed) return <div className="plan-index-empty">规划暂时无法读取</div>
+  if (!plan) return <div className="plan-index-empty">等待整书规划归档</div>
+  return <div className="plan-index"><div><strong>V{plan.version}</strong><span>{plan.scale.target_chapters} 章 · {plan.scale.target_volumes} 卷</span></div>
+    <ol>{plan.volumes.map((volume) => <li key={volume.volume_id}><span>{volume.title || volume.volume_id}</span>
+      <small>{volume.start_chapter} - {volume.end_chapter} 章</small></li>)}</ol></div>
 }
 
 function EditorSaveStatus({ controller }: { controller: NovelStudioController }) {
@@ -266,6 +292,24 @@ function ChapterEditor({ controller }: { controller: NovelStudioController }) {
   )
 }
 
+function planReplanDisabledReason(controller: NovelStudioController): string | undefined {
+  if (!controller.document.plan) return controller.document.planLoadFailed ? '规划读取失败，刷新后重试' : '整书规划尚未建立'
+  if (controller.isCompleted) return '已完稿作品不能调整规划'
+  if (['running', 'paused', 'stalled', 'cancelling'].includes(controller.workflow.state.status)) {
+    return '当前创作任务结束后可调整规划'
+  }
+}
+
+function PlanningWorkspace({ controller }: { controller: NovelStudioController }) {
+  const active = controller.document.mobilePanel === 'plan' ? 'mobile-active' : ''
+  const replanAction = <PlanReplanDialog disabledReason={planReplanDisabledReason(controller)}
+    onSubmit={controller.replanPlan} />
+  return <section className={`planning-workspace studio-pane ${active}`}>
+    <NovelPlanView plan={controller.document.plan} headerAction={replanAction}
+      emptyDescription={controller.document.planLoadFailed ? '整书规划暂时无法读取，请刷新后重试' : undefined} />
+  </section>
+}
+
 function WorkflowSidebar({ controller }: { controller: NovelStudioController }) {
   const workflow = controller.workflow
   const active = controller.document.mobilePanel === 'workflow' ? 'mobile-active' : ''
@@ -291,7 +335,8 @@ export function NovelStudioView({ controller }: { controller: NovelStudioControl
       <StudioMobileTabs controller={controller} />
       <div className="studio-grid">
         <ChapterSidebar controller={controller} />
-        <ChapterEditor controller={controller} />
+        {controller.document.workspaceMode === 'plan'
+          ? <PlanningWorkspace controller={controller} /> : <ChapterEditor controller={controller} />}
         <WorkflowSidebar controller={controller} />
       </div>
     </div>

@@ -13,6 +13,13 @@ afterEach(() => {
 describe('CreateNovel taxonomy loading', () => {
   it('disables creation when genre taxonomy cannot be loaded', async () => {
     vi.spyOn(novelApi, 'genreTaxonomy').mockRejectedValue(new Error('offline'))
+    vi.spyOn(novelApi, 'planningOptions').mockResolvedValue({
+      constraints: {
+        min_chapters: 1, max_chapters: 200, min_chapter_words: 3000, max_chapter_words: 7000,
+        default_tolerance_ratio: 0.1, default_lock_window: 5,
+      },
+      presets: [{ preset: 'short', label: '短篇', target_chapters: 12, target_total_words: 50_400, target_volumes: 1 }],
+    })
     const router = createMemoryRouter([{ path: '/', element: <CreateNovel /> }])
 
     render(

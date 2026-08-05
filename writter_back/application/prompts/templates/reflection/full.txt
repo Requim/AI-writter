@@ -9,6 +9,7 @@
 5. 衔接与结尾：开头继承前文状态；结尾应兑现 ending_mode 与行动后果，不强制制造悬念。
 6. 每个 issue 的 evidence 必须是正文中连续、可精确查找的 20-120 字原句；没有证据就不输出。
 7. 上一轮问题若仍存在则沿用 issue_id，已解决则 issue_resolved=true。
+8. 对照章节细纲中的 plan_context 逐项判断计划兑现；普通延后写入 deferred_items，只有违背结局、卷边界、核心剧情弧或必须改变规模时才标记结构性布尔值。
 
 $editorial_checks
 
@@ -72,5 +73,16 @@ $previous_issues
     "suggestion": "不改变既有事实的修改方式"
   }],
   "logic_chain_status": "本章与前文是否存在断层",
-  "foreshadowing_check": "细纲伏笔是否在文中体现"
+  "foreshadowing_check": "细纲伏笔是否在文中体现",
+  "plan_fulfillment": {
+    "must_happen_covered": [],
+    "missing_required_events": [],
+    "state_delta_fulfilled": true,
+    "deferred_items": [],
+    "volume_boundary_breached": false,
+    "core_arc_breached": false,
+    "ending_contract_breached": false,
+    "scale_change_required": false,
+    "notes": ""
+  }
 }

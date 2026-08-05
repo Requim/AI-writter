@@ -5,7 +5,10 @@ import type {
   ChapterSummary,
   GenreProfile,
   NovelCreateRequest,
+  NovelPlan,
+  NovelPlanVersionSummary,
   NovelResponse,
+  PlanningOptions,
   ProgressResponse,
   WorkflowSnapshot,
 } from '@/types/novel'
@@ -20,6 +23,10 @@ export const novelApi = {
   list: () => data<NovelResponse[]>(apiClient.get('/v1/novels')),
   get: (novelId: string) => data<NovelResponse>(apiClient.get(`/v1/novels/${novelId}`)),
   genreTaxonomy: () => data<GenreProfile[]>(apiClient.get('/v1/novels/genre-taxonomy')),
+  planningOptions: () => data<PlanningOptions>(apiClient.get('/v1/novels/planning-options')),
+  plan: (novelId: string) => data<NovelPlan | null>(apiClient.get(`/v1/novels/${novelId}/plan`)),
+  planVersions: (novelId: string) =>
+    data<NovelPlanVersionSummary[]>(apiClient.get(`/v1/novels/${novelId}/plan/versions`)),
   progress: (novelId: string) =>
     data<ProgressResponse>(apiClient.get(`/v1/novels/${novelId}/progress`)),
   chapters: (novelId: string) =>

@@ -35,6 +35,10 @@ describe('shouldAutoResume', () => {
     expect(shouldAutoResume(true, true, {
       action: 'summary_review_required',
     }, undefined)).toBe(false)
+    expect(shouldAutoResume(true, true, {
+      action: 'review_or_modify_outline',
+      proposal: { proposal_id: 'plan-1', kind: 'novel_plan', version: 1, payload: {} },
+    }, undefined)).toBe(false)
   })
 })
 

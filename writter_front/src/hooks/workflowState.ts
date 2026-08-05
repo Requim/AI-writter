@@ -59,6 +59,8 @@ const interruptNodes: Record<string, string> = {
   confirm_or_provide_summary: 'summary_review_node',
   summary_review_required: 'summary_review_node',
   review_or_modify_outline: 'outline_review_node',
+  review_or_modify_novel_plan: 'novel_plan_review_node',
+  review_novel_plan: 'novel_plan_review_node',
   review_or_provide_chapter_outline: 'chapter_outline_review_node',
   review_reflection_issues: 'reflection_review_node',
   quality_gate_exhausted: 'reflection_review_node',

@@ -3,6 +3,10 @@ from .memory_service import MemoryService
 from .novel_repository import NovelRepository
 from .agent_service import AgentOrchestrator
 from .workflow_command_store import WorkflowCommandStore
+from .novel_plan_repository import (
+    NovelPlanRepository,
+    PlanVersionConflictError,
+)
 
 __all__ = [
     "LLMService",
@@ -10,4 +14,6 @@ __all__ = [
     "NovelRepository",
     "AgentOrchestrator",
     "WorkflowCommandStore",
+    "NovelPlanRepository",
+    "PlanVersionConflictError",
 ]

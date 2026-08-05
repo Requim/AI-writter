@@ -14,6 +14,7 @@ class PendingProposal(TypedDict):
         "title",
         "summary",
         "outline",
+        "novel_plan",
         "chapter_outline",
         "reflection",
         "revision",
@@ -32,6 +33,8 @@ class NovelAgentState(TypedDict):
     title: Optional[str]                      # 书名（用户优先，空则AI生成）
     summary: Optional[str]                    # 简介（用户优先，空则AI生成）
     target_total_chapters: Optional[int]      # 用户计划章节数（约束AI生成总纲）
+    target_total_words: Optional[int]         # 用户计划总字数（软目标）
+    scale_contract: Optional[Dict]             # 服务端确认的规模契约
     requested_writing_style: Optional[str]    # 用户指定写作风格（约束AI生成总纲）
     creative_brief: Optional[Dict]            # 创作简报（母题、冲突、读者承诺与内容边界）
     creative_brief_feedback: Optional[str]    # 用户对创作简报的修改要求
@@ -51,6 +54,13 @@ class NovelAgentState(TypedDict):
     generated_summary: Optional[str]          # AI生成的简介
     editorial_summary: Optional[str]          # 供总纲规划使用的内部简介
     generated_outline: Optional[Dict]         # AI生成的总纲领
+    novel_plan: Optional[Dict]                 # 当前已接受的整书计划
+    plan_generation: Optional[Dict]            # 分卷批次生成 checkpoint
+    plan_feedback: Optional[str]               # 计划重生成要求
+    plan_replan_request: Optional[Dict]         # 用户或漂移触发的重规划请求
+    plan_fulfillment: Optional[Dict]            # 当前章计划兑现结果
+    plan_drift_severity: Optional[str]          # none/minor/major
+    last_persisted_chapter: Optional[Dict]      # 正文后对账的最小持久化回执
     pending_proposal: Optional[PendingProposal]  # 当前等待审核的生成提案
     pending_proposal_decision: Optional[Any]     # 仅用于恢复旧 checkpoint 的一次性决定
     proposal_versions: Dict[str, int]          # 每类提案的单调版本号

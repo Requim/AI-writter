@@ -1,4 +1,4 @@
-import type { NovelCreateRequest } from '@/types/novel'
+import type { NovelCreateRequest, PlanningPreset } from '@/types/novel'
 
 export interface CreationForm {
   novel_type: string
@@ -13,7 +13,9 @@ export interface CreationForm {
   setting_era?: string
   setting_region?: string
   naming_preference?: string
+  planning_preset: PlanningPreset
   total_chapters: number
+  target_total_words: number
   writing_style?: string
 }
 
@@ -51,6 +53,11 @@ export function buildCreationSubmission(values: CreationForm) {
     novel_type: values.novel_type,
     title,
     summary,
+    planning: {
+      preset: values.planning_preset,
+      target_chapters: values.total_chapters,
+      target_total_words: values.target_total_words,
+    },
     total_outline: values.total_chapters || writingStyle ? {
       total_chapters: values.total_chapters,
       writing_style: writingStyle,
@@ -65,6 +72,12 @@ export function buildCreationSubmission(values: CreationForm) {
       ...(title ? { title } : {}),
       ...(summary ? { summary } : {}),
       target_total_chapters: values.total_chapters,
+      target_total_words: values.target_total_words,
+      planning: {
+        preset: values.planning_preset,
+        target_chapters: values.total_chapters,
+        target_total_words: values.target_total_words,
+      },
       ...(writingStyle ? { requested_writing_style: writingStyle } : {}),
       ...(hasCreativeBrief ? { creative_brief: creativeBrief } : {}),
     },

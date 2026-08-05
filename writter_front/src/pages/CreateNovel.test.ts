@@ -38,7 +38,9 @@ describe('buildCreationSubmission', () => {
       setting_era: ' 1990 年代末 ',
       setting_region: ' 江南县城 ',
       naming_preference: ' 参考《诗经》，清雅但不生僻 ',
+      planning_preset: 'medium',
       total_chapters: 36,
+      target_total_words: 151_200,
       writing_style: ' 幽默诙谐 ',
     })
 
@@ -46,6 +48,7 @@ describe('buildCreationSubmission', () => {
       novel_type: 'romance',
       title: '郫西往事',
       summary: '姚奇伶和吴梓银的青春爱情故事',
+      planning: { preset: 'medium', target_chapters: 36, target_total_words: 151_200 },
       total_outline: {
         total_chapters: 36,
         writing_style: '幽默诙谐',
@@ -69,6 +72,8 @@ describe('buildCreationSubmission', () => {
       title: '郫西往事',
       summary: '姚奇伶和吴梓银的青春爱情故事',
       target_total_chapters: 36,
+      target_total_words: 151_200,
+      planning: { preset: 'medium', target_chapters: 36, target_total_words: 151_200 },
       requested_writing_style: '幽默诙谐',
       creative_brief: {
         genre_context: {
@@ -97,13 +102,17 @@ describe('buildCreationSubmission', () => {
       setting_era: ' ',
       setting_region: '',
       naming_preference: '   ',
+      planning_preset: 'short',
       total_chapters: 12,
+      target_total_words: 50_400,
       writing_style: ' ',
     })
 
     expect(result.startInput).toEqual({
       novel_type: 'suspense',
       target_total_chapters: 12,
+      target_total_words: 50_400,
+      planning: { preset: 'short', target_chapters: 12, target_total_words: 50_400 },
       creative_brief: {
         genre_context: { main_type: 'suspense' },
       },

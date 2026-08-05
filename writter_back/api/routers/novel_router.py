@@ -1,12 +1,13 @@
 """Tenant-scoped novel, chapter and rewrite endpoints."""
 
 import asyncio
+import inspect
 from datetime import datetime
 from typing import Any, Literal
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from api.dependencies import get_tenant_context
 from api.workflow_commands import (
@@ -31,6 +32,7 @@ from service.ports.workflow_command_store import WorkflowCommandStore
 from service.value_objects.genre_profile import get_genre_taxonomy
 from service.value_objects.novel_type import NovelType
 from service.value_objects.outline import Outline
+from service.value_objects.novel_plan import NovelPlan, ScaleContract, planning_options
 from service.value_objects.progress import Progress
 
 router = APIRouter()
@@ -43,11 +45,34 @@ def get_repository(request: Request) -> PostgresNovelRepository:
     return request.app.state.repository
 
 
+class NovelPlanningInput(BaseModel):
+    preset: Literal["short", "medium", "long", "epic", "custom"]
+    target_chapters: int = Field(ge=1, le=200)
+    target_total_words: int
+
+    @model_validator(mode="after")
+    def validate_scale(self) -> "NovelPlanningInput":
+        ScaleContract(
+            preset=self.preset,
+            target_chapters=self.target_chapters,
+            target_total_words=self.target_total_words,
+        )
+        return self
+
+    def to_contract(self) -> ScaleContract:
+        return ScaleContract(
+            preset=self.preset,
+            target_chapters=self.target_chapters,
+            target_total_words=self.target_total_words,
+        )
+
+
 class NovelCreateRequest(BaseModel):
     novel_type: str
     title: str | None = None
     summary: str | None = None
     total_outline: dict[str, Any] | None = None
+    planning: NovelPlanningInput | None = None
 
 
 class NovelResponse(BaseModel):
@@ -66,6 +91,12 @@ class ProgressResponse(BaseModel):
     total_chapters: int
     percentage: float
     status: str
+    chapter_progress: dict[str, int | float]
+    word_progress: dict[str, int | float]
+    volume_progress: dict[str, int | float]
+    plan_version: int = 0
+    plan_status: str = "missing"
+    drift_severity: str = "none"
 
 
 class GenreOptionResponse(BaseModel):
@@ -198,7 +229,7 @@ async def create_novel(
         valid_type = NovelType(payload.novel_type)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="无效的小说类型") from exc
-    outline = Outline(**payload.total_outline) if payload.total_outline else None
+    outline, progress = _creation_outline_and_progress(payload)
     novel_id = uuid4()
     novel = Novel(
         id=novel_id,
@@ -208,7 +239,7 @@ async def create_novel(
         title=payload.title,
         summary=payload.summary,
         total_outline=outline,
-        progress=Progress(),
+        progress=progress,
         thread_id=str(novel_id),
         created_at=datetime.now(),
         updated_at=datetime.now(),
@@ -239,6 +270,14 @@ async def genre_taxonomy(
     return get_genre_taxonomy()
 
 
+@router.get("/planning-options", response_model=dict[str, Any])
+async def get_planning_options(
+    context: TenantContext = Depends(get_tenant_context),
+) -> dict[str, Any]:
+    _tenant_id(context)
+    return planning_options()
+
+
 @router.get("/{novel_id}", response_model=NovelResponse)
 async def get_novel(
     novel_id: str,
@@ -251,6 +290,36 @@ async def get_novel(
     return _novel_response(novel)
 
 
+@router.get("/{novel_id}/plan", response_model=dict[str, Any] | None)
+async def get_novel_plan(
+    novel_id: str,
+    context: TenantContext = Depends(get_tenant_context),
+    repo: PostgresNovelRepository = Depends(get_repository),
+):
+    if await repo.find_by_id(_tenant_id(context), novel_id) is None:
+        raise HTTPException(status_code=404, detail="小说不存在")
+    plan = await repo.get_latest_plan(_tenant_id(context), novel_id)
+    if plan is None:
+        return None
+    payload = plan.to_dict()
+    payload["executions"] = [
+        item.to_dict()
+        for item in await repo.list_plan_executions(_tenant_id(context), novel_id)
+    ]
+    return payload
+
+
+@router.get("/{novel_id}/plan/versions", response_model=list[dict[str, Any]])
+async def list_novel_plan_versions(
+    novel_id: str,
+    context: TenantContext = Depends(get_tenant_context),
+    repo: PostgresNovelRepository = Depends(get_repository),
+):
+    if await repo.find_by_id(_tenant_id(context), novel_id) is None:
+        raise HTTPException(status_code=404, detail="小说不存在")
+    return await _plan_version_payloads(repo, _tenant_id(context), novel_id)
+
+
 @router.get("/{novel_id}/progress", response_model=ProgressResponse)
 async def get_progress(
     novel_id: str,
@@ -261,12 +330,8 @@ async def get_progress(
     if novel is None:
         raise HTTPException(status_code=404, detail="小说不存在")
     progress = novel.progress or Progress()
-    return ProgressResponse(
-        current_chapter=progress.current_chapter,
-        total_chapters=progress.total_chapters,
-        percentage=progress.percentage,
-        status=progress.status,
-    )
+    plan = await repo.get_latest_plan(_tenant_id(context), novel_id)
+    return _progress_response(progress, plan)
 
 
 @router.get("/{novel_id}/chapters", response_model=list[ChapterResponse])
@@ -381,6 +446,7 @@ def _rewrite_state(
     chapter: Any,
     workflow_run_id: str,
     memory_context: str,
+    plan: NovelPlan | None = None,
 ) -> dict[str, Any]:
     outline = novel.total_outline
     total_outline = (
@@ -398,6 +464,7 @@ def _rewrite_state(
         "memory_context": memory_context,
         "current_chapter_content": "",
         "workflow_run_id": workflow_run_id,
+        "novel_plan": plan.to_dict() if plan else None,
     }
 
 
@@ -420,6 +487,8 @@ async def _generate_rewritten_chapter(
                 detail={"code": "quality_gate_not_met", "message": str(exc)},
             ) from exc
         if node_name == "persist_node":
+            if state.get("novel_plan"):
+                await _run_rewrite_node("plan_reconciliation_node", state, config)
             return state
         allowed = {
             "reflection_node": {"persist_node", "revision_node"},
@@ -532,9 +601,133 @@ async def _prepare_rewrite(
     memory = await request.app.state.memory_service.get_hierarchical_context(
         _tenant_id(context), novel_id, chapter.chapter_index
     )
-    state = _rewrite_state(novel, chapter, str(run_id), memory)
+    plan = await _optional_latest_plan(repo, _tenant_id(context), novel_id)
+    state = _rewrite_state(novel, chapter, str(run_id), memory, plan)
     config = _rewrite_config(request, context, novel_id, repo, quota, orchestrator)
     return state, config
+
+
+async def _optional_latest_plan(
+    repo: Any, tenant_id: str, novel_id: str
+) -> NovelPlan | None:
+    getter = getattr(repo, "get_latest_plan", None)
+    if not callable(getter):
+        return None
+    result = getter(tenant_id, novel_id)
+    resolved = await result if inspect.isawaitable(result) else result
+    return resolved if isinstance(resolved, NovelPlan) else None
+
+
+async def _plan_version_payloads(
+    repo: Any, tenant_id: str, novel_id: str
+) -> list[dict[str, Any]]:
+    summary_getter = getattr(repo, "list_plan_version_summaries", None)
+    if callable(summary_getter):
+        summaries = await summary_getter(tenant_id, novel_id)
+        return [summary.to_dict() for summary in summaries]
+    plans = await repo.list_plan_versions(tenant_id, novel_id)
+    return [
+        {
+            "version": plan.version,
+            "source": plan.source,
+            "trigger_chapter": None,
+            "change_summary": "",
+            "created_by_user_id": None,
+            "created_at": plan.created_at.isoformat(),
+        }
+        for plan in plans
+    ]
+
+
+def _creation_outline_and_progress(
+    payload: NovelCreateRequest,
+) -> tuple[Outline | None, Progress]:
+    outline_data = dict(payload.total_outline or {})
+    contract = payload.planning.to_contract() if payload.planning else None
+    if contract is None:
+        total = int(outline_data.get("total_chapters", 0) or 0)
+        if 1 <= total <= 200:
+            raw_scale = outline_data.get("scale")
+            target_words = (
+                int(raw_scale.get("target_total_words", 0) or 0)
+                if isinstance(raw_scale, dict)
+                else 0
+            )
+            contract = ScaleContract(
+                preset="custom",
+                target_chapters=total,
+                target_total_words=target_words or total * 4200,
+            )
+    if contract:
+        outline_data.update(
+            total_chapters=contract.target_chapters,
+            scale=contract.to_dict(),
+        )
+    outline = Outline(**outline_data) if outline_data else None
+    return outline, Progress(
+        total_chapters=contract.target_chapters if contract else 0,
+        target_words=contract.target_total_words if contract else 0,
+        plan_status="pending" if contract else "missing",
+    )
+
+
+def _volume_progress(plan: NovelPlan | None, current: int) -> dict[str, int | float]:
+    if plan is None or not plan.volumes:
+        return {"current": 0, "total": 0, "percentage": 0.0}
+    chapter = min(max(current + 1, 1), plan.scale.target_chapters)
+    volume = next(
+        (
+            item for item in plan.volumes
+            if item.start_chapter <= chapter <= item.end_chapter
+        ),
+        plan.volumes[-1],
+    )
+    number = plan.volumes.index(volume) + 1
+    length = volume.end_chapter - volume.start_chapter + 1
+    completed = max(0, min(current, volume.end_chapter) - volume.start_chapter + 1)
+    return {
+        "current": number,
+        "total": len(plan.volumes),
+        "percentage": completed / length * 100 if length else 0.0,
+    }
+
+
+def _progress_response(progress: Progress, plan: NovelPlan | None) -> ProgressResponse:
+    total_chapters = (
+        plan.scale.target_chapters if plan else progress.total_chapters
+    )
+    target_words = plan.scale.target_total_words if plan else progress.target_words
+    chapter_percentage = (
+        progress.current_chapter / total_chapters * 100 if total_chapters else 0.0
+    )
+    return ProgressResponse(
+        current_chapter=progress.current_chapter,
+        total_chapters=total_chapters,
+        percentage=chapter_percentage,
+        status=progress.status,
+        chapter_progress={
+            "current": progress.current_chapter,
+            "total": total_chapters,
+            "percentage": chapter_percentage,
+        },
+        word_progress={
+            "current": progress.completed_words,
+            "target": target_words,
+            "percentage": (
+                progress.completed_words / target_words * 100
+                if target_words
+                else 0.0
+            ),
+        },
+        volume_progress=_volume_progress(plan, progress.current_chapter),
+        plan_version=plan.version if plan else progress.plan_version,
+        plan_status=(
+            progress.plan_status
+            if not plan or progress.plan_status != "missing"
+            else "accepted"
+        ),
+        drift_severity=progress.drift_severity,
+    )
 
 
 async def _release_replayable_rewrite(

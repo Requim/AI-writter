@@ -365,9 +365,27 @@ def _quality_gate(result: dict, content: str) -> tuple[dict, list[dict]]:
         "rubric_scores": metrics.rubric_scores.model_dump() if metrics.rubric_scores else {},
         "word_count_analysis": words.model_dump(), "hard_failures": sorted(hard_ids),
         "prompt_version": PROMPT_VERSION,
+        "plan_fulfillment": _plan_fulfillment(result),
         **audit,
     }
     return gate, issues
+
+
+def _plan_fulfillment(result: dict[str, Any]) -> dict[str, Any]:
+    value = result.get("plan_fulfillment")
+    supplied = dict(value) if isinstance(value, dict) else {}
+    defaults = {
+        "must_happen_covered": [],
+        "missing_required_events": [],
+        "state_delta_fulfilled": True,
+        "deferred_items": [],
+        "volume_boundary_breached": False,
+        "core_arc_breached": False,
+        "ending_contract_breached": False,
+        "scale_change_required": False,
+        "notes": "",
+    }
+    return {**defaults, **supplied}
 
 
 def _choice_command(

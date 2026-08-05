@@ -47,6 +47,7 @@ class Settings(BaseSettings):
     WORKFLOW_IDEMPOTENCY_REQUIRED: bool = False
     WORKFLOW_AUTO_RETRY_ENABLED: bool = False
     WORKFLOW_REVIEW_V3_ENABLED: bool = False
+    NOVEL_PLANNING_V1_ENABLED: bool = False
     ADAPTIVE_COMPACTION_ENABLED: bool = False
 
     AGENT_MAX_CONTEXT_TOKENS: int = 128000
@@ -54,7 +55,7 @@ class Settings(BaseSettings):
     MAX_REFLECTION_LOOPS: int = 3
     REFLECTION_THRESHOLD: float = 0.8
     MIN_CHAPTER_WORDS: int = 3000
-    MAX_CHAPTER_WORDS: int = 6000
+    MAX_CHAPTER_WORDS: int = 7000
     LANGGRAPH_CHECKPOINTER_URI: str | None = None
 
     model_config = SettingsConfigDict(

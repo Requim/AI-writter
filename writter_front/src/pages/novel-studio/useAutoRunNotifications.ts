@@ -33,7 +33,8 @@ export function autoRunNotice(
     key: `auto-completed-${runIdentity(state)}`, type: 'success',
     message: '全书创作已完成', description: '计划章节已经全部归档，可以查看完稿。',
   }
-  if (state.status === 'paused' && state.interrupt && requiresHumanReview(state.interrupt.action)) return {
+  if (state.status === 'paused' && state.interrupt
+    && requiresHumanReview(state.interrupt.action, state.interrupt.proposal?.kind)) return {
     key: `auto-review-${interruptKey(state.interrupt)}`, type: 'warning',
     message: '自动创作等待人工处理', description: state.interrupt.message || '当前结果需要你的决定后才能继续。',
   }

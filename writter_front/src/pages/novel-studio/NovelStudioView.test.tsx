@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { initialWorkflowState } from '@/hooks/useWorkflowStream'
 import { NovelStudioView } from './NovelStudioView'
 import type { NovelStudioController } from './useNovelStudioController'
+import type { NovelPlan } from '@/types/novel'
 
 afterEach(cleanup)
 
@@ -25,13 +26,13 @@ function completedController(): NovelStudioController {
         id: 'chapter-3', chapter_index: 2, title: '历史审读缺失章节', word_count: 4600,
         status: 'completed', version: 1, review_status: 'unknown', quality_score: null,
       }],
-      editorTitle: '', editorContent: '', editorMode: 'read',
+      editorTitle: '', editorContent: '', editorMode: 'read', workspaceMode: 'chapter',
       mobilePanel: 'editor', loading: false, saving: false, rewriting: false,
     },
     workflow: { state: initialWorkflowState, sync: vi.fn() } as unknown as NovelStudioController['workflow'],
     refresh: async () => undefined, openChapter: action, saveChapter: vi.fn(async () => true),
     deleteChapter: action, rewriteChapter: action, startWriting: action, resumeWriting: action,
-    continueAutoWriting: action, stopWriting: action, setAutoMode: action,
+    continueAutoWriting: action, replanPlan: action, stopWriting: action, setAutoMode: action,
     setEditor: action, goBack: action, notifySyncError: action,
   }
 }
@@ -47,6 +48,21 @@ function editorController(): NovelStudioController {
   controller.document.editorContent = '章节正文'
   controller.document.editorMode = 'edit'
   return controller
+}
+
+function studioPlan(): NovelPlan {
+  return {
+    schema_version: 1, version: 1, source: 'initial', created_at: '2026-08-05T08:00:00Z',
+    scale: { preset: 'short', target_chapters: 3, target_total_words: 14_600,
+      tolerance_ratio: 0.1, average_chapter_words: 4867, target_volumes: 1, lock_window: 5 },
+    ending_contract: { final_state: '主线闭合' },
+    volumes: [{ volume_id: 'vol-1', title: '第一卷', start_chapter: 1, end_chapter: 3,
+      target_words: 14_600, opening_state: '起局', midpoint_turn: '转折', climax: '高潮', ending_state: '闭合',
+      reader_promises: [], setup_ids: [], payoff_ids: [] }],
+    arcs: [{ arc_id: 'main', arc_type: 'main', start_chapter: 1, end_chapter: 3,
+      goal: '完成追索', escalation_points: [], resolution_condition: '真相揭晓', is_core: true }],
+    chapter_slots: [],
+  }
 }
 
 describe('NovelStudioView completed state', () => {
@@ -81,5 +97,60 @@ describe('NovelStudioView completed state', () => {
     rerender(<NovelStudioView controller={controller} />)
     fireEvent.click(screen.getByRole('button', { name: '保存失败，重试' }))
     expect(controller.saveChapter).toHaveBeenCalledOnce()
+  })
+
+  it('switches from the directory to the read-only planning workspace', () => {
+    const controller = completedController()
+    controller.document.plan = studioPlan()
+    const { rerender } = render(<NovelStudioView controller={controller} />)
+    fireEvent.click(screen.getByRole('radio', { name: '规划' }))
+    expect(controller.setEditor).toHaveBeenCalledWith({ workspaceMode: 'plan', mobilePanel: 'plan' })
+
+    controller.document.workspaceMode = 'plan'
+    controller.document.mobilePanel = 'plan'
+    rerender(<NovelStudioView controller={controller} />)
+    expect(screen.getByRole('heading', { name: '整书规划' })).toBeInTheDocument()
+    expect(screen.getAllByText('第一卷')).toHaveLength(2)
+  })
+
+  it('starts a scoped replan and opens the workflow panel for review', () => {
+    const controller = completedController()
+    controller.isCompleted = false
+    controller.document.novel!.status = 'writing'
+    controller.document.plan = studioPlan()
+    controller.document.workspaceMode = 'plan'
+    controller.document.mobilePanel = 'plan'
+    render(<NovelStudioView controller={controller} />)
+
+    fireEvent.click(screen.getByRole('button', { name: '调整规划' }))
+    fireEvent.click(screen.getByRole('radio', { name: '当前卷' }))
+    fireEvent.change(screen.getByRole('textbox', { name: '重规划修改要求' }), {
+      target: { value: '加强第二幕冲突，但保留既定结局' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: '提交调整' }))
+
+    expect(controller.replanPlan).toHaveBeenCalledWith({
+      scope: 'volume', instruction: '加强第二幕冲突，但保留既定结局',
+    })
+  })
+
+  it('disables replanning without a plan, while busy, and after completion', () => {
+    const controller = completedController()
+    controller.isCompleted = false
+    controller.document.novel!.status = 'writing'
+    controller.document.workspaceMode = 'plan'
+    controller.document.mobilePanel = 'plan'
+    const { rerender } = render(<NovelStudioView controller={controller} />)
+    expect(screen.getByRole('button', { name: '调整规划' })).toBeDisabled()
+
+    controller.document.plan = studioPlan()
+    controller.workflow.state = { ...initialWorkflowState, status: 'running' }
+    rerender(<NovelStudioView controller={controller} />)
+    expect(screen.getByRole('button', { name: '调整规划' })).toBeDisabled()
+
+    controller.workflow.state = initialWorkflowState
+    controller.isCompleted = true
+    rerender(<NovelStudioView controller={controller} />)
+    expect(screen.getByRole('button', { name: '调整规划' })).toBeDisabled()
   })
 })

@@ -97,10 +97,137 @@ export interface NovelOutline {
   main_characters?: Array<Record<string, JsonValue>>
   main_plot?: Record<string, JsonValue>
   chapters?: Array<Record<string, JsonValue>>
+  volumes?: Array<Record<string, JsonValue>>
   writing_style?: string
   total_chapters?: number
+  scale?: ScaleContract
   creative_brief?: CreativeBrief
   prompt_version?: string
+}
+
+export type PlanningPreset = 'short' | 'medium' | 'long' | 'epic' | 'custom'
+
+export interface PlanningConstraints {
+  min_chapters: number
+  max_chapters: number
+  min_chapter_words: number
+  max_chapter_words: number
+  default_tolerance_ratio: number
+  default_lock_window: number
+}
+
+export interface PlanningPresetOption {
+  preset: Exclude<PlanningPreset, 'custom'>
+  label: string
+  target_chapters: number
+  target_total_words: number
+  target_volumes: number
+}
+
+export interface PlanningOptions {
+  constraints: PlanningConstraints
+  presets: PlanningPresetOption[]
+}
+
+export interface NovelPlanningInput {
+  preset: PlanningPreset
+  target_chapters: number
+  target_total_words: number
+}
+
+export interface ScaleContract extends NovelPlanningInput {
+  tolerance_ratio: number
+  average_chapter_words: number
+  target_volumes: number
+  lock_window: number
+}
+
+export interface VolumePlan {
+  volume_id: string
+  title: string
+  start_chapter: number
+  end_chapter: number
+  target_words: number
+  opening_state: string
+  midpoint_turn: string
+  climax: string
+  ending_state: string
+  reader_promises: string[]
+  setup_ids: string[]
+  payoff_ids: string[]
+}
+
+export interface StoryArcEscalationPoint {
+  chapter_number: number
+  description?: string
+  [key: string]: JsonValue | undefined
+}
+
+export interface StoryArc {
+  arc_id: string
+  arc_type: string
+  start_chapter: number
+  end_chapter: number
+  goal: string
+  escalation_points: StoryArcEscalationPoint[]
+  resolution_condition: string
+  is_core: boolean
+}
+
+export type ChapterPlanDetailLevel = 'skeleton' | 'detailed'
+export type ChapterPlanStatus = 'planned' | 'locked' | 'completed' | string
+
+export interface ChapterSlot {
+  chapter_number: number
+  volume_id: string
+  arc_ids: string[]
+  story_function: string
+  must_happen: string[]
+  planned_state_delta: string
+  target_words: number
+  setup_ids: string[]
+  payoff_ids: string[]
+  detail_level: ChapterPlanDetailLevel
+  status: ChapterPlanStatus
+}
+
+export interface NovelPlan {
+  schema_version: number
+  version: number
+  source: string
+  scale: ScaleContract
+  ending_contract: Record<string, JsonValue>
+  volumes: VolumePlan[]
+  arcs: StoryArc[]
+  chapter_slots: ChapterSlot[]
+  executions?: PlanExecution[]
+  created_at: string
+}
+
+export interface PlanExecution {
+  chapter_number: number
+  plan_version: number
+  status: string
+  actual_words: number
+  fulfillment: Record<string, JsonValue>
+  drift_severity: 'none' | 'minor' | 'major' | string
+  updated_at: string
+}
+
+export interface NovelPlanVersionSummary {
+  version: number
+  source: string
+  trigger_chapter?: number | null
+  change_summary?: string | null
+  created_by_user_id?: string | null
+  created_at: string
+}
+
+export type PlanReplanScope = 'future' | 'volume' | 'scale'
+
+export interface PlanReplanRequest {
+  scope: PlanReplanScope
+  instruction: string
 }
 
 export interface NovelCreateRequest {
@@ -108,6 +235,7 @@ export interface NovelCreateRequest {
   title?: string
   summary?: string
   total_outline?: NovelOutline
+  planning: NovelPlanningInput
 }
 
 export interface NovelResponse {
@@ -126,6 +254,24 @@ export interface ProgressResponse {
   total_chapters: number
   percentage: number
   status: string
+  chapter_progress?: {
+    current: number
+    total: number
+    percentage: number
+  }
+  word_progress?: {
+    current: number
+    target: number
+    percentage: number
+  }
+  volume_progress?: {
+    current: number
+    total: number
+    percentage: number
+  }
+  plan_version?: number
+  plan_status?: 'missing' | 'draft' | 'accepted' | string
+  drift_severity?: 'none' | 'minor' | 'major' | string
 }
 
 export type ChapterReviewStatus =
@@ -207,6 +353,8 @@ export type ReviewInterruptAction =
   | 'confirm_or_provide_title'
   | 'confirm_or_provide_summary'
   | 'review_or_modify_outline'
+  | 'review_or_modify_novel_plan'
+  | 'review_novel_plan'
   | 'review_or_provide_chapter_outline'
   | 'review_reflection_issues'
   | 'quality_gate_exhausted'

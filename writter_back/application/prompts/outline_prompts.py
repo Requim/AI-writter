@@ -1,6 +1,7 @@
 """Prompts and validation for the macro novel outline."""
 
 import json
+from math import ceil
 
 from typing import Any
 
@@ -45,6 +46,12 @@ def build_outline_prompt(
         if requested_writing_style
         else "明确叙事视角、节奏、语言基调、对话风格和氛围。"
     )
+    volume_requirement = (
+        f"精确规划 {min(8, max(1, ceil(target_total_chapters / 25)))} 卷，"
+        "每卷不超过 25 章，连续覆盖全书。"
+        if target_total_chapters
+        else "规划 5-8 卷且每卷不超过 25 章，连续覆盖全书。"
+    )
     characters = main_characters or []
     if characters:
         requirement = "逐项复制已确认角色；只能补充人物弧阶段和分卷职责，不得换名、删人或重写底层设定。"
@@ -64,6 +71,7 @@ def build_outline_prompt(
         main_characters_json=characters_json,
         style_requirement=style_requirement,
         chapter_requirement=chapter_requirement,
+        volume_requirement=volume_requirement,
     )
 
 

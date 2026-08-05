@@ -8,6 +8,8 @@ from langgraph.types import Command
 
 from application.schemas.agent_state import NovelAgentState
 from application.streaming import emit_workflow_event
+from config import settings
+from service.value_objects.novel_plan import NovelPlan
 
 logger = logging.getLogger("uvicorn")
 
@@ -36,6 +38,11 @@ def _route(state: NovelAgentState) -> tuple[str, str]:
     if not isinstance(total_outline, dict) or not total_outline:
         return "outline_node", "缺少宏观总纲，返回总纲节点"
 
+    if settings.NOVEL_PLANNING_V1_ENABLED:
+        planning_route = _planning_route(state)
+        if planning_route is not None:
+            return planning_route
+
     current_index = state.get("current_chapter_index", 0)
     chapter_number = current_index + 1
     content = state.get("current_chapter_content")
@@ -55,6 +62,23 @@ def _route(state: NovelAgentState) -> tuple[str, str]:
         return "chapter_outline_node", f"为第{chapter_number}章即时生成细纲"
 
     return "chapter_writer_node", f"第{chapter_number}章细纲就绪，开始生成正文"
+
+
+def _planning_route(state: NovelAgentState) -> tuple[str, str] | None:
+    if state.get("plan_replan_request"):
+        return "novel_plan_initialize_node", "检测到重规划请求，进入计划版本流程"
+    raw = state.get("novel_plan")
+    if not isinstance(raw, dict) or not raw:
+        return "novel_plan_initialize_node", "缺少已接受的整书计划，先补全章节骨架"
+    try:
+        plan = NovelPlan.from_dict(raw)
+    except (TypeError, ValueError):
+        return "novel_plan_initialize_node", "整书计划不可用，重新建立计划提案"
+    chapter = int(state.get("current_chapter_index", 0) or 0) + 1
+    slot = next((item for item in plan.chapter_slots if item.chapter_number == chapter), None)
+    if slot is not None and slot.detail_level == "skeleton":
+        return "novel_plan_initialize_node", f"进入新卷前细化第{chapter}章所在分卷"
+    return None
 
 
 async def router_agent(

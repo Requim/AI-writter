@@ -187,6 +187,17 @@ AGGREGATION_SCHEMA = {
     "issues": "array",
     "logic_chain_status": "string",
     "foreshadowing_check": "string",
+    "plan_fulfillment": {
+        "must_happen_covered": "array",
+        "missing_required_events": "array",
+        "state_delta_fulfilled": "boolean",
+        "deferred_items": "array",
+        "volume_boundary_breached": "boolean",
+        "core_arc_breached": "boolean",
+        "ending_contract_breached": "boolean",
+        "scale_change_required": "boolean",
+        "notes": "string",
+    },
 }
 
 REFLECTION_SCHEMA = AGGREGATION_SCHEMA

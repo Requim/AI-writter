@@ -22,6 +22,7 @@ def build_chapter_outline_prompt(
     total_outline: dict,
     memory_context: str,
     validation_issues: list[str] | None = None,
+    plan_context: dict | None = None,
 ) -> str:
     """Generate a bounded dramatic contract before prose generation."""
     context = build_budgeted_context(memory_context, max_chars=2800)
@@ -31,7 +32,9 @@ def build_chapter_outline_prompt(
     reserve = policy.get("reserve_pool", []) if isinstance(policy, dict) else []
     volume_json = json.dumps(volume_for_chapter(total_outline, chapter_index), ensure_ascii=False)
     total = int(total_outline.get("total_chapters", 0) or 0)
-    word_target = _deterministic_word_target(chapter_index, total)
+    slot = plan_context.get("current_slot", {}) if isinstance(plan_context, dict) else {}
+    word_target = int(slot.get("target_words", 0) or 0)
+    word_target = word_target or _deterministic_word_target(chapter_index, total)
     retry_block = ""
     if validation_issues:
         retry_block = "\n【上一版未通过校验】\n- " + "\n- ".join(validation_issues)
@@ -49,6 +52,7 @@ def build_chapter_outline_prompt(
         total_chapters=total or "?",
         word_target=word_target,
         reserved_name_pool=json.dumps(reserve, ensure_ascii=False, indent=2),
+        plan_context=json.dumps(plan_context or {}, ensure_ascii=False, separators=(",", ":")),
     )
 
 

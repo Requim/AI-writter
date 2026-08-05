@@ -22,15 +22,17 @@ from application.prompts.memory_prompts import (
 )
 from application.schemas.agent_state import NovelAgentState
 from application.streaming import emit_workflow_event
+from config import settings
 from service.entities.chapter import Chapter
 from service.value_objects.outline import Outline
+from service.value_objects.novel_plan import NovelPlan
 from service.value_objects.progress import Progress
 
 logger = logging.getLogger("uvicorn")
 OUTLINE_FIELDS = frozenset({
     "story_background", "main_characters", "main_plot", "antagonist_plan",
-    "truth_reveal_ladder", "cost_curve", "relationship_turns", "chapters",
-    "writing_style", "total_chapters", "volumes", "creative_brief", "prompt_version",
+    "truth_reveal_ladder", "cost_curve", "relationship_turns",
+    "writing_style", "total_chapters", "volumes", "scale", "creative_brief", "prompt_version",
 })
 STORY_STATE_FIELDS = {
     "timeline", "characters", "open_conflicts", "foreshadowing",
@@ -56,7 +58,8 @@ async def _persist_setup(
 ) -> None:
     if not repository or not novel_id:
         return
-    novel = await repository.find_by_id(tenant_id, novel_id)
+    finder = getattr(repository, "find_by_id", None)
+    novel = await finder(tenant_id, novel_id) if callable(finder) else None
     if novel is None:
         raise RuntimeError("小说设定保存失败：目标小说不存在")
     updated = False
@@ -243,9 +246,9 @@ async def _persist_chapter(
     previous = extract_story_state(state.get("memory_context", ""))
     story_state = await _generate_story_state(llm, chapter, previous, chapter["chapter_index"])
     rolling_plan = chapter["outline"].get("rolling_plan", [])
-    progress = Progress(
-        current_chapter=completed_count, total_chapters=_total_chapters(state.get("total_outline")),
-        percentage=percentage, status="completed" if is_completed else "writing",
+    progress = await _chapter_progress(
+        repository, tenant_id, novel_id, state, chapter,
+        completed_count, percentage, is_completed,
     )
     await repository.replace_chapter(
         tenant_id, novel_id, _chapter_entity(chapter, novel_id), memory_content,
@@ -256,15 +259,74 @@ async def _persist_chapter(
     )
 
 
+async def _chapter_progress(
+    repository: Any,
+    tenant_id: str,
+    novel_id: str,
+    state: NovelAgentState,
+    chapter: dict[str, Any],
+    completed: int,
+    percentage: float,
+    is_completed: bool,
+) -> Progress:
+    fields: dict[str, Any] = {
+        "current_chapter": completed,
+        "total_chapters": _total_chapters(state.get("total_outline")),
+        "percentage": percentage,
+        "status": "completed" if is_completed else "writing",
+    }
+    finder = getattr(repository, "find_by_id", None)
+    novel = await finder(tenant_id, novel_id) if callable(finder) else None
+    previous = novel.progress if novel is not None else None
+    raw_plan = state.get("novel_plan")
+    if not isinstance(raw_plan, dict) or not raw_plan:
+        return Progress(**fields)
+    plan = NovelPlan.from_dict(raw_plan)
+    prior_words = int(getattr(previous, "completed_words", 0) or 0)
+    fields.update(_plan_progress_fields(plan, completed, prior_words + chapter["word_count"]))
+    fields["drift_severity"] = "pending"
+    return Progress(**fields)
+
+
+def _plan_progress_fields(
+    plan: NovelPlan, completed: int, completed_words: int
+) -> dict[str, Any]:
+    chapter = min(max(completed, 1), plan.scale.target_chapters)
+    volume_index, volume = next(
+        (index, item)
+        for index, item in enumerate(plan.volumes, start=1)
+        if item.start_chapter <= chapter <= item.end_chapter
+    )
+    volume_done = min(completed, volume.end_chapter) - volume.start_chapter + 1
+    volume_total = volume.end_chapter - volume.start_chapter + 1
+    return {
+        "total_chapters": plan.scale.target_chapters,
+        "target_words": plan.scale.target_total_words,
+        "completed_words": completed_words,
+        "word_percentage": completed_words / plan.scale.target_total_words * 100,
+        "current_volume": volume_index,
+        "total_volumes": len(plan.volumes),
+        "volume_percentage": max(0, volume_done) / volume_total * 100,
+        "plan_version": plan.version,
+        "plan_status": "accepted",
+    }
+
+
 def _writing_command(
     chapter: dict[str, Any], percentage: float, is_completed: bool,
-) -> Command[Literal["progress_check_node"]]:
+) -> Command[Literal["progress_check_node", "plan_reconciliation_node"]]:
+    destination = (
+        "plan_reconciliation_node"
+        if settings.NOVEL_PLANNING_V1_ENABLED
+        else "progress_check_node"
+    )
     return Command(
-        goto="progress_check_node",
+        goto=destination,
         update={
             "completed_chapters": [chapter], "progress_percentage": percentage,
             "is_completed": is_completed,
             "current_chapter_index": chapter["chapter_index"] + 1,
+            "last_persisted_chapter": chapter,
             "current_chapter_content": "", "reflection_issues": [], "user_decision": {},
             "memory_context": "", "scene_ledger": [], "revision_history": [],
         },
@@ -273,7 +335,7 @@ def _writing_command(
 
 async def persist_node(
     state: NovelAgentState, config: RunnableConfig,
-) -> Command[Literal["progress_check_node"]]:
+) -> Command[Literal["progress_check_node", "plan_reconciliation_node"]]:
     """按当前是否存在章节正文选择设定或章节持久化路径。"""
     values = config["configurable"]
     content = str(state.get("current_chapter_content") or "")

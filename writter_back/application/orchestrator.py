@@ -37,6 +37,9 @@ LARGE_STATE_FIELDS = {
     "memory_context",
     "completed_chapters",
     "quality_results",
+    "novel_plan",
+    "plan_generation",
+    "last_persisted_chapter",
 }
 TASK_REGISTRATION_GRACE_SECONDS = 60.0
 
@@ -49,6 +52,7 @@ LEGACY_PROPOSAL_FIELDS = {
     "confirm_or_provide_title": ("title", "ai_suggestions"),
     "confirm_or_provide_summary": ("summary", "ai_generated_summary"),
     "review_or_modify_outline": ("outline", "ai_generated_outline"),
+    "review_novel_plan": ("novel_plan", "novel_plan"),
     "review_or_provide_chapter_outline": ("chapter_outline", "ai_generated_outline"),
 }
 LEGACY_QUALITY_ACTIONS = {

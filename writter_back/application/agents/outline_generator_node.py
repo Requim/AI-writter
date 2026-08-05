@@ -22,6 +22,7 @@ from application.proposals import (
 )
 from application.schemas.agent_state import NovelAgentState
 from application.streaming import emit_workflow_event
+from config import settings
 
 logger = logging.getLogger("uvicorn")
 
@@ -101,7 +102,7 @@ def _prepare_outline(state: NovelAgentState, generated: dict[str, Any]) -> dict[
 
 def _reuse_existing_outline(
     state: NovelAgentState,
-) -> Command[Literal["persist_node"]] | None:
+) -> Command[Literal["novel_plan_initialize_node", "persist_node"]] | None:
     existing = state.get("total_outline")
     if not isinstance(existing, dict):
         return None
@@ -116,11 +117,17 @@ def _reuse_existing_outline(
         enriched.get("main_characters"),
         enriched.get("creative_brief", {}).get("naming_policy", {}),
     )
+    planning_needed = not state.get("novel_plan") or state.get("plan_replan_request")
+    destination = (
+        "novel_plan_initialize_node"
+        if settings.NOVEL_PLANNING_V1_ENABLED and planning_needed
+        else "persist_node"
+    )
     return Command(
-        goto="persist_node",
+        goto=destination,
         update={
             "total_outline": enriched, "character_design": design,
-            "__next_node__": "progress_check_node",
+            "__next_node__": destination,
         },
     )
 
@@ -161,7 +168,7 @@ async def _generate_outline_proposal(
 async def outline_generator_node(
     state: NovelAgentState,
     config: RunnableConfig,
-) -> Command[Literal["character_design_node", "persist_node", "outline_review_node"]]:
+) -> Command[Literal["character_design_node", "novel_plan_initialize_node", "persist_node", "outline_review_node"]]:
     """生成宏观总纲并保存提案，不执行人工审核。"""
     title = state.get("title", "")
     if proposal_matches(state, "outline"):
@@ -186,7 +193,7 @@ async def outline_generator_node(
 async def outline_review_node(
     state: NovelAgentState,
     config: RunnableConfig,
-) -> Command[Literal["persist_node", "outline_node"]]:
+) -> Command[Literal["novel_plan_initialize_node", "persist_node", "outline_node"]]:
     """审核已保存的宏观总纲，本节点不得调用 LLM。"""
     proposal = require_proposal(state, "outline")
     validation = validate_outline(proposal["payload"])
@@ -210,14 +217,19 @@ async def outline_review_node(
     if not isinstance(selected, dict):
         raise RuntimeError("宏观总纲生成失败：用户提交的总纲格式无效")
     selected = _prepare_outline(state, selected)
+    destination = (
+        "novel_plan_initialize_node"
+        if settings.NOVEL_PLANNING_V1_ENABLED
+        else "persist_node"
+    )
     return Command(
-        goto="persist_node",
+        goto=destination,
         update={
             "total_outline": selected,
             "outline_feedback": None,
             "pending_proposal": None,
             "pending_proposal_decision": None,
-            "__next_node__": "progress_check_node",
+            "__next_node__": destination,
         },
     )
 

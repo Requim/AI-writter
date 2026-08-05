@@ -17,12 +17,13 @@ PROPOSAL_KINDS = {
     "title",
     "summary",
     "outline",
+    "novel_plan",
     "chapter_outline",
     "reflection",
     "revision",
 }
 LEGACY_WORKFLOW_SCHEMA_VERSION = 2
-CURRENT_WORKFLOW_SCHEMA_VERSION = 4
+CURRENT_WORKFLOW_SCHEMA_VERSION = 5
 ReviewAction = Literal["accept", "regenerate", "revise", "replace"]
 
 
@@ -42,6 +43,7 @@ _REPLACEMENT_TYPES: dict[str, tuple[type, ...]] = {
     "title": (str, Mapping),
     "summary": (str, Mapping),
     "outline": (Mapping,),
+    "novel_plan": (Mapping,),
     "chapter_outline": (Mapping,),
     "reflection": (str,),
     "revision": (str,),
