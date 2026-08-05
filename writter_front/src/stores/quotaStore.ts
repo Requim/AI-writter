@@ -4,6 +4,8 @@ import { tenantApi } from '@/api/auth'
 import type { QuotaUsage } from '@/types/auth'
 import { useAuthStore } from './authStore'
 
+export const DEFAULT_TOTAL_CHAPTERS = 12
+
 interface QuotaState {
   tenantId?: string
   quota?: QuotaUsage
@@ -61,6 +63,6 @@ export function useQuota() {
 
 export function estimatedQuotaCost(chapters: number | undefined): number {
   const count = typeof chapters === 'number' && Number.isFinite(chapters)
-    ? Math.max(1, Math.floor(chapters)) : 1
+    ? Math.max(1, Math.floor(chapters)) : DEFAULT_TOTAL_CHAPTERS
   return count + 1
 }

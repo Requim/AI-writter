@@ -137,6 +137,7 @@ class IdentityRepository:
                     "status": tenant.status,
                     "ai_enabled": tenant.ai_enabled,
                     "monthly_generation_limit": tenant.monthly_generation_limit,
+                    "monthly_generation_unlimited": tenant.monthly_generation_unlimited,
                 }
                 for tenant, role in rows
             ]
@@ -169,6 +170,7 @@ class IdentityRepository:
                 is_platform_admin=user.is_platform_admin,
                 ai_enabled=tenant.ai_enabled,
                 monthly_generation_limit=tenant.monthly_generation_limit,
+                monthly_generation_unlimited=tenant.monthly_generation_unlimited,
             )
 
     async def create_refresh_session(
@@ -449,7 +451,10 @@ class IdentityRepository:
             )
             if existing is not None:
                 return used, tenant.monthly_generation_limit
-            if used >= tenant.monthly_generation_limit:
+            if (
+                not tenant.monthly_generation_unlimited
+                and used >= tenant.monthly_generation_limit
+            ):
                 raise QuotaExceededError("本月 AI 创作额度已用完")
             session.add(
                 QuotaLedgerModel(
@@ -542,6 +547,7 @@ class IdentityRepository:
                     "status": tenant.status,
                     "ai_enabled": tenant.ai_enabled,
                     "monthly_generation_limit": tenant.monthly_generation_limit,
+                    "monthly_generation_unlimited": tenant.monthly_generation_unlimited,
                     "member_count": members,
                     "usage": used,
                 }

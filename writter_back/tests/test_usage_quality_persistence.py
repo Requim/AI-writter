@@ -9,6 +9,7 @@ from api.routers.novel_router import _chapter_response, _chapter_summary_respons
 from api.routers.tenant_router import current_period_start, current_usage
 from application.agents.persist_node import _chapter_entity, _completed_chapter
 from infrastructure.database.identity_repository import IdentityRepository
+from infrastructure.database.models import TenantModel
 from service.entities.chapter import Chapter
 from service.entities.identity import TenantContext
 
@@ -33,6 +34,7 @@ async def test_current_usage_includes_breakdown_and_recent():
 
     assert result["used"] == 7
     assert result["remaining"] == 3
+    assert result["unlimited"] is False
     assert result["breakdown"] == {
         "outline": 1, "chapter": 3, "rewrite": 1, "other": 2,
     }
@@ -62,6 +64,41 @@ async def test_quota_retry_reuses_exact_ledger_key(repository, tenant_context):
         "outline": 0, "chapter": 1, "rewrite": 1, "other": 0,
     }
     assert len(details["recent"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_unlimited_quota_still_records_usage(repository, tenant_context):
+    identity = IdentityRepository(repository.async_session)
+    period_start = current_period_start()
+    async with repository.async_session() as session, session.begin():
+        tenant = await session.get(TenantModel, tenant_context.tenant_id)
+        tenant.monthly_generation_unlimited = True
+        tenant.monthly_generation_limit = 0
+
+    first = await identity.reserve_quota(
+        tenant_context, uuid4(), "outline", -1, period_start,
+    )
+    second = await identity.reserve_quota(
+        tenant_context, uuid4(), "chapter", 0, period_start,
+    )
+
+    assert first[0] == 1
+    assert second[0] == 2
+
+
+@pytest.mark.asyncio
+async def test_current_usage_marks_unlimited_quota():
+    context = TenantContext(
+        tenant_id=uuid4(), tenant_name="无限额度租户", user_id=uuid4(),
+        role="owner", is_platform_admin=False, ai_enabled=True,
+        monthly_generation_limit=2_147_483_647,
+        monthly_generation_unlimited=True,
+    )
+
+    result = await current_usage(context, FakeUsageRepository())
+
+    assert result["unlimited"] is True
+    assert result["used"] == 7
 
 
 def test_persisted_chapter_contains_quality_metadata():

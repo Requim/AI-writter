@@ -1,9 +1,70 @@
-import { ApartmentOutlined, PauseCircleOutlined, PlayCircleOutlined } from '@ant-design/icons'
+import { ApartmentOutlined, PauseCircleOutlined, PlayCircleOutlined, SaveOutlined } from '@ant-design/icons'
 import { App, Button, InputNumber, Switch, Table, Tag } from 'antd'
 import { useEffect, useState } from 'react'
 import { adminApi } from '@/api/auth'
 import { AppShell } from '@/components/AppShell'
 import type { AdminTenant, AdminUser } from '@/types/auth'
+
+const FALLBACK_FINITE_LIMIT = 30
+
+function finiteLimit(tenant: AdminTenant): number {
+  return tenant.monthly_generation_limit <= 100000
+    ? tenant.monthly_generation_limit
+    : FALLBACK_FINITE_LIMIT
+}
+
+function QuotaPolicyEditor({
+  tenant,
+  onSave,
+}: {
+  tenant: AdminTenant
+  onSave: (values: Parameters<typeof adminApi.updateTenant>[1]) => Promise<void>
+}) {
+  const [unlimited, setUnlimited] = useState(tenant.monthly_generation_unlimited)
+  const [limit, setLimit] = useState(finiteLimit(tenant))
+  const [saving, setSaving] = useState(false)
+
+  const dirty = unlimited !== tenant.monthly_generation_unlimited
+    || (!unlimited && limit !== finiteLimit(tenant))
+  const save = async () => {
+    setSaving(true)
+    try {
+      await onSave(unlimited
+        ? { monthly_generation_unlimited: true }
+        : { monthly_generation_unlimited: false, monthly_generation_limit: limit })
+    } catch {
+      // The parent surfaces the request error and preserves this draft for correction.
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return <div className="quota-policy-editor">
+    <Switch
+      checked={unlimited}
+      checkedChildren="无限"
+      unCheckedChildren="有限"
+      aria-label={`${tenant.name}无限额度`}
+      onChange={(value) => setUnlimited(value)}
+    />
+    <InputNumber
+      min={0}
+      max={100000}
+      value={limit}
+      disabled={unlimited}
+      aria-label={`${tenant.name}月度额度`}
+      onChange={(value) => setLimit(value ?? 0)}
+    />
+    <Button
+      type="text"
+      icon={<SaveOutlined />}
+      aria-label={`保存${tenant.name}额度策略`}
+      disabled={!dirty}
+      loading={saving}
+      onClick={() => void save()}
+    />
+  </div>
+}
 
 export default function PlatformAdmin() {
   const { message } = App.useApp()
@@ -21,9 +82,14 @@ export default function PlatformAdmin() {
   useEffect(() => { queueMicrotask(() => void load()) }, [])
 
   const patch = async (tenant: AdminTenant, values: Parameters<typeof adminApi.updateTenant>[1]) => {
-    await adminApi.updateTenant(tenant.id, values)
-    message.success('租户策略已更新')
-    await load()
+    try {
+      await adminApi.updateTenant(tenant.id, values)
+      message.success('租户策略已更新')
+      await load()
+    } catch {
+      message.error('租户策略更新失败，请稍后重试')
+      throw new Error('tenant policy update failed')
+    }
   }
 
   const patchUser = async (user: AdminUser) => {
@@ -51,13 +117,13 @@ export default function PlatformAdmin() {
             loading={loading}
             rowKey="id"
             dataSource={tenants}
-            scroll={{ x: 900 }}
+            scroll={{ x: 1060 }}
             pagination={false}
             columns={[
               { title: '工作区', dataIndex: 'name', render: (name: string, tenant: AdminTenant) => <div><strong>{name}</strong><small>{tenant.slug}</small></div> },
               { title: '成员', dataIndex: 'member_count', width: 80 },
-              { title: '本月用量', width: 120, render: (_: unknown, tenant: AdminTenant) => `${tenant.usage} / ${tenant.monthly_generation_limit}` },
-              { title: '额度', width: 120, render: (_: unknown, tenant: AdminTenant) => <InputNumber min={0} max={100000} value={tenant.monthly_generation_limit} onChange={(value) => value !== null && void patch(tenant, { monthly_generation_limit: value })} /> },
+              { title: '本月用量', width: 120, render: (_: unknown, tenant: AdminTenant) => `${tenant.usage} / ${tenant.monthly_generation_unlimited ? '无限' : tenant.monthly_generation_limit}` },
+              { title: '额度策略', width: 260, render: (_: unknown, tenant: AdminTenant) => <QuotaPolicyEditor key={`${tenant.id}:${tenant.monthly_generation_unlimited}:${tenant.monthly_generation_limit}`} tenant={tenant} onSave={(values) => patch(tenant, values)} /> },
               { title: 'AI', width: 80, render: (_: unknown, tenant: AdminTenant) => <Switch checked={tenant.ai_enabled} onChange={(checked) => void patch(tenant, { ai_enabled: checked })} /> },
               { title: '状态', width: 100, render: (_: unknown, tenant: AdminTenant) => <Tag color={tenant.status === 'active' ? 'green' : 'red'}>{tenant.status}</Tag> },
               { title: '', width: 120, render: (_: unknown, tenant: AdminTenant) => <Button danger={tenant.status === 'active'} icon={tenant.status === 'active' ? <PauseCircleOutlined /> : <PlayCircleOutlined />} onClick={() => void patch(tenant, { status: tenant.status === 'active' ? 'suspended' : 'active' })}>{tenant.status === 'active' ? '暂停' : '恢复'}</Button> },

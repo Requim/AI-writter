@@ -17,6 +17,7 @@ export default function BookShelf() {
   const setAutoMode = useNovelStore((state) => state.setAutoMode)
   const [novels, setNovels] = useState<NovelResponse[]>([])
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState(false)
   const [organizing, setOrganizing] = useState(false)
   const [selected, setSelected] = useState<string[]>([])
   const [query, setQuery] = useState('')
@@ -30,9 +31,11 @@ export default function BookShelf() {
 
   const load = useCallback(async () => {
     setLoading(true)
+    setLoadError(false)
     try {
       setNovels(await novelApi.list())
     } catch {
+      setLoadError(true)
       message.error('无法读取书架，请确认后端服务已启动')
     } finally {
       setLoading(false)
@@ -80,7 +83,7 @@ export default function BookShelf() {
             <Segmented
               value={autoMode ? 'auto' : 'manual'}
               onChange={(value) => setAutoMode(value === 'auto')}
-              options={[{ label: '手动审阅', value: 'manual' }, { label: '自动创作', value: 'auto' }]}
+              options={[{ label: '逐步确认', value: 'manual' }, { label: '自动推进', value: 'auto' }]}
             />
           </div>
         </section>
@@ -111,7 +114,7 @@ export default function BookShelf() {
                 { label: '已完稿', value: 'completed' },
               ]}
             />
-            <span className="shelf-result-count">{filteredNovels.length} / {novels.length} 部</span>
+            {!loading && !loadError && <span className="shelf-result-count">{filteredNovels.length} / {novels.length} 部</span>}
           </div>
           <div className="shelf-toolbar-actions">
             {organizing && filteredNovels.length > 0 && (
@@ -144,7 +147,13 @@ export default function BookShelf() {
         </div>
 
         {loading ? (
-          <div className="book-grid"><Skeleton active /><Skeleton active /><Skeleton active /></div>
+          <div className="book-grid" role="status" aria-live="polite" aria-label="正在读取书架">
+            <Skeleton active /><Skeleton active /><Skeleton active />
+          </div>
+        ) : loadError ? (
+          <Empty className="empty-shelf" description="书架暂时无法加载">
+            <Button onClick={() => void load()}>重新加载</Button>
+          </Empty>
         ) : novels.length === 0 ? (
           <Empty className="empty-shelf" description="还没有稿件">
             <Button type="primary" icon={<PlusOutlined />} onClick={() => navigate('/novels/new')}>

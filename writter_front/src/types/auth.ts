@@ -15,6 +15,7 @@ export interface TenantSummary {
   status: string
   ai_enabled: boolean
   monthly_generation_limit: number
+  monthly_generation_unlimited: boolean
 }
 
 export interface AuthSession {
@@ -38,6 +39,7 @@ export interface QuotaUsage {
   used: number
   limit: number
   remaining: number
+  unlimited: boolean
   ai_enabled: boolean
   period_start: string
 }
@@ -49,6 +51,7 @@ export interface AdminTenant {
   status: 'active' | 'suspended'
   ai_enabled: boolean
   monthly_generation_limit: number
+  monthly_generation_unlimited: boolean
   member_count: number
   usage: number
 }

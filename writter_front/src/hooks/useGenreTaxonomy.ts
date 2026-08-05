@@ -2,16 +2,32 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { novelApi } from '@/api/novel'
 import type { GenreProfile } from '@/types/novel'
 
+let cachedProfiles: GenreProfile[] | undefined
+let pendingProfiles: Promise<GenreProfile[]> | undefined
+
+function fetchGenreTaxonomy(): Promise<GenreProfile[]> {
+  if (cachedProfiles) return Promise.resolve(cachedProfiles)
+  if (!pendingProfiles) {
+    pendingProfiles = novelApi.genreTaxonomy()
+      .then((profiles) => {
+        cachedProfiles = profiles
+        return profiles
+      })
+      .finally(() => { pendingProfiles = undefined })
+  }
+  return pendingProfiles
+}
+
 export function useGenreTaxonomy() {
-  const [profiles, setProfiles] = useState<GenreProfile[]>([])
-  const [loading, setLoading] = useState(true)
+  const [profiles, setProfiles] = useState<GenreProfile[]>(() => cachedProfiles || [])
+  const [loading, setLoading] = useState(() => !cachedProfiles)
   const [error, setError] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
     setError(false)
     try {
-      setProfiles(await novelApi.genreTaxonomy())
+      setProfiles(await fetchGenreTaxonomy())
     } catch {
       setProfiles([])
       setError(true)
@@ -22,7 +38,7 @@ export function useGenreTaxonomy() {
 
   useEffect(() => {
     let active = true
-    novelApi.genreTaxonomy()
+    fetchGenreTaxonomy()
       .then((items) => {
         if (active) setProfiles(items)
       })

@@ -425,6 +425,24 @@ describe('WorkflowPanel recovery', () => {
   })
 })
 
+describe('WorkflowPanel completed history', () => {
+  it('explains that legacy completed work has no retained node history', () => {
+    render(
+      <WorkflowPanel
+        state={{ status: 'completed', connection: 'idle', draft: '', issues: [], events: [] }}
+        autoMode={false}
+        onResume={vi.fn()}
+        onRetry={vi.fn()}
+        onCancel={vi.fn()}
+        onRefresh={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('执行已完成，节点历史未保留')).toBeInTheDocument()
+    expect(screen.queryByText('尚未开始执行')).not.toBeInTheDocument()
+  })
+})
+
 describe('WorkflowPanel persistence stages', () => {
   it('shows chapter context for summary and story-state persistence nodes', () => {
     const props = {

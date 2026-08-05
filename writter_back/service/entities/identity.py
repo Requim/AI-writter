@@ -24,6 +24,7 @@ class TenantContext:
     is_platform_admin: bool
     ai_enabled: bool
     monthly_generation_limit: int
+    monthly_generation_unlimited: bool = False
 
     def can_delete_content(self) -> bool:
         return self.role in {"owner", "admin"}

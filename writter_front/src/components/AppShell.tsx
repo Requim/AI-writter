@@ -87,12 +87,18 @@ function TenantConsole({ tenants, currentTenantId, onChange }: TenantConsoleProp
       options={tenants.map((item) => ({ label: item.name, value: item.id }))}
       popupMatchSelectWidth={false}
     />
-    {usage && <Tooltip title={`本月 AI 创作额度 ${usage.used}/${usage.limit}`}>
-      <div className="quota-meter">
-        <Progress type="circle" size={26} percent={usage.limit ? Math.round(usage.used / usage.limit * 100) : 100} showInfo={false} strokeColor="#176b5b" />
-        <span>{usage.remaining}</span>
-      </div>
-    </Tooltip>}
+    {usage && (usage.unlimited ? (
+      <Tooltip title="本月 AI 创作额度：无限">
+        <div className="quota-meter unlimited" aria-label="无限额度"><strong>∞</strong><span>无限</span></div>
+      </Tooltip>
+    ) : (
+      <Tooltip title={`本月 AI 创作额度 ${usage.used}/${usage.limit}`}>
+        <div className="quota-meter">
+          <Progress type="circle" size={26} percent={usage.limit ? Math.round(usage.used / usage.limit * 100) : 100} showInfo={false} strokeColor="#176b5b" />
+          <span>{usage.remaining}</span>
+        </div>
+      </Tooltip>
+    ))}
   </div>
 }
 

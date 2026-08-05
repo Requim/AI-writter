@@ -7,7 +7,7 @@ import type { AuthSession } from '@/types/auth'
 const session: AuthSession = {
   access_token: 'fresh-access', refresh_token: 'fresh-refresh', token_type: 'bearer', expires_in: 3600,
   user: { id: 'user-1', email: 'writer@example.com', is_platform_admin: false, status: 'active' },
-  tenants: [{ id: 'tenant-1', name: '编辑部', slug: 'desk', role: 'owner', status: 'active', ai_enabled: true, monthly_generation_limit: 30 }],
+  tenants: [{ id: 'tenant-1', name: '编辑部', slug: 'desk', role: 'owner', status: 'active', ai_enabled: true, monthly_generation_limit: 30, monthly_generation_unlimited: false }],
 }
 
 describe('refreshSession', () => {

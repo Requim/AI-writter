@@ -5,6 +5,7 @@ import { completedTimeline, nodeLabels, presentationNode } from './presentation'
 function emptyLabel(status: WorkflowViewState['status']): string {
   if (status === 'recoverable') return '草稿已保留，等待继续'
   if (status === 'error') return '当前步骤未完成'
+  if (status === 'completed') return '执行已完成，节点历史未保留'
   return '尚未开始执行'
 }
 

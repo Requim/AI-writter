@@ -61,6 +61,7 @@ async def current_usage(
         "used": used,
         "limit": context.monthly_generation_limit,
         "remaining": max(context.monthly_generation_limit - used, 0),
+        "unlimited": context.monthly_generation_unlimited,
         "ai_enabled": context.ai_enabled,
         "period_start": period_start,
         **details,

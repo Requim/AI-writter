@@ -1,6 +1,6 @@
-import { Button, Input, Progress, Segmented, Tooltip } from 'antd'
+import { Button, Dropdown, Input, Progress, Segmented, Tooltip, type MenuProps } from 'antd'
 import {
-  EditOutlined, FileDoneOutlined, FileTextOutlined, HistoryOutlined, LeftOutlined, PauseCircleOutlined,
+  EditOutlined, FileDoneOutlined, FileTextOutlined, HistoryOutlined, LeftOutlined, MoreOutlined, PauseCircleOutlined,
   PlayCircleOutlined, ReloadOutlined, SaveOutlined, StopOutlined, UnorderedListOutlined,
 } from '@ant-design/icons'
 import { MarkdownManuscript } from '@/components/MarkdownManuscript'
@@ -44,7 +44,7 @@ function StudioHeader({ controller }: { controller: NovelStudioController }) {
         <Segmented
           value={controller.autoMode ? 'auto' : 'manual'}
           onChange={(value) => controller.setAutoMode(value === 'auto')}
-          options={[{ label: '手动', value: 'manual' }, { label: '自动', value: 'auto' }]}
+          options={[{ label: '逐步确认', value: 'manual' }, { label: '自动推进', value: 'auto' }]}
         />
         <WorkflowAction controller={controller} />
       </div>
@@ -110,7 +110,7 @@ function ChapterReviewMeta({ chapter }: { chapter: ChapterSummary }) {
     <small><span>{chapter.word_count.toLocaleString()} 字</span><b className="review-badge issue">带问题通过{score ? ` · ${score}` : ''}</b></small>
   )
   if (chapter.review_status === 'unknown') return (
-    <small><span>{chapter.word_count.toLocaleString()} 字</span><b className="review-badge muted">审读未知</b></small>
+    <small><span>{chapter.word_count.toLocaleString()} 字</span><Tooltip title="章节已归档，但历史审读元数据不可用"><b className="review-badge muted">审读记录缺失</b></Tooltip></small>
   )
   return <small><span>{chapter.word_count.toLocaleString()} 字</span>{score && <b className="review-score">{score}</b>}</small>
 }
@@ -125,9 +125,10 @@ function CompletionSummary({ controller }: { controller: NovelStudioController }
     <section className="completion-summary" aria-label="完稿摘要">
       <FileDoneOutlined />
       <div><strong>完稿摘要</strong><span>{chapters.length} 章 · {words.toLocaleString()} 字</span></div>
+      <div className="completion-generation-status"><b>生成完成</b></div>
       <div className="completion-review-status">
         {unreviewed > 0 && <b className="review-badge warning">未审读 {unreviewed} 章</b>}
-        {unknown > 0 && <b className="review-badge muted">审读未知 {unknown} 章</b>}
+        {unknown > 0 && <Tooltip title="章节已归档，但历史审读元数据不可用"><b className="review-badge muted">审读记录缺失 {unknown} 章</b></Tooltip>}
         {!unreviewed && !unknown && <span>全部章节已完成审读</span>}
       </div>
     </section>
@@ -152,11 +153,34 @@ function ChapterSidebar({ controller }: { controller: NovelStudioController }) {
   )
 }
 
+function EditorSaveStatus({ controller }: { controller: NovelStudioController }) {
+  const { saving, saveFailed, lastSavedAt } = controller.document
+  const savedTime = lastSavedAt
+    ? new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' }).format(new Date(lastSavedAt))
+    : undefined
+  if (saving) return <span className="editor-save-status">保存中</span>
+  if (saveFailed) return <button type="button" className="editor-save-status failed" onClick={() => void controller.saveChapter()}>保存失败，重试</button>
+  if (controller.hasUnsavedChanges) return <span className="editor-save-status dirty">有未保存修改</span>
+  return <span className="editor-save-status">已保存{savedTime ? ` · ${savedTime}` : ''}</span>
+}
+
 function EditorActions({ controller }: { controller: NovelStudioController }) {
   const { selectedChapter, editorMode } = controller.document
   const busy = controller.document.rewriting
     || ['running', 'stalled', 'cancelling'].includes(controller.workflow.state.status)
   if (!selectedChapter) return null
+  const chapterActionMenu: MenuProps = {
+    items: [
+      { key: 'rewrite', icon: <ReloadOutlined />, label: 'AI 重写本章', disabled: busy },
+      ...(controller.canDelete
+        ? [{ key: 'rewind', icon: <HistoryOutlined />, label: '从本章重新创作', danger: true, disabled: busy }]
+        : []),
+    ],
+    onClick: ({ key }) => {
+      if (key === 'rewrite') controller.rewriteChapter()
+      if (key === 'rewind') controller.deleteChapter()
+    },
+  }
   return (
     <div className="editor-actions">
       <Segmented
@@ -165,15 +189,20 @@ function EditorActions({ controller }: { controller: NovelStudioController }) {
         options={[{ label: '阅读', value: 'read' }, { label: '编辑', value: 'edit' }]}
         aria-label="章节查看模式"
       />
-      {controller.hasUnsavedChanges && <span className="editor-dirty-indicator">未保存</span>}
-      <Tooltip title="AI 重写本章">
-        <Button type="text" aria-label="AI 重写本章" icon={<ReloadOutlined />} disabled={busy} loading={controller.document.rewriting} onClick={controller.rewriteChapter} />
-      </Tooltip>
-      {controller.canDelete && (
-        <Tooltip title="从本章重新创作">
-          <Button danger disabled={busy} type="text" aria-label="从本章重新创作" icon={<HistoryOutlined />} onClick={controller.deleteChapter} />
+      <EditorSaveStatus controller={controller} />
+      <div className="desktop-chapter-actions">
+        <Tooltip title="AI 重写本章">
+          <Button type="text" aria-label="AI 重写本章" icon={<ReloadOutlined />} disabled={busy} loading={controller.document.rewriting} onClick={controller.rewriteChapter} />
         </Tooltip>
-      )}
+        {controller.canDelete && (
+          <Tooltip title="从本章重新创作">
+            <Button danger disabled={busy} type="text" aria-label="从本章重新创作" icon={<HistoryOutlined />} onClick={controller.deleteChapter} />
+          </Tooltip>
+        )}
+      </div>
+      <Dropdown menu={chapterActionMenu} trigger={['click']}>
+        <Button className="mobile-chapter-actions" aria-label="章节操作" icon={<MoreOutlined />} disabled={busy}>章节操作</Button>
+      </Dropdown>
       {editorMode === 'edit' && (
         <Button icon={<SaveOutlined />} loading={controller.document.saving} disabled={!controller.hasUnsavedChanges} onClick={() => void controller.saveChapter()}>保存</Button>
       )}

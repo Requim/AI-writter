@@ -122,12 +122,13 @@ describe('buildCreationSubmission', () => {
 
 describe('creation quota notice', () => {
   const quota = {
-    used: 8, limit: 10, remaining: 2, ai_enabled: true, period_start: '2026-08-01',
+    used: 8, limit: 10, remaining: 2, unlimited: false, ai_enabled: true, period_start: '2026-08-01',
   }
 
   it('warns without blocking when the next command is affordable but the full book is not', () => {
     expect(quotaNoticeDetails(quota, 12)).toEqual({
       state: 'warning',
+      headline: '本月剩余 2 / 10 次',
       detail: '仍可启动 1 次，但余额不足以覆盖预计全书（预计 13 次，含 12 章生成）',
     })
     expect(quotaBlocksCreation(quota)).toBe(false)
@@ -137,5 +138,16 @@ describe('creation quota notice', () => {
     expect(quotaBlocksCreation({ ...quota, remaining: 0 })).toBe(true)
     expect(quotaBlocksCreation({ ...quota, ai_enabled: false })).toBe(true)
     expect(quotaBlocksCreation({ ...quota, remaining: 1 })).toBe(false)
+  })
+
+  it('presents unlimited quota without exposing the sentinel limit', () => {
+    const unlimited = {
+      ...quota, limit: 2_147_483_647, remaining: 2_147_483_633, unlimited: true,
+    }
+
+    expect(quotaNoticeDetails(unlimited, 12)).toEqual({
+      state: 'ready', headline: '无限额度', detail: '计划生成 12 章',
+    })
+    expect(quotaBlocksCreation({ ...unlimited, remaining: 0 })).toBe(false)
   })
 })

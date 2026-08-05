@@ -7,7 +7,7 @@ import { AppShell } from '@/components/AppShell'
 import { useUnsavedChangesGuard, type DiscardConfirmation } from '@/hooks/useUnsavedChangesGuard'
 import { novelApi } from '@/api/novel'
 import { useGenreTaxonomy } from '@/hooks/useGenreTaxonomy'
-import { useQuota } from '@/stores/quotaStore'
+import { DEFAULT_TOTAL_CHAPTERS, useQuota } from '@/stores/quotaStore'
 import { useNovelStore } from '@/stores/novelStore'
 import type { QuotaUsage } from '@/types/auth'
 import type { GenreProfile } from '@/types/novel'
@@ -75,10 +75,16 @@ function CoreFields({
     <Form.Item label="读者体验" name="reader_promise">
       <Input size="large" maxLength={160} placeholder="例如：持续解谜，并在真相揭晓时获得情感回响" />
     </Form.Item>
-    <Form.Item label="推进方式">
-      <Segmented value={autoMode ? 'auto' : 'manual'} onChange={(value) => onModeChange(value === 'auto')}
-        options={[{ label: '逐步审阅', value: 'manual' }, { label: '自动推进', value: 'auto' }]} />
-    </Form.Item>
+    <div className="creation-primary-settings">
+      <Form.Item label="计划章节" name="total_chapters" rules={[
+        { required: true, message: '请输入计划章节数' },
+        { type: 'number', min: 1, max: 200, message: '计划章节数应为 1 至 200' },
+      ]}><InputNumber min={1} max={200} size="large" /></Form.Item>
+      <Form.Item label="推进方式">
+        <Segmented value={autoMode ? 'auto' : 'manual'} onChange={(value) => onModeChange(value === 'auto')}
+          options={[{ label: '逐步确认', value: 'manual' }, { label: '自动推进', value: 'auto' }]} />
+      </Form.Item>
+    </div>
   </>
 }
 
@@ -94,23 +100,17 @@ function AdvancedFields() {
       <Input.TextArea rows={2} maxLength={300} placeholder="如：偏爱《诗经》典故，姓名清雅但不生僻" showCount />
     </Form.Item>
     <Form.Item label="内容边界" name="content_boundaries"><Input.TextArea rows={2} maxLength={400} placeholder="不希望出现的情节、尺度或表达方式" showCount /></Form.Item>
-    <div className="form-row">
-      <Form.Item label="计划章节" name="total_chapters" rules={[
-        { required: true, message: '请输入计划章节数' },
-        { type: 'number', min: 1, max: 200, message: '计划章节数应为 1 至 200' },
-      ]}><InputNumber min={1} max={200} size="large" /></Form.Item>
-      <Form.Item label="写作风格" name="writing_style"><Input size="large" maxLength={80} placeholder="例如：冷峻克制、快节奏" /></Form.Item>
-    </div>
+    <Form.Item label="写作风格" name="writing_style"><Input size="large" maxLength={80} placeholder="例如：冷峻克制、快节奏" /></Form.Item>
   </div>
 }
 
 interface QuotaNoticeProps { quota?: QuotaUsage; loading: boolean; chapters?: number }
 
 function QuotaNotice({ quota, loading, chapters }: QuotaNoticeProps) {
-  if (loading) return <div className="creation-quota"><Skeleton.Input active size="small" /></div>
+  if (loading) return <div className="creation-quota" role="status" aria-live="polite" aria-label="正在读取创作额度"><Skeleton.Input active size="small" /></div>
   const details = quotaNoticeDetails(quota, chapters)
   return <div className="creation-quota" data-state={details.state}>
-    <span>{quota ? <>本月剩余 <strong>{quota.remaining}</strong> / {quota.limit} 次</> : '额度暂时无法读取'}</span>
+    <span>{quota?.unlimited && <strong>∞</strong>}{details.headline}</span>
     <small>{details.detail}</small>
   </div>
 }
@@ -169,16 +169,18 @@ export default function CreateNovel() {
       <Button type="text" icon={<ArrowLeftOutlined />} onClick={() => confirmDiscard(() => navigate('/'))}>返回书架</Button>
       <div className="creation-layout"><section className="creation-form">
         <span className="eyebrow">新建选题</span><h1>为故事定下第一笔</h1>
-        <p className="section-lead">先给出故事方向；空白内容由 AI 提案，手动模式会逐项交给你确认。</p>
-        <Form form={form} layout="vertical" initialValues={{ total_chapters: 12 }} onFinish={(values) => void submit(values)} requiredMark={false}>
+        <p className="section-lead">先给出故事方向；空白内容由 AI 提案，逐步确认模式会在关键节点等待你的决定。</p>
+        <Form form={form} layout="vertical" initialValues={{ total_chapters: DEFAULT_TOTAL_CHAPTERS }} onFinish={(values) => void submit(values)} requiredMark={false}>
           <CoreFields autoMode={autoMode} genreError={genreState.error} genreLoading={genreState.loading}
             genreProfiles={genreState.profiles} selectedProfile={genreState.selectedProfile}
             onGenreChange={genreState.onGenreChange} onModeChange={setAutoMode} />
           <Collapse ghost className="advanced-settings" items={[{ key: 'advanced', label: <span><SettingOutlined /> 更多创作约束</span>, children: <AdvancedFields /> }]} />
-          <QuotaNotice quota={quota} loading={quotaLoading} chapters={chapters} />
-          <Button type="primary" size="large" htmlType="submit"
-            disabled={quotaBlocked || genreState.loading || genreState.error}
-            loading={submitting} icon={<ArrowRightOutlined />} iconPlacement="end">创建并进入工作台</Button>
+          <div className="creation-submit-bar">
+            <QuotaNotice quota={quota} loading={quotaLoading} chapters={chapters ?? DEFAULT_TOTAL_CHAPTERS} />
+            <Button type="primary" size="large" htmlType="submit"
+              disabled={quotaBlocked || genreState.loading || genreState.error}
+              loading={submitting} icon={<ArrowRightOutlined />} iconPlacement="end">创建并进入工作台</Button>
+          </div>
         </Form>
       </section><CreationPreview title={title} genreLabel={genreState.genreLabel} /></div>
     </div>

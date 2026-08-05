@@ -9,10 +9,10 @@ import {
 } from 'react-router'
 import { lazy, Suspense } from 'react'
 import { PlatformAdminRoute, ProtectedRoute } from '@/components/ProtectedRoute'
+import BookShelf from '@/pages/BookShelf'
+import CreateNovel from '@/pages/CreateNovel'
+import NovelStudio from '@/pages/NovelStudio'
 
-const BookShelf = lazy(() => import('@/pages/BookShelf'))
-const CreateNovel = lazy(() => import('@/pages/CreateNovel'))
-const NovelStudio = lazy(() => import('@/pages/NovelStudio'))
 const Login = lazy(() => import('@/pages/Login'))
 const Register = lazy(() => import('@/pages/Register'))
 const AcceptInvite = lazy(() => import('@/pages/AcceptInvite'))
@@ -28,7 +28,7 @@ const protect = (element: React.ReactNode) => <ProtectedRoute>{element}</Protect
 
 const router = createBrowserRouter([{
   element: (
-    <Suspense fallback={<div className="route-loading">正在铺开稿纸...</div>}>
+    <Suspense fallback={<div className="route-loading" role="status" aria-live="polite">正在铺开稿纸...</div>}>
       <Outlet />
     </Suspense>
   ),

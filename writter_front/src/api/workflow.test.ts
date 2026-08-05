@@ -90,7 +90,7 @@ describe('workflow request recovery', () => {
     vi.spyOn(axios, 'post').mockResolvedValue({ data: {
       access_token: 'fresh', refresh_token: 'next-refresh', token_type: 'bearer', expires_in: 3600,
       user: { id: 'user-1', email: 'writer@example.com', is_platform_admin: false, status: 'active' },
-      tenants: [{ id: 'tenant-id', name: '编辑部', slug: 'desk', role: 'owner', status: 'active', ai_enabled: true, monthly_generation_limit: 30 }],
+      tenants: [{ id: 'tenant-id', name: '编辑部', slug: 'desk', role: 'owner', status: 'active', ai_enabled: true, monthly_generation_limit: 30, monthly_generation_unlimited: false }],
     } })
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response('', { status: 401 }))

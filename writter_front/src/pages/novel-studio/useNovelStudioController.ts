@@ -16,6 +16,7 @@ import { useAutoRunNotifications } from './useAutoRunNotifications'
 
 interface StudioLocationState { startInput?: Record<string, unknown> }
 type AppContext = ReturnType<typeof App.useApp>
+type DocumentLoadError = 'not_found' | 'forbidden' | 'network'
 
 interface DocumentState {
   novel?: NovelResponse
@@ -27,7 +28,10 @@ interface DocumentState {
   editorMode: 'read' | 'edit'
   mobilePanel: 'chapters' | 'editor' | 'workflow'
   loading: boolean
+  loadError?: DocumentLoadError
   saving: boolean
+  saveFailed?: boolean
+  lastSavedAt?: string
   rewriting: boolean
 }
 
@@ -35,11 +39,12 @@ interface DocumentModel {
   state: DocumentState
   setState: React.Dispatch<React.SetStateAction<DocumentState>>
   selectedRef: React.MutableRefObject<ChapterDetail | undefined>
+  loadedRef: React.MutableRefObject<boolean>
 }
 
 const initialDocumentState: DocumentState = {
   chapters: [], editorTitle: '', editorContent: '', editorMode: 'read',
-  mobilePanel: 'editor', loading: true, saving: false, rewriting: false,
+  mobilePanel: 'editor', loading: true, saving: false, saveFailed: false, rewriting: false,
 }
 
 const REWRITE_SYNC_CODES = new Set([
@@ -58,10 +63,18 @@ function isRewriteSyncSignal(error: unknown): boolean {
     && REWRITE_SYNC_CODES.has(apiErrorCode(error) || '')
 }
 
+function documentLoadError(error: unknown): DocumentLoadError {
+  if (!axios.isAxiosError(error)) return 'network'
+  if (error.response?.status === 404) return 'not_found'
+  if ([401, 403].includes(error.response?.status || 0)) return 'forbidden'
+  return 'network'
+}
+
 function useDocumentModel(): DocumentModel {
   const [state, setState] = useState<DocumentState>(initialDocumentState)
   const selectedRef = useRef<ChapterDetail | undefined>(undefined)
-  return { state, setState, selectedRef }
+  const loadedRef = useRef(false)
+  return { state, setState, selectedRef, loadedRef }
 }
 
 function applySelectedChapter(
@@ -72,7 +85,8 @@ function applySelectedChapter(
   selectedRef.current = detail
   setState((current) => ({
     ...current, selectedChapter: detail, editorTitle: detail.title,
-    editorContent: detail.content, editorMode: 'read', mobilePanel: 'editor',
+    editorContent: detail.content, editorMode: 'read', mobilePanel: 'editor', saveFailed: false,
+    lastSavedAt: current.selectedChapter?.id === detail.id ? current.lastSavedAt : undefined,
   }))
 }
 
@@ -81,23 +95,26 @@ function useDocumentRefresh(
   novelId: string,
   message: AppContext['message'],
 ) {
-  const { setState, selectedRef } = model
+  const { setState, selectedRef, loadedRef } = model
   return useCallback(async () => {
     if (!novelId) return
+    if (!loadedRef.current) setState((current) => ({ ...current, loading: true, loadError: undefined }))
     try {
       const [novel, progress, chapters] = await Promise.all([
         novelApi.get(novelId), novelApi.progress(novelId), novelApi.chapters(novelId),
       ])
-      setState((current) => ({ ...current, novel, progress, chapters }))
+      loadedRef.current = true
+      setState((current) => ({ ...current, novel, progress, chapters, loadError: undefined }))
       if (!selectedRef.current && chapters.length > 0) {
         applySelectedChapter(setState, selectedRef, await novelApi.chapter(novelId, chapters.at(-1)!.id))
       }
-    } catch {
-      message.error('无法载入稿件')
+    } catch (error) {
+      if (loadedRef.current) message.error('暂时无法刷新稿件')
+      else setState((current) => ({ ...current, loadError: documentLoadError(error) }))
     } finally {
       setState((current) => ({ ...current, loading: false }))
     }
-  }, [message, novelId, selectedRef, setState])
+  }, [loadedRef, message, novelId, selectedRef, setState])
 }
 
 function useInitialRefresh(refresh: () => Promise<void> | undefined): void {
@@ -136,18 +153,22 @@ function useChapterSave(
   return useCallback(async () => {
     const chapter = selectedChapter
     if (!chapter) return false
-    setState((current) => ({ ...current, saving: true }))
+    setState((current) => ({ ...current, saving: true, saveFailed: false }))
     try {
       const updated = await novelApi.updateChapter(novelId, chapter.id, {
         title: editorTitle, content: editorContent,
         expected_version: chapter.version,
       })
       applySelectedChapter(setState, selectedRef, updated)
+      setState((current) => ({
+        ...current, editorMode: 'edit', saveFailed: false, lastSavedAt: new Date().toISOString(),
+      }))
       app.message.success('章节已保存')
       if (updated.checkpoint_status === 'deferred') app.message.warning('正文已保存，创作现场将在服务恢复后重新同步')
       await refresh()
       return true
     } catch (error) {
+      setState((current) => ({ ...current, saveFailed: true }))
       const code = apiErrorCode(error)
       if (code === 'chapter_version_conflict') {
         app.modal.confirm({
@@ -535,6 +556,28 @@ function studioCompleted(state: DocumentState, workflow: WorkflowViewState): boo
     || state.novel?.status === 'completed' || (!busy && total > 0 && current >= total)
 }
 
+function useEditorInteractions(
+  model: DocumentModel,
+  state: DocumentState,
+  confirmDiscard: ReturnType<typeof useUnsavedChangesGuard>,
+  loadChapter: (chapter: ChapterSummary) => Promise<void>,
+  setStoredAutoMode: (value: boolean) => void,
+) {
+  const setEditor = useCallback((patch: Partial<DocumentState>) => {
+    model.setState((current) => ({
+      ...current,
+      ...patch,
+      saveFailed: patch.editorTitle !== undefined || patch.editorContent !== undefined ? false : current.saveFailed,
+    }))
+  }, [model])
+  const changeAutoMode = useCallback((value: boolean) => setStoredAutoMode(value), [setStoredAutoMode])
+  const openChapter = useCallback((chapter: ChapterSummary) => {
+    if (chapter.id === state.selectedChapter?.id) { setEditor({ mobilePanel: 'editor' }); return }
+    confirmDiscard(() => void loadChapter(chapter))
+  }, [confirmDiscard, loadChapter, setEditor, state.selectedChapter?.id])
+  return { setEditor, changeAutoMode, openChapter }
+}
+
 export function useNovelStudioController(): NovelStudioController {
   const { novelId = '' } = useParams<{ novelId: string }>()
   const navigate = useNavigate()
@@ -559,28 +602,21 @@ export function useNovelStudioController(): NovelStudioController {
   })
   const gated = useSaveGate(hasChanges, document.saveChapter, app.modal)
   useControllerEffects(document.model, workflow, novelId, autoMode, autoRunActive, setAutoRunActive, lastInterruptRef, hasChanges, app.message)
-  const setEditor = useCallback((patch: Partial<DocumentState>) => {
-    document.model.setState((current) => ({ ...current, ...patch }))
-  }, [document.model])
-  const changeAutoMode = useCallback((value: boolean) => {
-    setStoredAutoMode(value)
-  }, [setStoredAutoMode])
-  const openChapter = useCallback((chapter: ChapterSummary) => {
-    if (chapter.id === state.selectedChapter?.id) { setEditor({ mobilePanel: 'editor' }); return }
-    confirmDiscard(() => void document.loadChapter(chapter))
-  }, [confirmDiscard, document, setEditor, state.selectedChapter?.id])
+  const interactions = useEditorInteractions(
+    document.model, state, confirmDiscard, document.loadChapter, setStoredAutoMode,
+  )
   return {
     novelId, document: state, workflow, autoMode, autoRunActive, isCompleted,
     canDelete: ['owner', 'admin'].includes(currentTenant()?.role || ''),
     hasUnsavedChanges: hasChanges, hasRecoverableCheckpoint: recovery.recoverable,
     recoveryLabel: recovery.label, confirmDiscardChanges: confirmDiscard,
-    refresh: document.refresh, openChapter, saveChapter: document.saveChapter,
+    refresh: document.refresh, openChapter: interactions.openChapter, saveChapter: document.saveChapter,
     deleteChapter: document.deleteChapter,
     rewriteChapter: () => confirmDiscard(document.rewriteChapter),
     startWriting: () => gated(commands.start),
     resumeWriting: (value) => gated(() => commands.resume(value)),
     continueAutoWriting: () => gated(commands.continueAuto),
-    stopWriting: () => void commands.stop(), setAutoMode: changeAutoMode, setEditor,
+    stopWriting: () => void commands.stop(), setAutoMode: interactions.changeAutoMode, setEditor: interactions.setEditor,
     goBack: () => confirmDiscard(() => navigate('/')),
     notifySyncError: () => app.message.error('暂时无法同步任务状态'),
   }

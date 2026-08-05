@@ -16,7 +16,7 @@ describe('quotaStore', () => {
 
   it('shares one in-flight quota request for the current tenant', async () => {
     usageMock.mockResolvedValue({
-      used: 2, limit: 30, remaining: 28, ai_enabled: true, period_start: '2026-08-01',
+      used: 2, limit: 30, remaining: 28, unlimited: false, ai_enabled: true, period_start: '2026-08-01',
     })
     const first = refreshQuota()
     const second = refreshQuota()
@@ -27,6 +27,6 @@ describe('quotaStore', () => {
 
   it('includes startup and every planned chapter in the estimate', () => {
     expect(estimatedQuotaCost(3)).toBe(4)
-    expect(estimatedQuotaCost(undefined)).toBe(2)
+    expect(estimatedQuotaCost(undefined)).toBe(13)
   })
 })

@@ -49,6 +49,7 @@ class TenantModel(Base):
     status = Column(String(20), nullable=False, default="active")
     ai_enabled = Column(Boolean, nullable=False, default=True)
     monthly_generation_limit = Column(Integer, nullable=False, default=30)
+    monthly_generation_unlimited = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now)
 

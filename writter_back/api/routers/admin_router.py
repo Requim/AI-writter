@@ -6,7 +6,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from api.dependencies import get_identity_repository, require_platform_admin
 from infrastructure.database.identity_repository import IdentityRepository
@@ -23,6 +23,16 @@ class TenantAdminUpdate(BaseModel):
     status: Literal["active", "suspended"] | None = None
     ai_enabled: bool | None = None
     monthly_generation_limit: int | None = Field(default=None, ge=0, le=100000)
+    monthly_generation_unlimited: bool | None = None
+
+    @model_validator(mode="after")
+    def require_limit_when_disabling_unlimited(self) -> "TenantAdminUpdate":
+        if (
+            self.monthly_generation_unlimited is False
+            and self.monthly_generation_limit is None
+        ):
+            raise ValueError("关闭无限额度时必须同时设置月度额度")
+        return self
 
 
 class UserAdminUpdate(BaseModel):
