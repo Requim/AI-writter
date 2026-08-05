@@ -87,7 +87,7 @@ def _tactical_checks() -> list[sa.CheckConstraint]:
             name="ck_tactical_versions_idempotency_key",
         ),
         sa.CheckConstraint(
-            "jsonb_typeof(window) = 'object'",
+            "jsonb_typeof(\"window\") = 'object'",
             name="ck_tactical_versions_window_object",
         ),
     ]

@@ -10,7 +10,9 @@ from sqlalchemy import (
     Index,
     UniqueConstraint,
 )
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import configure_mappers
+from sqlalchemy.schema import CreateTable
 
 from infrastructure.database.models import (
     NovelPlanExecutionModel,
@@ -188,3 +190,21 @@ def test_0006_plan_idempotency_column_matches_orm_metadata() -> None:
     assert len(columns) == 1
     assert columns[0].nullable is model_column.nullable is True
     assert columns[0].type.length == model_column.type.length == 128
+
+
+def test_tactical_window_check_quotes_postgresql_reserved_column() -> None:
+    table = NovelTacticalPlanVersionModel.__table__
+    ddl = str(CreateTable(table).compile(dialect=postgresql.dialect()))
+    migration = _migration()
+    recorder = _MigrationRecorder()
+    migration.op = recorder
+    migration.upgrade()
+    constraint = next(
+        item
+        for item in recorder.tables["novel_tactical_plan_versions"]
+        if isinstance(item, CheckConstraint)
+        and item.name == "ck_tactical_versions_window_object"
+    )
+
+    assert 'jsonb_typeof("window")' in ddl
+    assert 'jsonb_typeof("window")' in str(constraint.sqltext)
