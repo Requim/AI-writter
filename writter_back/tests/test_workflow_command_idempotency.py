@@ -4,7 +4,7 @@ import asyncio
 import math
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi import HTTPException
@@ -504,10 +504,12 @@ async def test_auto_retry_reuses_command_run_and_quota(monkeypatch):
     )
 
     assert result == {"status": "ok"}
-    assert orchestrator.invoke.await_args.args[2]["workflow_run_id"] == "same-run"
+    run_id = orchestrator.invoke.await_args.args[2]["workflow_run_id"]
+    assert run_id != "same-run"
+    UUID(run_id)
     orchestrator.retry.assert_awaited_once_with(context, thread_id)
     quota.reserve.assert_awaited_once()
-    assert quota.reserve.await_args.args[1] == "same-run"
+    assert quota.reserve.await_args.args[1] == run_id
     orchestrator.set_active_command.assert_called_once_with(
         context, thread_id, "same-command"
     )

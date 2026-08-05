@@ -1,5 +1,5 @@
 import { ApartmentOutlined, PauseCircleOutlined, PlayCircleOutlined, SaveOutlined } from '@ant-design/icons'
-import { App, Button, InputNumber, Switch, Table, Tag } from 'antd'
+import { Alert, App, Button, InputNumber, Switch, Table, Tag, Tooltip } from 'antd'
 import { useEffect, useState } from 'react'
 import { adminApi } from '@/api/auth'
 import { AppShell } from '@/components/AppShell'
@@ -66,6 +66,25 @@ function QuotaPolicyEditor({
   </div>
 }
 
+function PlanningPolicyEditor({
+  tenant,
+  onSave,
+}: {
+  tenant: AdminTenant
+  onSave: (values: Parameters<typeof adminApi.updateTenant>[1]) => Promise<void>
+}) {
+  const requested = Boolean(tenant.novel_planning_v1_enabled)
+  const effective = tenant.novel_planning_v1_effective === true
+  const status = effective ? { color: 'green', label: '已生效', tip: '该租户已使用 Schema 5 分层规划' }
+    : requested ? { color: 'orange', label: '全局关闭', tip: '租户已请求启用，但全局总开关尚未开启' }
+    : { color: 'default', label: '未启用', tip: '该租户继续使用兼容工作流' }
+  return <div className="planning-policy-editor">
+    <Switch checked={requested} aria-label={`${tenant.name}整书规划`}
+      onChange={(checked) => void onSave({ novel_planning_v1_enabled: checked }).catch(() => undefined)} />
+    <Tooltip title={status.tip}><Tag color={status.color}>{status.label}</Tag></Tooltip>
+  </div>
+}
+
 export default function PlatformAdmin() {
   const { message } = App.useApp()
   const [tenants, setTenants] = useState<AdminTenant[]>([])
@@ -98,6 +117,11 @@ export default function PlatformAdmin() {
     await load()
   }
 
+  const globalPlanningDisabled = tenants.some((tenant) => (
+    tenant.novel_planning_v1_globally_enabled === false
+    || (tenant.novel_planning_v1_enabled && tenant.novel_planning_v1_effective === false)
+  ))
+
   return (
     <AppShell>
       <div className="settings-page admin-page page-enter">
@@ -111,19 +135,23 @@ export default function PlatformAdmin() {
           <div><span>活跃租户</span><strong>{tenants.filter((tenant) => tenant.status === 'active').length}</strong></div>
           <div><span>本月任务</span><strong>{tenants.reduce((sum, tenant) => sum + tenant.usage, 0)}</strong></div>
         </section>
+        {globalPlanningDisabled && <Alert className="admin-feature-alert" type="warning" showIcon
+          message="整书规划全局开关已关闭"
+          description="租户请求态已保留；打开 NOVEL_PLANNING_V1_ENABLED 后才会生效。" />}
         <section className="member-section">
           <div className="section-title"><ApartmentOutlined /><div><h2>租户列表</h2><p>额度按 Asia/Shanghai 自然月统计</p></div></div>
           <Table
             loading={loading}
             rowKey="id"
             dataSource={tenants}
-            scroll={{ x: 1060 }}
+            scroll={{ x: 1240 }}
             pagination={false}
             columns={[
               { title: '工作区', dataIndex: 'name', render: (name: string, tenant: AdminTenant) => <div><strong>{name}</strong><small>{tenant.slug}</small></div> },
               { title: '成员', dataIndex: 'member_count', width: 80 },
               { title: '本月用量', width: 120, render: (_: unknown, tenant: AdminTenant) => `${tenant.usage} / ${tenant.monthly_generation_unlimited ? '无限' : tenant.monthly_generation_limit}` },
               { title: '额度策略', width: 260, render: (_: unknown, tenant: AdminTenant) => <QuotaPolicyEditor key={`${tenant.id}:${tenant.monthly_generation_unlimited}:${tenant.monthly_generation_limit}`} tenant={tenant} onSave={(values) => patch(tenant, values)} /> },
+              { title: '整书规划', width: 170, render: (_: unknown, tenant: AdminTenant) => <PlanningPolicyEditor tenant={tenant} onSave={(values) => patch(tenant, values)} /> },
               { title: 'AI', width: 80, render: (_: unknown, tenant: AdminTenant) => <Switch checked={tenant.ai_enabled} onChange={(checked) => void patch(tenant, { ai_enabled: checked })} /> },
               { title: '状态', width: 100, render: (_: unknown, tenant: AdminTenant) => <Tag color={tenant.status === 'active' ? 'green' : 'red'}>{tenant.status}</Tag> },
               { title: '', width: 120, render: (_: unknown, tenant: AdminTenant) => <Button danger={tenant.status === 'active'} icon={tenant.status === 'active' ? <PauseCircleOutlined /> : <PlayCircleOutlined />} onClick={() => void patch(tenant, { status: tenant.status === 'active' ? 'suspended' : 'active' })}>{tenant.status === 'active' ? '暂停' : '恢复'}</Button> },

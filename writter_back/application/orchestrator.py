@@ -13,6 +13,7 @@ from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
 from application.events import WorkflowEvent
+from application.feature_policy import TenantPlanningLoader, feature_policy
 from application.quota_service import QuotaService
 from application.errors import (
     RetryableWorkflowError,
@@ -38,6 +39,8 @@ LARGE_STATE_FIELDS = {
     "completed_chapters",
     "quality_results",
     "novel_plan",
+    "tactical_window",
+    "tactical_previous_window",
     "plan_generation",
     "last_persisted_chapter",
 }
@@ -53,6 +56,7 @@ LEGACY_PROPOSAL_FIELDS = {
     "confirm_or_provide_summary": ("summary", "ai_generated_summary"),
     "review_or_modify_outline": ("outline", "ai_generated_outline"),
     "review_novel_plan": ("novel_plan", "novel_plan"),
+    "review_or_modify_chapter_plan": ("chapter_plan", "chapter_plan"),
     "review_or_provide_chapter_outline": ("chapter_outline", "ai_generated_outline"),
 }
 LEGACY_QUALITY_ACTIONS = {
@@ -147,6 +151,11 @@ def _rewind_state_update(
         "is_completed": is_completed,
         "chapter_outlines": Overwrite(outlines),
         "completed_chapters": Overwrite(completed),
+        "tactical_window": None,
+        "tactical_previous_window": None,
+        "tactical_window_expected_version": None,
+        "tactical_window_persisted": False,
+        "story_state_needs_reconciliation": True,
     }
 
 
@@ -157,11 +166,13 @@ class NovelOrchestrator(AgentOrchestrator):
         memory_service: PostgresMemoryAdapter,
         llm_config: dict[str, Any],
         quota_service: QuotaService | None = None,
+        tenant_planning_loader: TenantPlanningLoader | None = None,
     ) -> None:
         self.repository = repository
         self.memory_service = memory_service
         self.llm_config = llm_config
         self.quota_service = quota_service
+        self.tenant_planning_loader = tenant_planning_loader
         self._workflow: Any = None
         self._checkpointer: Any = None
         self._llm_instance: Any = None
@@ -262,6 +273,11 @@ class NovelOrchestrator(AgentOrchestrator):
                 "tenant_context": context,
                 "auto_mode": self._auto_mode.get(internal_thread_id, False),
                 "workflow_review_v3_enabled": settings.WORKFLOW_REVIEW_V3_ENABLED,
+                "feature_policy": feature_policy,
+                "novel_planning_v1_enabled": feature_policy.novel_planning_v1_enabled(
+                    context
+                ),
+                "tenant_planning_loader": self.tenant_planning_loader,
                 "adaptive_compaction_enabled": settings.ADAPTIVE_COMPACTION_ENABLED,
                 "memory_service": self.memory_service,
                 "novel_repository": self.repository,
@@ -866,6 +882,17 @@ class NovelOrchestrator(AgentOrchestrator):
         )
         value = (getattr(state, "values", {}) or {}).get("workflow_run_id")
         return str(value) if value else None
+
+    async def get_workflow_schema_version(
+        self, context: TenantContext, thread_id: str
+    ) -> int | None:
+        """Read the checkpoint contract version without exposing private state."""
+        await self._ensure_workflow()
+        state = await self._workflow.aget_state(
+            self._make_config(context, thread_id, include_llm=False)
+        )
+        value = (getattr(state, "values", {}) or {}).get("workflow_schema_version")
+        return int(value) if value is not None else None
 
     async def aclose(self) -> None:
         for task in list(self._active_tasks.values()):

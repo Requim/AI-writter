@@ -198,6 +198,13 @@ AGGREGATION_SCHEMA = {
         "scale_change_required": "boolean",
         "notes": "string",
     },
+    "tactical_fulfillment": {
+        "tactical_goal_fulfilled": "boolean",
+        "approach_followed": "boolean",
+        "exit_hook_established": "boolean",
+        "deviations": "array",
+        "notes": "string",
+    },
 }
 
 REFLECTION_SCHEMA = AGGREGATION_SCHEMA

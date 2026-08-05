@@ -132,6 +132,26 @@ def test_persisted_chapter_contains_quality_metadata():
     }
 
 
+def test_rewritten_chapter_keeps_identity_and_increments_version() -> None:
+    chapter_id = uuid4()
+    created_at = datetime.now()
+    completed = _completed_chapter(
+        {
+            "chapter_outlines": [{"title": "重写章节"}],
+            "rewrite_chapter_id": str(chapter_id),
+            "rewrite_chapter_version": 7,
+            "rewrite_chapter_created_at": created_at,
+        },
+        "重写后的正文",
+        2,
+    )
+    chapter = _chapter_entity(completed, str(uuid4()))
+
+    assert chapter.id == chapter_id
+    assert chapter.version == 8
+    assert chapter.created_at == created_at
+
+
 @pytest.mark.parametrize(
     ("decision", "expected_status", "expected_score"),
     [

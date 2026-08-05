@@ -1,13 +1,16 @@
 import { PauseCircleOutlined } from '@ant-design/icons'
-import { Button, Input } from 'antd'
+import { Button, Input, Segmented } from 'antd'
 import { useState } from 'react'
-import type { InterruptInfo, JsonValue, ReviewDecision, TitleSuggestion } from '@/types/novel'
+import type {
+  ChapterPlanRevisionScope, InterruptInfo, JsonValue, ReviewDecision, TitleSuggestion,
+} from '@/types/novel'
 import { requiresHumanReview } from '@/workflowReviewPolicy'
 import {
   ChapterOutlineReview, CreativeBriefReview, MacroOutlineReview, QualityReview,
   RevisionReview, SummaryReview, TitleReview,
 } from './ReviewContents'
 import { CharacterDesignReview } from './CharacterDesignReview'
+import { ChapterPlanReview } from './ChapterPlanReview'
 import { NovelPlanProposalReview } from './NovelPlanProposalReview'
 import {
   outlineFrom, proposalPayload, summaryReviewDetails, summaryTextsDistinct, titleCandidates,
@@ -28,6 +31,7 @@ function proposalDecision(
   interrupt: InterruptInfo,
   decision: ReviewDecision['decision'],
   value?: unknown,
+  scope?: ChapterPlanRevisionScope,
 ): ReviewDecision | undefined {
   const proposalId = proposalIdentity(interrupt)
   if (!proposalId) return undefined
@@ -35,7 +39,9 @@ function proposalDecision(
   if (decision === 'regenerate') {
     return { proposal_id: proposalId, decision, ...(typeof value === 'string' ? { feedback: value } : {}) }
   }
-  if (decision === 'revise') return { proposal_id: proposalId, decision, instruction: String(value || '') }
+  if (decision === 'revise') {
+    return { proposal_id: proposalId, decision, instruction: String(value || ''), ...(scope ? { scope } : {}) }
+  }
   return { proposal_id: proposalId, decision, value: value as JsonValue }
 }
 
@@ -64,6 +70,7 @@ function primaryLabel(action: string): string {
   if (action === 'review_or_modify_character_design') return '确认角色设计'
   if (['review_or_modify_novel_plan', 'review_novel_plan'].includes(action)) return '确认整书规划'
   if (action === 'review_or_provide_chapter_outline') return '使用细纲，生成正文'
+  if (action === 'review_or_modify_chapter_plan') return '确认战术与细纲，生成正文'
   if (action === 'review_reflection_issues') return '接受本章'
   if (action === 'ready_for_next_chapter') return '生成下一章'
   if (action === 'confirm_revision') return '接受修订'
@@ -85,6 +92,9 @@ function reviewContent(interrupt: InterruptInfo, title: TitleActions) {
   if (['review_or_modify_novel_plan', 'review_novel_plan'].includes(interrupt.action)
     || interrupt.proposal?.kind === 'novel_plan') {
     return <NovelPlanProposalReview interrupt={interrupt} />
+  }
+  if (interrupt.action === 'review_or_modify_chapter_plan' || interrupt.proposal?.kind === 'chapter_plan') {
+    return <ChapterPlanReview interrupt={interrupt} />
   }
   if (interrupt.action === 'review_or_modify_outline') return <MacroOutlineReview interrupt={interrupt} />
   if (interrupt.action === 'review_or_provide_chapter_outline') return <ChapterOutlineReview interrupt={interrupt} />
@@ -140,6 +150,31 @@ function SummaryRepairActions({ interrupt, onResume }: Omit<Props, 'autoMode' | 
 
 interface InstructionProps { interrupt: InterruptInfo; onResume: (value: unknown) => void }
 
+const chapterPlanScopes = [
+  { label: '仅近期战术', value: 'tactical' },
+  { label: '仅当前章细纲', value: 'chapter_outline' },
+  { label: '两者一起', value: 'both' },
+] as const
+
+function ChapterPlanInstructionEditor({ interrupt, onResume }: InstructionProps) {
+  const [scope, setScope] = useState<ChapterPlanRevisionScope>('both')
+  const [instruction, setInstruction] = useState('')
+  const submit = () => {
+    const text = instruction.trim()
+    if (!text) return
+    onResume(proposalDecision(interrupt, 'revise', text, scope) || text)
+    setInstruction('')
+  }
+  return <div className="review-instruction chapter-plan-instruction">
+    <label>修改范围<Segmented block value={scope} options={[...chapterPlanScopes]}
+      onChange={(value) => setScope(value as ChapterPlanRevisionScope)} /></label>
+    <Input.TextArea aria-label="章节计划修改要求" value={instruction}
+      onChange={(event) => setInstruction(event.target.value)} placeholder="说明要调整的战术或细纲，不会直接修改原始 JSON"
+      autoSize={{ minRows: 2, maxRows: 5 }} />
+    <Button disabled={!instruction.trim()} onClick={submit}>按范围重新生成</Button>
+  </div>
+}
+
 function InstructionEditor({ interrupt, onResume }: InstructionProps) {
   const [instruction, setInstruction] = useState('')
   const submit = () => {
@@ -165,8 +200,10 @@ function StandardActions({ interrupt, onResume, acceptDisabled }: StandardAction
   const accept = () => onResume(decisionValue(interrupt, 'accept'))
   const regenerate = () => onResume(decisionValue(interrupt, 'regenerate'))
   const canRegenerate = interrupt.action !== 'ready_for_next_chapter'
+  const acceptLabel = interrupt.proposal?.kind === 'chapter_plan'
+    ? '确认战术与细纲，生成正文' : primaryLabel(interrupt.action)
   return <div className="interrupt-actions">
-    <Button type="primary" disabled={acceptDisabled} onClick={accept}>{primaryLabel(interrupt.action)}</Button>
+    <Button type="primary" disabled={acceptDisabled} onClick={accept}>{acceptLabel}</Button>
     {canRegenerate && <Button onClick={regenerate}>重新生成</Button>}
   </div>
 }
@@ -175,6 +212,8 @@ export function WorkflowReview({ interrupt, autoMode, onResume }: Props) {
   if (!interrupt) return null
   const novelPlanReview = ['review_or_modify_novel_plan', 'review_novel_plan'].includes(interrupt.action)
     || interrupt.proposal?.kind === 'novel_plan'
+  const chapterPlanReview = interrupt.action === 'review_or_modify_chapter_plan'
+    || interrupt.proposal?.kind === 'chapter_plan'
   const humanReview = requiresHumanReview(interrupt.action, interrupt.proposal?.kind)
   if (autoMode && !humanReview) return null
   const titleActions = {
@@ -202,6 +241,8 @@ export function WorkflowReview({ interrupt, autoMode, onResume }: Props) {
       : humanReview ? <QualityActions interrupt={interrupt} onResume={onResume} />
       : titleReview ? null
       : <StandardActions interrupt={interrupt} onResume={onResume} acceptDisabled={!summaryComplete} />)}
-    {canInstruct && (!humanReview || summaryRequired || novelPlanReview) && <InstructionEditor interrupt={interrupt} onResume={onResume} />}
+    {chapterPlanReview ? <ChapterPlanInstructionEditor interrupt={interrupt} onResume={onResume} />
+      : canInstruct && (!humanReview || summaryRequired || novelPlanReview)
+        && <InstructionEditor interrupt={interrupt} onResume={onResume} />}
   </section>
 }

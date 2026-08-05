@@ -8,6 +8,7 @@ from langgraph.types import Command
 
 from application.continuity import build_story_bible
 from application.errors import RetryableWorkflowError
+from application.feature_policy import require_planning_v1
 from application.prompts.revision_prompts import (
     PATCH_SCHEMA,
     PATCH_TEMPERATURE,
@@ -284,6 +285,10 @@ async def revision_node(
     ]
 ]:
     """根据服务端质量决策执行局部 Patch 或全文重构。"""
+    await require_planning_v1(
+        config,
+        workflow_schema_version=int(state.get("workflow_schema_version") or 2),
+    )
     chapter = state.get("current_chapter_index", 0) + 1
     if proposal_matches(state, "revision", chapter):
         return Command(goto="revision_review_node")

@@ -243,6 +243,7 @@ class PlanExecution:
     fulfillment: dict[str, Any]
     drift_severity: str = "none"
     updated_at: datetime = field(default_factory=_utc_now)
+    tactical_version: int | None = None
 
     def __post_init__(self) -> None:
         errors: list[str] = []
@@ -252,6 +253,8 @@ class PlanExecution:
             errors.append("执行记录计划版本必须大于等于 1")
         if self.actual_words < 0:
             errors.append("执行记录实际字数不得为负数")
+        if self.tactical_version is not None and self.tactical_version < 1:
+            errors.append("执行记录战术版本必须大于等于 1")
         if self.drift_severity not in {"none", "minor", "major"}:
             errors.append("执行记录漂移等级无效")
         if not self.status:
@@ -274,6 +277,11 @@ class PlanExecution:
             fulfillment=dict(payload.get("fulfillment") or {}),
             drift_severity=str(payload.get("drift_severity") or "none"),
             updated_at=_parse_datetime(payload.get("updated_at")),
+            tactical_version=(
+                int(payload["tactical_version"])
+                if payload.get("tactical_version") is not None
+                else None
+            ),
         )
 
 
@@ -338,8 +346,8 @@ def _scale_errors(scale: ScaleContract) -> list[str]:
         scale.target_total_words / max(scale.target_chapters, 1)
     ):
         errors.append("平均章字数必须由目标总字数和章节数计算")
-    if not 0 <= scale.lock_window <= MAX_CHAPTERS:
-        errors.append("锁定窗口必须在 0 到 200 章之间")
+    if scale.lock_window != DEFAULT_LOCK_WINDOW:
+        errors.append(f"锁定窗口固定为 {DEFAULT_LOCK_WINDOW} 章")
     return errors
 
 

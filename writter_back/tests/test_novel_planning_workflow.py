@@ -10,6 +10,7 @@ from uuid import uuid4
 import pytest
 from fastapi import HTTPException
 
+from api.routers import workflow_router
 from api.routers.workflow_router import WorkflowInvokeRequest, _prepare_request
 from application.agents.novel_plan_node import (
     novel_plan_finalize_node,
@@ -24,6 +25,7 @@ from application.prompts.chapter_outline_prompts import build_chapter_outline_pr
 from application.prompts.novel_plan_prompts import BLUEPRINT_SCHEMA, VOLUME_SLOTS_SCHEMA
 from service.entities.identity import TenantContext
 from service.value_objects.novel_plan import NovelPlan, ScaleContract
+from service.value_objects.progress import Progress
 
 
 def _ranges(chapters: int) -> list[tuple[int, int]]:
@@ -96,10 +98,12 @@ class PlanRepository:
         self.latest: NovelPlan | None = None
         self.executions = []
         self.legacy_chapters = legacy_chapters or []
+        self.idempotency_keys: list[str] = []
 
-    async def accept_plan(self, _tenant, _novel, plan, expected, **_kwargs):
+    async def accept_plan(self, _tenant, _novel, plan, expected, **kwargs):
         current = self.latest.version if self.latest else 0
         assert current == expected
+        self.idempotency_keys.append(kwargs["idempotency_key"])
         self.latest = replace(plan, version=expected + 1)
         return self.latest
 
@@ -115,6 +119,7 @@ def _config(llm: PlanningLLM, repository: PlanRepository, auto: bool = True) -> 
     return {"configurable": {
         "llm_config": {"llm_instance": llm}, "novel_repository": repository,
         "tenant_id": str(uuid4()), "novel_id": str(uuid4()), "auto_mode": auto,
+        "novel_planning_v1_enabled": True,
     }}
 
 
@@ -147,8 +152,10 @@ async def _generated_plan(
         state["pending_proposal_decision"] = {
             "proposal_id": proposal["proposal_id"], "decision": "accept",
         }
+    proposal_id = state["pending_proposal"]["proposal_id"]
     command = await novel_plan_review_node(state, config)
     state.update(command.update)
+    assert repository.idempotency_keys[-1] == proposal_id
     return NovelPlan.from_dict(state["novel_plan"]), llm, repository, state
 
 
@@ -223,6 +230,7 @@ async def test_minor_drift_auto_reschedules_only_outside_lock_window() -> None:
     command = await plan_reconciliation_node(state, _config(PlanningLLM(12, 50_400), repository))
     accepted = NovelPlan.from_dict(command.update["novel_plan"])
     assert command.goto == "progress_check_node" and accepted.version == 2
+    assert repository.idempotency_keys[-1] == "auto-drift:plan:1:chapter:1"
     assert all(asdict(accepted.chapter_slots[index - 1]) == original[index] for index in range(1, 7))
     assert "延后线索" in accepted.chapter_slots[6].must_happen
 
@@ -276,10 +284,58 @@ async def test_planning_flag_uses_schema_five_and_missing_plan_route(monkeypatch
     )
     quota = SimpleNamespace(reserve=AsyncMock())
     prepared, *_ = await _prepare_request(
-        WorkflowInvokeRequest(input={}), _tenant_context(), str(uuid4()), service, quota,
+        WorkflowInvokeRequest(input={}), _tenant_context(planning=True), str(uuid4()), service, quota,
     )
     assert prepared["workflow_schema_version"] == 5
-    assert _route({"total_outline": {"total_chapters": 12}})[0] == "novel_plan_initialize_node"
+    assert _route({
+        "total_outline": {"total_chapters": 12},
+        "workflow_schema_version": 5,
+    })[0] == "novel_plan_initialize_node"
+
+
+@pytest.mark.asyncio
+async def test_persisted_major_drift_forces_human_replanning(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "api.routers.workflow_router.settings.NOVEL_PLANNING_V1_ENABLED", True
+    )
+    plan, _llm, _repository, _state_value = await _generated_plan(12, 50_400)
+    plan = replace(plan, version=3)
+    repository = SimpleNamespace(get_latest_plan=AsyncMock(return_value=plan))
+    service = SimpleNamespace(
+        repository=repository,
+        set_auto_mode=lambda *_args: None,
+        get_workflow_run_id=AsyncMock(return_value="existing-run"),
+    )
+    novel = SimpleNamespace(
+        novel_type="suspense",
+        progress=Progress(
+            current_chapter=4,
+            total_chapters=12,
+            plan_version=3,
+            plan_status="needs_review",
+            drift_severity="major",
+        ),
+        title="雨夜回信",
+        summary="",
+        total_outline=None,
+    )
+
+    prepared, *_ = await _prepare_request(
+        WorkflowInvokeRequest(input={}),
+        _tenant_context(planning=True),
+        str(uuid4()),
+        service,
+        SimpleNamespace(reserve=AsyncMock()),
+        novel,
+    )
+
+    assert prepared["story_state_needs_reconciliation"] is True
+    assert prepared["plan_replan_request"] == {
+        "expected_version": 3,
+        "scope": "future",
+        "instruction": "根据已记录的重大结构偏差重排未来计划",
+        "trigger": "drift",
+    }
 
 
 @pytest.mark.asyncio
@@ -300,16 +356,148 @@ async def test_user_replan_rejects_stale_expected_version(monkeypatch) -> None:
 
     with pytest.raises(HTTPException) as raised:
         await _prepare_request(
-            request, _tenant_context(), str(uuid4()), service,
+            request, _tenant_context(planning=True), str(uuid4()), service,
             SimpleNamespace(reserve=AsyncMock()),
         )
     assert raised.value.status_code == 409
     assert raised.value.detail["code"] == "plan_version_conflict"
 
 
-def _tenant_context() -> TenantContext:
+@pytest.mark.asyncio
+async def test_replan_ignores_client_supplied_workflow_run_id(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "api.routers.workflow_router.settings.NOVEL_PLANNING_V1_ENABLED", True
+    )
+    plan, _llm, _repository, _state_value = await _generated_plan(12, 50_400)
+    repository = SimpleNamespace(get_latest_plan=AsyncMock(return_value=plan))
+    service = SimpleNamespace(
+        repository=repository,
+        set_auto_mode=lambda *_args: None,
+        get_workflow_run_id=AsyncMock(return_value="trusted-existing-run"),
+    )
+    quota = SimpleNamespace(reserve=AsyncMock())
+    malicious = "00000000-0000-0000-0000-000000000001"
+    request = WorkflowInvokeRequest(
+        input={"workflow_run_id": malicious},
+        command={"plan_replan": {
+            "expected_version": plan.version,
+            "scope": "future",
+            "instruction": "调整节奏",
+        }},
+    )
+
+    prepared, *_ = await _prepare_request(
+        request,
+        _tenant_context(planning=True),
+        str(uuid4()),
+        service,
+        quota,
+        command_id="server-command",
+    )
+
+    assert prepared["workflow_run_id"] != malicious
+    assert prepared["workflow_run_id"] != "trusted-existing-run"
+    assert quota.reserve.await_args.args[1] == prepared["workflow_run_id"]
+
+
+@pytest.mark.asyncio
+async def test_disabled_schema_five_rejects_before_checkpoint_reconciliation(
+    monkeypatch,
+) -> None:
+    checkpoint_ready = AsyncMock()
+    monkeypatch.setattr(
+        workflow_router,
+        "_authorize_thread",
+        AsyncMock(return_value=object()),
+    )
+    monkeypatch.setattr(
+        workflow_router,
+        "_claim_command",
+        AsyncMock(return_value=SimpleNamespace(command_id="command-1")),
+    )
+    monkeypatch.setattr(workflow_router, "_acquire", AsyncMock())
+    monkeypatch.setattr(workflow_router, "_ensure_checkpoint_ready", checkpoint_ready)
+    monkeypatch.setattr(workflow_router, "_release_command_or_http", AsyncMock())
+    orchestrator = SimpleNamespace(
+        set_active_command=lambda *_args: None,
+        get_workflow_schema_version=AsyncMock(return_value=5),
+        finish=lambda *_args: None,
+    )
+
+    with pytest.raises(HTTPException) as raised:
+        await workflow_router._prepare_execution(
+            str(uuid4()),
+            WorkflowInvokeRequest(input={}),
+            "command-key",
+            _tenant_context(planning=False),
+            orchestrator,
+            SimpleNamespace(),
+            SimpleNamespace(),
+            SimpleNamespace(),
+        )
+
+    assert raised.value.detail["code"] == "planning_temporarily_disabled"
+    checkpoint_ready.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_schema_five_checkpoint_pauses_when_effective_flag_is_off(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "api.routers.workflow_router.settings.NOVEL_PLANNING_V1_ENABLED", False
+    )
+    service = SimpleNamespace(
+        get_workflow_schema_version=AsyncMock(return_value=5),
+        set_auto_mode=lambda *_args: None,
+    )
+    quota = SimpleNamespace(reserve=AsyncMock())
+    with pytest.raises(HTTPException) as raised:
+        await _prepare_request(
+            WorkflowInvokeRequest(input={}),
+            _tenant_context(planning=True),
+            str(uuid4()),
+            service,
+            quota,
+        )
+    assert raised.value.status_code == 503
+    assert raised.value.detail["code"] == "planning_temporarily_disabled"
+    quota.reserve.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_completed_legacy_novel_does_not_trigger_plan_upgrade_quota(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "api.routers.workflow_router.settings.NOVEL_PLANNING_V1_ENABLED", True
+    )
+    novel = SimpleNamespace(progress=SimpleNamespace(is_complete=lambda: True))
+    service = SimpleNamespace(
+        get_workflow_schema_version=AsyncMock(return_value=None),
+        set_auto_mode=lambda *_args: None,
+    )
+    quota = SimpleNamespace(reserve=AsyncMock())
+
+    with pytest.raises(HTTPException) as raised:
+        await _prepare_request(
+            WorkflowInvokeRequest(input={}),
+            _tenant_context(planning=True),
+            str(uuid4()),
+            service,
+            quota,
+            novel,
+        )
+
+    assert raised.value.status_code == 409
+    assert raised.value.detail["code"] == "novel_completed"
+    quota.reserve.assert_not_awaited()
+
+
+def _tenant_context(*, planning: bool = False) -> TenantContext:
     return TenantContext(
         tenant_id=uuid4(), tenant_name="测试租户", user_id=uuid4(),
         role="owner", is_platform_admin=False, ai_enabled=True,
         monthly_generation_limit=30,
+        novel_planning_v1_enabled=planning,
     )

@@ -22,7 +22,6 @@ from application.proposals import (
 )
 from application.schemas.agent_state import NovelAgentState
 from application.streaming import emit_workflow_event
-from config import settings
 
 logger = logging.getLogger("uvicorn")
 
@@ -120,7 +119,7 @@ def _reuse_existing_outline(
     planning_needed = not state.get("novel_plan") or state.get("plan_replan_request")
     destination = (
         "novel_plan_initialize_node"
-        if settings.NOVEL_PLANNING_V1_ENABLED and planning_needed
+        if _planning_enabled(state) and planning_needed
         else "persist_node"
     )
     return Command(
@@ -135,6 +134,10 @@ def _reuse_existing_outline(
 def _needs_character_design(state: NovelAgentState) -> bool:
     design = state.get("character_design")
     return not isinstance(design, dict) or not design.get("characters")
+
+
+def _planning_enabled(state: NovelAgentState) -> bool:
+    return int(state.get("workflow_schema_version") or 2) >= 5
 
 
 async def _generate_outline_proposal(
@@ -219,7 +222,7 @@ async def outline_review_node(
     selected = _prepare_outline(state, selected)
     destination = (
         "novel_plan_initialize_node"
-        if settings.NOVEL_PLANNING_V1_ENABLED
+        if _planning_enabled(state)
         else "persist_node"
     )
     return Command(

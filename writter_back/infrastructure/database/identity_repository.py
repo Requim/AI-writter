@@ -60,6 +60,16 @@ class IdentityRepository:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]):
         self.session_factory = session_factory
 
+    async def tenant_novel_planning_enabled(self, tenant_id: UUID) -> bool:
+        async with self.session_factory() as session:
+            value = await session.scalar(
+                select(TenantModel.novel_planning_v1_enabled).where(
+                    TenantModel.id == tenant_id,
+                    TenantModel.status == "active",
+                )
+            )
+            return bool(value)
+
     async def register(
         self,
         email: str,
@@ -138,6 +148,7 @@ class IdentityRepository:
                     "ai_enabled": tenant.ai_enabled,
                     "monthly_generation_limit": tenant.monthly_generation_limit,
                     "monthly_generation_unlimited": tenant.monthly_generation_unlimited,
+                    "novel_planning_v1_enabled": tenant.novel_planning_v1_enabled,
                 }
                 for tenant, role in rows
             ]
@@ -171,6 +182,7 @@ class IdentityRepository:
                 ai_enabled=tenant.ai_enabled,
                 monthly_generation_limit=tenant.monthly_generation_limit,
                 monthly_generation_unlimited=tenant.monthly_generation_unlimited,
+                novel_planning_v1_enabled=tenant.novel_planning_v1_enabled,
             )
 
     async def create_refresh_session(
@@ -548,6 +560,7 @@ class IdentityRepository:
                     "ai_enabled": tenant.ai_enabled,
                     "monthly_generation_limit": tenant.monthly_generation_limit,
                     "monthly_generation_unlimited": tenant.monthly_generation_unlimited,
+                    "novel_planning_v1_enabled": tenant.novel_planning_v1_enabled,
                     "member_count": members,
                     "usage": used,
                 }

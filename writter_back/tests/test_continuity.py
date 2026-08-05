@@ -8,7 +8,7 @@ from uuid import uuid4
 import pytest
 
 from application.agents.chapter_writer_node import _build_prev_scene_digest
-from application.agents.persist_node import persist_node
+from application.agents.persist_node import _chapter_progress, persist_node
 from application.continuity import (
     build_budgeted_context,
     build_story_bible,
@@ -23,6 +23,7 @@ from application.prompts.memory_prompts import (
     build_story_state_prompt,
 )
 from application.prompts.reflection_prompts import build_aggregation_prompt
+from service.value_objects.progress import Progress
 
 
 def test_compact_text_preserves_ending() -> None:
@@ -223,3 +224,33 @@ async def test_persist_node_commits_all_continuity_artifacts_together(monkeypatc
         if event_type == "status" and data.get("status") == "started"
     ]
     assert started_stages == ["chapter_summary", "story_state"]
+
+
+@pytest.mark.asyncio
+async def test_rewrite_preserves_existing_novel_progress() -> None:
+    existing = Progress(
+        current_chapter=8,
+        total_chapters=12,
+        percentage=66.67,
+        status="writing",
+        completed_words=33_600,
+    )
+    repository = SimpleNamespace(
+        find_by_id=AsyncMock(return_value=SimpleNamespace(progress=existing))
+    )
+
+    progress = await _chapter_progress(
+        repository,
+        str(uuid4()),
+        str(uuid4()),
+        {"rewrite_chapter_id": str(uuid4())},
+        {"word_count": 4200},
+        3,
+        25.0,
+        False,
+    )
+
+    assert progress.current_chapter == 8
+    assert progress.total_chapters == 12
+    assert progress.completed_words == 33_600
+    assert progress.status == "writing"

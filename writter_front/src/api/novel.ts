@@ -10,6 +10,8 @@ import type {
   NovelResponse,
   PlanningOptions,
   ProgressResponse,
+  TacticalPlanResponse,
+  TacticalPlanVersionSummary,
   WorkflowSnapshot,
 } from '@/types/novel'
 
@@ -27,6 +29,10 @@ export const novelApi = {
   plan: (novelId: string) => data<NovelPlan | null>(apiClient.get(`/v1/novels/${novelId}/plan`)),
   planVersions: (novelId: string) =>
     data<NovelPlanVersionSummary[]>(apiClient.get(`/v1/novels/${novelId}/plan/versions`)),
+  tacticalPlan: (novelId: string) =>
+    data<TacticalPlanResponse>(apiClient.get(`/v1/novels/${novelId}/tactical-plan`)),
+  tacticalPlanVersions: (novelId: string) =>
+    data<TacticalPlanVersionSummary[]>(apiClient.get(`/v1/novels/${novelId}/tactical-plan/versions`)),
   progress: (novelId: string) =>
     data<ProgressResponse>(apiClient.get(`/v1/novels/${novelId}/progress`)),
   chapters: (novelId: string) =>

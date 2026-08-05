@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator, Mapping
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
-from typing import Any, TypeAlias
+from typing import Any, NoReturn, TypeAlias
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
@@ -28,14 +28,15 @@ from api.workflow_commands import (
 from application.checkpoint_reconciliation import reconcile_pending_checkpoint
 from application.errors import (
     InvalidReviewDecisionError,
+    PlanningTemporarilyDisabledError,
     RetryableWorkflowError,
     StaleWorkflowDecisionError,
 )
 from application.events import WorkflowEvent
+from application.feature_policy import feature_policy
 from application.orchestrator import NovelOrchestrator
 from application.proposals import (
     CURRENT_WORKFLOW_SCHEMA_VERSION,
-    LEGACY_WORKFLOW_SCHEMA_VERSION,
 )
 from application.quota_service import QuotaService
 from config import settings
@@ -47,6 +48,7 @@ from infrastructure.database.repository import PostgresNovelRepository
 from service.entities.identity import TenantContext
 from service.entities.novel import Novel
 from service.ports.novel_plan_repository import PlanVersionConflictError
+from service.ports.tactical_plan_repository import TacticalPlanVersionConflictError
 from service.ports.workflow_command_store import (
     WorkflowCommandStore,
     WorkflowCommandStoreUnavailable,
@@ -131,6 +133,10 @@ def _seed_initial_input(input_data: dict[str, Any], novel: Novel) -> None:
         input_data.setdefault("current_chapter_index", novel.progress.current_chapter)
         input_data.setdefault("progress_percentage", novel.progress.percentage)
         input_data.setdefault("is_completed", novel.progress.is_complete())
+        input_data.setdefault(
+            "story_state_needs_reconciliation",
+            novel.progress.plan_status in {"needs_reconciliation", "needs_review"},
+        )
     if novel.title:
         input_data.setdefault("title", novel.title)
     if novel.summary:
@@ -177,8 +183,11 @@ def _plan_replan_command(raw: Any) -> dict[str, Any] | None:
         raise HTTPException(status_code=422, detail="plan_replan 必须是对象")
     scope = str(raw.get("scope") or "")
     instruction = str(raw.get("instruction") or "").strip()
+    expected_value = raw.get("expected_version")
+    if isinstance(expected_value, bool) or not isinstance(expected_value, (int, str)):
+        raise HTTPException(status_code=422, detail="expected_version 无效")
     try:
-        expected = int(raw.get("expected_version"))
+        expected = int(expected_value)
     except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=422, detail="expected_version 无效") from exc
     if scope not in {"future", "volume", "scale"} or expected < 1 or not instruction:
@@ -213,7 +222,14 @@ async def _prepare_fresh_input(
     context: TenantContext, thread_id: str, orchestrator: NovelOrchestrator,
     quota: QuotaService, novel: Novel | None, command_id: str,
 ) -> None:
-    input_data["workflow_schema_version"] = _new_workflow_schema_version()
+    if novel is not None and novel.progress.is_complete() and replan is None:
+        raise _command_error(
+            409,
+            "novel_completed",
+            "小说已经完结；章节重写请使用重写入口",
+            False,
+        )
+    input_data["workflow_schema_version"] = _new_workflow_schema_version(context)
     if novel is not None:
         _seed_initial_input(input_data, novel)
     latest_plan = await _seed_plan_input(input_data, orchestrator, context, thread_id)
@@ -221,11 +237,23 @@ async def _prepare_fresh_input(
         if latest_plan is None or latest_plan.version != replan["expected_version"]:
             raise _command_error(409, "plan_version_conflict", "计划版本已更新，请刷新后重试")
         input_data["plan_replan_request"] = replan
+    elif (
+        latest_plan is not None
+        and novel is not None
+        and novel.progress.plan_status == "needs_review"
+        and input_data["workflow_schema_version"] >= 5
+    ):
+        input_data["plan_replan_request"] = {
+            "expected_version": latest_plan.version,
+            "scope": "future",
+            "instruction": "根据已记录的重大结构偏差重排未来计划",
+            "trigger": "drift",
+        }
     existing_run_id = await orchestrator.get_workflow_run_id(context, thread_id)
     needs_upgrade = latest_plan is None and bool(novel and novel.progress.current_chapter)
     planning_charge = replan is not None or needs_upgrade
     new_run_id = _planning_run_id(context, thread_id, command_id) if planning_charge else None
-    run_id = str(input_data.get("workflow_run_id") or new_run_id or existing_run_id or uuid4())
+    run_id = str(new_run_id or existing_run_id or uuid4())
     input_data.update(workflow_run_id=run_id, novel_id=thread_id)
     try:
         await quota.reserve(context, run_id, "outline", -1)
@@ -233,10 +261,31 @@ async def _prepare_fresh_input(
         raise HTTPException(status_code=429, detail={"code": "quota_exceeded", "message": str(exc)}) from exc
 
 
-def _new_workflow_schema_version() -> int:
-    if settings.NOVEL_PLANNING_V1_ENABLED:
-        return CURRENT_WORKFLOW_SCHEMA_VERSION
-    return 4 if settings.WORKFLOW_REVIEW_V3_ENABLED else LEGACY_WORKFLOW_SCHEMA_VERSION
+def _new_workflow_schema_version(context: TenantContext) -> int:
+    return feature_policy.workflow_schema_version(context)
+
+
+async def _ensure_planning_available(
+    orchestrator: NovelOrchestrator,
+    context: TenantContext,
+    thread_id: str,
+    replan: dict[str, Any] | None,
+) -> None:
+    enabled = feature_policy.novel_planning_v1_enabled(context)
+    getter = getattr(orchestrator, "get_workflow_schema_version", None)
+    checkpoint_schema = await getter(context, thread_id) if callable(getter) else None
+    if (checkpoint_schema or 0) >= CURRENT_WORKFLOW_SCHEMA_VERSION and not enabled:
+        raise _command_error(
+            503,
+            "planning_temporarily_disabled",
+            "整书规划当前已暂停，创作现场已保留，请在功能恢复后继续",
+        )
+    if replan is not None and not enabled:
+        raise _command_error(
+            503,
+            "planning_temporarily_disabled",
+            "整书重规划当前未对该租户启用",
+        )
 
 
 def _requested_auto_mode(request: WorkflowInvokeRequest) -> bool:
@@ -278,9 +327,13 @@ async def _prepare_request(
     input_data = dict(request.input or {})
     command = dict(request.command or {})
     input_data.pop("tenant_id", None)
+    input_data.pop("workflow_run_id", None)
     command.pop("tenant_id", None)
     auto_mode = command.pop("_auto_mode", input_data.pop("_auto_mode", False))
     replan = _plan_replan_command(command.pop("plan_replan", None))
+    await _ensure_planning_available(
+        orchestrator, context, thread_id, replan
+    )
     is_retry = command.pop("retry", False) is True
     is_resume = "resume" in command
     if sum((is_retry, is_resume, replan is not None)) > 1:
@@ -313,7 +366,11 @@ def _workflow_conflict(exc: Exception) -> HTTPException:
     code = (
         "plan_version_conflict"
         if isinstance(exc, PlanVersionConflictError)
-        else "stale_workflow_decision"
+        else (
+            "tactical_version_conflict"
+            if isinstance(exc, TacticalPlanVersionConflictError)
+            else "stale_workflow_decision"
+        )
     )
     return _command_error(409, code, str(exc))
 
@@ -329,25 +386,32 @@ def _is_provider_connection_error(exc: Exception) -> bool:
     )
 
 
+def _workflow_contract_error(exc: Exception) -> dict[str, Any] | None:
+    codes = (
+        (StaleWorkflowDecisionError, "stale_workflow_decision"),
+        (PlanVersionConflictError, "plan_version_conflict"),
+        (TacticalPlanVersionConflictError, "tactical_version_conflict"),
+    )
+    for error_type, code in codes:
+        if isinstance(exc, error_type):
+            return {"code": code, "message": str(exc), "retryable": True}
+    return None
+
+
 def _public_error_data(exc: Exception) -> dict[str, Any]:
-    if isinstance(exc, StaleWorkflowDecisionError):
-        return {
-            "code": "stale_workflow_decision",
-            "message": str(exc),
-            "retryable": True,
-        }
-    if isinstance(exc, PlanVersionConflictError):
-        return {
-            "code": "plan_version_conflict",
-            "message": str(exc),
-            "retryable": True,
-        }
+    contract_error = _workflow_contract_error(exc)
+    if contract_error:
+        return contract_error
     if isinstance(exc, InvalidReviewDecisionError):
         return {
             "code": "invalid_workflow_decision",
             "message": str(exc),
             "retryable": False,
         }
+    if isinstance(exc, PlanningTemporarilyDisabledError):
+        return {"code": exc.code, "message": str(exc), "retryable": True}
+    if isinstance(exc, (QuotaExceededError, AIUnavailableError)):
+        return {"code": "quota_exceeded", "message": str(exc), "retryable": False}
     if isinstance(exc, RetryableWorkflowError):
         return {
             "code": "structured_output_invalid",
@@ -535,6 +599,13 @@ async def _prepare_execution(
         bind_command = getattr(orchestrator, "set_active_command", None)
         if callable(bind_command):
             bind_command(context, thread_id, command.command_id)
+        raw_command = request.command if isinstance(request.command, Mapping) else {}
+        replan_requested: dict[str, Any] | None = (
+            {} if raw_command.get("plan_replan") is not None else None
+        )
+        await _ensure_planning_available(
+            orchestrator, context, thread_id, replan_requested
+        )
         await _ensure_checkpoint_ready(repository, orchestrator, context, thread_id)
         prepared = await _prepare_request(
             request, context, thread_id, orchestrator, quota, novel, command.command_id
@@ -605,6 +676,33 @@ async def _settle_invocation(
     await _release_command_or_http(command_store, context, thread_id, command)
 
 
+def _raise_invoke_error(exc: BaseException, thread_id: str) -> NoReturn:
+    if isinstance(exc, asyncio.TimeoutError):
+        raise HTTPException(status_code=504, detail="工作流执行超时") from exc
+    if isinstance(exc, asyncio.CancelledError):
+        raise HTTPException(status_code=409, detail="工作流已取消") from exc
+    if isinstance(exc, (
+        StaleWorkflowDecisionError,
+        PlanVersionConflictError,
+        TacticalPlanVersionConflictError,
+    )):
+        raise _workflow_conflict(exc) from exc
+    if isinstance(exc, PlanningTemporarilyDisabledError):
+        raise _command_error(503, exc.code, str(exc)) from exc
+    if isinstance(exc, (QuotaExceededError, AIUnavailableError)):
+        raise _command_error(429, "quota_exceeded", str(exc), False) from exc
+    if isinstance(exc, InvalidReviewDecisionError):
+        raise _command_error(
+            422, "invalid_workflow_decision", str(exc), False
+        ) from exc
+    if isinstance(exc, HTTPException):
+        raise exc
+    if not isinstance(exc, Exception):
+        raise exc
+    logger.exception("Workflow invocation failed for %s", thread_id, exc_info=exc)
+    raise HTTPException(status_code=500, detail=_public_error(exc)) from exc
+
+
 @router.post("/{thread_id}/invoke", deprecated=True)
 async def invoke_workflow(
     thread_id: str,
@@ -634,21 +732,8 @@ async def invoke_workflow(
         result = await _invoke_prepared(prepared, orchestrator, context, thread_id)
         applied = True
         return result
-    except asyncio.TimeoutError as exc:
-        raise HTTPException(status_code=504, detail="工作流执行超时") from exc
-    except asyncio.CancelledError:
-        raise HTTPException(status_code=409, detail="工作流已取消")
-    except (StaleWorkflowDecisionError, PlanVersionConflictError) as exc:
-        raise _workflow_conflict(exc) from exc
-    except InvalidReviewDecisionError as exc:
-        raise _command_error(
-            422, "invalid_workflow_decision", str(exc), False
-        ) from exc
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.exception("Workflow invocation failed for %s", thread_id)
-        raise HTTPException(status_code=500, detail=_public_error(exc)) from exc
+    except (Exception, asyncio.CancelledError) as exc:
+        _raise_invoke_error(exc, thread_id)
     finally:
         try:
             orchestrator.finish(context, thread_id)

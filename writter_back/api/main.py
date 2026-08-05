@@ -48,6 +48,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             "max_retries": settings.LLM_MAX_RETRIES,
         },
         quota_service=quota_service,
+        tenant_planning_loader=identity_repository.tenant_novel_planning_enabled,
     )
     app.state.repository = repository
     app.state.identity_repository = identity_repository

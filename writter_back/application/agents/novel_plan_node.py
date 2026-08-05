@@ -10,6 +10,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
 
 from application.errors import InvalidReviewDecisionError, RetryableWorkflowError
+from application.feature_policy import require_planning_v1
 from application.planning import (
     build_plan,
     classify_drift,
@@ -42,6 +43,7 @@ from service.value_objects.novel_plan import (
     StoryArc,
     VolumePlan,
 )
+from service.value_objects.tactical_plan import TacticalWindow
 
 logger = logging.getLogger("uvicorn")
 
@@ -287,6 +289,7 @@ async def novel_plan_initialize_node(
     state: NovelAgentState, config: RunnableConfig
 ) -> Command[Literal["novel_plan_volume_node", "novel_plan_review_node"]]:
     """初始化可断点恢复的规划批次。"""
+    await require_planning_v1(config)
     if proposal_matches(state, "novel_plan"):
         return Command(goto="novel_plan_review_node")
     generation = state.get("plan_generation")
@@ -302,7 +305,7 @@ async def novel_plan_initialize_node(
     )
 
 
-def _volume_for_generation(generation: dict[str, Any]):
+def _volume_for_generation(generation: dict[str, Any]) -> VolumePlan:
     index = int(generation.get("next_volume_index", 0) or 0)
     volume_id = generation["generation_order"][index]
     raw = next(
@@ -389,6 +392,7 @@ async def novel_plan_volume_node(
     state: NovelAgentState, config: RunnableConfig
 ) -> Command[Literal["novel_plan_volume_node", "novel_plan_finalize_node"]]:
     """每次只生成一卷槽位，使成功批次进入 checkpoint。"""
+    await require_planning_v1(config)
     generation = dict(state.get("plan_generation") or {})
     volume = _volume_for_generation(generation)
     emit_workflow_event(
@@ -428,7 +432,7 @@ async def novel_plan_finalize_node(
     state: NovelAgentState, config: RunnableConfig
 ) -> Command[Literal["novel_plan_volume_node", "novel_plan_review_node"]]:
     """精确分配字数、全量校验并形成唯一计划提案。"""
-    del config
+    await require_planning_v1(config)
     generation = dict(state.get("plan_generation") or {})
     completed = int(state.get("current_chapter_index", 0) or 0)
     generation["completed_chapters"] = completed
@@ -457,7 +461,10 @@ def _proposal_plan(payload: Any) -> NovelPlan:
 
 
 async def _accept_plan(
-    plan: NovelPlan, generation: dict[str, Any], config: RunnableConfig
+    plan: NovelPlan,
+    generation: dict[str, Any],
+    idempotency_key: str,
+    config: RunnableConfig,
 ) -> NovelPlan:
     values = config["configurable"]
     repository = values.get("novel_repository")
@@ -472,6 +479,7 @@ async def _accept_plan(
         values.get("novel_id", ""),
         plan,
         expected,
+        idempotency_key=idempotency_key,
         created_by_user_id=str(user_id) if user_id else None,
         trigger_chapter=int(generation.get("completed_chapters", 0) or 0) or None,
         change_summary=str(generation.get("instruction") or generation.get("source") or ""),
@@ -497,6 +505,7 @@ async def novel_plan_review_node(
     state: NovelAgentState, config: RunnableConfig
 ) -> Command[Literal["novel_plan_initialize_node", "persist_node", "progress_check_node"]]:
     """审核计划提案；旧书升级、用户重规划与重大漂移强制人工确认。"""
+    await require_planning_v1(config)
     proposal = require_proposal(state, "novel_plan")
     generation = dict(state.get("plan_generation") or {})
     decision = decide_proposal(
@@ -521,7 +530,12 @@ async def novel_plan_review_node(
                 "pending_proposal_decision": None,
             },
         )
-    accepted = await _accept_plan(_proposal_plan(proposal["payload"]), generation, config)
+    accepted = await _accept_plan(
+        _proposal_plan(proposal["payload"]),
+        generation,
+        str(proposal["proposal_id"]),
+        config,
+    )
     return Command(
         goto=_review_return(generation),
         update={
@@ -539,7 +553,11 @@ async def novel_plan_review_node(
 def _fulfillment(state: NovelAgentState) -> dict[str, Any]:
     gate = state.get("quality_gate")
     if isinstance(gate, dict) and isinstance(gate.get("plan_fulfillment"), dict):
-        return dict(gate["plan_fulfillment"])
+        result = dict(gate["plan_fulfillment"])
+        tactical = gate.get("tactical_fulfillment")
+        if isinstance(tactical, dict):
+            result["tactical_fulfillment"] = dict(tactical)
+        return result
     value = state.get("plan_fulfillment")
     return dict(value) if isinstance(value, dict) else {}
 
@@ -565,7 +583,25 @@ def _execution(
     actual = int(completed.get("word_count", 0) or 0)
     severity = classify_drift(fulfillment, actual, slot.target_words)
     status = {"none": "fulfilled", "minor": "deferred", "major": "breached"}[severity]
-    return PlanExecution(chapter, plan.version, status, actual, fulfillment, severity)
+    return PlanExecution(
+        chapter,
+        plan.version,
+        status,
+        actual,
+        fulfillment,
+        severity,
+        tactical_version=_tactical_version(state),
+    )
+
+
+def _tactical_version(state: NovelAgentState) -> int | None:
+    raw = state.get("tactical_window")
+    if isinstance(raw, dict) and raw:
+        try:
+            return TacticalWindow.from_dict(raw).version or None
+        except (TypeError, ValueError):
+            pass
+    return None
 
 
 async def _accept_drift_candidate(
@@ -580,9 +616,15 @@ async def _accept_drift_candidate(
     user_id = getattr(context, "user_id", None)
     return await repository.accept_plan(
         values.get("tenant_id", ""), values.get("novel_id", ""), candidate,
-        plan.version, created_by_user_id=str(user_id) if user_id else None,
+        plan.version,
+        idempotency_key=_auto_drift_idempotency_key(plan.version, chapter),
+        created_by_user_id=str(user_id) if user_id else None,
         trigger_chapter=chapter, change_summary="章节轻微漂移自动顺延",
     )
+
+
+def _auto_drift_idempotency_key(plan_version: int, chapter: int) -> str:
+    return f"auto-drift:plan:{plan_version}:chapter:{chapter}"
 
 
 def _drift_replan_request(plan: NovelPlan, execution: PlanExecution) -> dict[str, Any]:

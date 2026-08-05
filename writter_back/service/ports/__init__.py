@@ -7,6 +7,10 @@ from .novel_plan_repository import (
     NovelPlanRepository,
     PlanVersionConflictError,
 )
+from .tactical_plan_repository import (
+    TacticalPlanRepository,
+    TacticalPlanVersionConflictError,
+)
 
 __all__ = [
     "LLMService",
@@ -16,4 +20,6 @@ __all__ = [
     "WorkflowCommandStore",
     "NovelPlanRepository",
     "PlanVersionConflictError",
+    "TacticalPlanRepository",
+    "TacticalPlanVersionConflictError",
 ]

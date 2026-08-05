@@ -198,6 +198,44 @@ describe('WorkflowPanel chapter outline', () => {
   })
 })
 
+describe('WorkflowPanel combined chapter plan', () => {
+  it('reviews tactics, hard constraints, coverage, and submits a scoped revision', () => {
+    const onResume = vi.fn()
+    render(<WorkflowPanel state={{
+      status: 'paused', connection: 'idle', draft: '', activeNode: 'chapter_plan_review_node', issues: [], events: [],
+      interrupt: {
+        action: 'review_or_modify_chapter_plan', chapter_number: 5, proposal_id: 'chapter-plan-5',
+        proposal: { proposal_id: 'chapter-plan-5', kind: 'chapter_plan', version: 1, chapter_number: 5,
+          payload: {
+            tactical_window: { schema_version: 1, version: 6, novel_plan_version: 3,
+              story_state_revision: 4, source: 'chapter_refresh', start_chapter: 5, end_chapter: 7,
+              volume_id: 'vol-1', window_objective: '验证证词并把压力推向中点', created_at: '2026-08-05T10:00:00Z',
+              beats: [{ chapter_number: 5, slot_ref: 'ch5', tactical_goal: '查验证词矛盾',
+                approach: '重访现场', bridge_from_previous: '承接匿名电话', pressure_escalation: '证人失踪',
+                exit_hook: '发现第二封信', pacing: '紧凑' }] },
+            current_slot: { chapter_number: 5, story_function: '中点前加压', must_happen: ['证人失踪'],
+              planned_state_delta: '主角转为主动追查', setup_ids: ['letter-2'], payoff_ids: [], target_words: 4200 },
+            execution_contract: { plan_version: 3, tactical_version: 6, chapter_number: 5,
+              obligation_coverage: { 'ch5:must:1': 2 }, state_delta_coverage: { 'ch5:state_delta': 3 },
+              setup_payoff_coverage: { 'ch5:setup:letter-2': 2 } },
+            chapter_outline: { title: '失踪证人的房间', chapter_goal: '查明证词为何自相矛盾',
+              key_events: ['重访现场', '证人失踪'], estimated_word_count: 4200 },
+          } },
+      },
+    }} autoMode={false} onResume={onResume} onRetry={vi.fn()} onCancel={vi.fn()} onRefresh={vi.fn()} />)
+    expect(screen.getByText('查验证词矛盾')).toBeInTheDocument()
+    expect(screen.getByText('ch5:must:1')).toBeInTheDocument()
+    expect(screen.getByText('失踪证人的房间')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('radio', { name: '仅当前章细纲' }))
+    fireEvent.change(screen.getByRole('textbox', { name: '章节计划修改要求' }), {
+      target: { value: '保留战术目标，强化场景内人物对抗' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: '按范围重新生成' }))
+    expect(onResume).toHaveBeenCalledWith({ proposal_id: 'chapter-plan-5', decision: 'revise',
+      scope: 'chapter_outline', instruction: '保留战术目标，强化场景内人物对抗' })
+  })
+})
+
 describe('WorkflowPanel titles', () => {
   it('keeps a legacy title selection local until explicit confirmation', () => {
     const onResume = vi.fn()

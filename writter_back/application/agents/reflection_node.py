@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator, model_v
 
 from application.continuity import build_story_bible, related_character_cards
 from application.errors import QualityGateReviewRequired, RetryableWorkflowError
+from application.feature_policy import require_planning_v1
 from application.prompts.reflection_prompts import (
     AGGREGATION_SCHEMA,
     CHUNK_REFLECTION_SCHEMA,
@@ -366,6 +367,7 @@ def _quality_gate(result: dict, content: str) -> tuple[dict, list[dict]]:
         "word_count_analysis": words.model_dump(), "hard_failures": sorted(hard_ids),
         "prompt_version": PROMPT_VERSION,
         "plan_fulfillment": _plan_fulfillment(result),
+        "tactical_fulfillment": _tactical_fulfillment(result),
         **audit,
     }
     return gate, issues
@@ -383,6 +385,19 @@ def _plan_fulfillment(result: dict[str, Any]) -> dict[str, Any]:
         "core_arc_breached": False,
         "ending_contract_breached": False,
         "scale_change_required": False,
+        "notes": "",
+    }
+    return {**defaults, **supplied}
+
+
+def _tactical_fulfillment(result: dict[str, Any]) -> dict[str, Any]:
+    value = result.get("tactical_fulfillment")
+    supplied = dict(value) if isinstance(value, dict) else {}
+    defaults = {
+        "tactical_goal_fulfilled": True,
+        "approach_followed": True,
+        "exit_hook_established": True,
+        "deviations": [],
         "notes": "",
     }
     return {**defaults, **supplied}
@@ -528,6 +543,10 @@ async def reflection_node(
     state: NovelAgentState, config: RunnableConfig
 ) -> Command[Literal["persist_node", "revision_node", "reflection_review_node"]]:
     """Generate one quality result; manual decisions run in a separate node."""
+    await require_planning_v1(
+        config,
+        workflow_schema_version=int(state.get("workflow_schema_version") or 2),
+    )
     chapter = state.get("current_chapter_index", 0) + 1
     if proposal_matches(state, "reflection", chapter):
         return Command(goto="reflection_review_node")

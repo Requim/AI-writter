@@ -207,12 +207,106 @@ export interface NovelPlan {
 export interface PlanExecution {
   chapter_number: number
   plan_version: number
+  tactical_version?: number | null
   status: string
   actual_words: number
   fulfillment: Record<string, JsonValue>
   drift_severity: 'none' | 'minor' | 'major' | string
   updated_at: string
 }
+
+export interface TacticalBeat {
+  chapter_number: number
+  slot_ref: string
+  tactical_goal: string
+  approach: string
+  bridge_from_previous: string
+  pressure_escalation: string
+  exit_hook: string
+  pacing: string
+}
+
+export interface TacticalWindow {
+  schema_version: number
+  version: number
+  novel_plan_version: number
+  story_state_revision: number
+  source: string
+  start_chapter: number
+  end_chapter: number
+  volume_id: string
+  window_objective: string
+  beats: TacticalBeat[]
+  created_at: string
+}
+
+export interface TacticalObligation {
+  id: string
+  event: string
+}
+
+export interface TacticalStateDelta {
+  id: string
+  value: string
+}
+
+export interface TacticalSetupRequirement {
+  id: string
+  setup_id: string
+}
+
+export interface TacticalPayoffRequirement {
+  id: string
+  payoff_id: string
+}
+
+export interface TacticalSlotContract {
+  chapter_number: number
+  volume_id: string
+  arc_ids: string[]
+  story_function: string
+  obligations: TacticalObligation[]
+  planned_state_delta: TacticalStateDelta
+  setup_requirements: TacticalSetupRequirement[]
+  payoff_requirements: TacticalPayoffRequirement[]
+  target_words: number
+  detail_level: ChapterPlanDetailLevel
+  status: ChapterPlanStatus
+}
+
+export interface AssembledTacticalSlot {
+  tactical: TacticalBeat
+  slot_contract: TacticalSlotContract
+}
+
+export type TacticalPlanStatus = 'active' | 'stale' | 'missing'
+
+export interface TacticalPlanResponse {
+  status: TacticalPlanStatus
+  window: TacticalWindow | null
+  assembled_slots: AssembledTacticalSlot[]
+}
+
+export interface TacticalPlanVersionSummary {
+  version: number
+  novel_plan_version: number
+  story_state_revision: number
+  start_chapter: number
+  end_chapter: number
+  source: string
+  created_at: string
+}
+
+export interface ChapterExecutionContract {
+  plan_version: number
+  tactical_version: number
+  chapter_number: number
+  obligation_coverage: Record<string, number>
+  state_delta_coverage: Record<string, number>
+  setup_payoff_coverage: Record<string, number>
+}
+
+export type ChapterPlanRevisionScope = 'tactical' | 'chapter_outline' | 'both'
 
 export interface NovelPlanVersionSummary {
   version: number
@@ -272,6 +366,10 @@ export interface ProgressResponse {
   plan_version?: number
   plan_status?: 'missing' | 'draft' | 'accepted' | string
   drift_severity?: 'none' | 'minor' | 'major' | string
+  tactical_version?: number | null
+  tactical_window_start?: number | null
+  tactical_window_end?: number | null
+  tactical_status?: TacticalPlanStatus | null
 }
 
 export type ChapterReviewStatus =
@@ -344,7 +442,7 @@ export interface PendingProposal {
 export type ReviewDecision =
   | { proposal_id: string; decision: 'accept' }
   | { proposal_id: string; decision: 'regenerate'; feedback?: string }
-  | { proposal_id: string; decision: 'revise'; instruction: string }
+  | { proposal_id: string; decision: 'revise'; instruction: string; scope?: ChapterPlanRevisionScope }
   | { proposal_id: string; decision: 'replace'; value: JsonValue }
 
 export type ReviewInterruptAction =
@@ -356,6 +454,7 @@ export type ReviewInterruptAction =
   | 'review_or_modify_novel_plan'
   | 'review_novel_plan'
   | 'review_or_provide_chapter_outline'
+  | 'review_or_modify_chapter_plan'
   | 'review_reflection_issues'
   | 'quality_gate_exhausted'
   | 'quality_gate_human_review'

@@ -1,7 +1,11 @@
-import { BookOutlined, BranchesOutlined, OrderedListOutlined, PartitionOutlined } from '@ant-design/icons'
+import { AimOutlined, BookOutlined, BranchesOutlined, OrderedListOutlined, PartitionOutlined } from '@ant-design/icons'
 import { Collapse, Empty, Tabs, Tag } from 'antd'
 import type { ReactNode } from 'react'
-import type { ChapterSlot, JsonValue, NovelPlan, StoryArc, VolumePlan } from '@/types/novel'
+import type {
+  ChapterSlot, JsonValue, NovelPlan, StoryArc, TacticalPlanResponse,
+  TacticalPlanVersionSummary, VolumePlan,
+} from '@/types/novel'
+import { TacticalPlanView } from './TacticalPlanView'
 
 const sourceLabels: Record<string, string> = {
   initial: '初始规划', legacy_upgrade: '旧作补全', volume_detail: '卷内细化',
@@ -134,6 +138,10 @@ function ChapterSpineView({ plan }: { plan: NovelPlan }) {
 
 interface NovelPlanViewProps {
   plan?: NovelPlan
+  tactical?: TacticalPlanResponse
+  tacticalVersions?: TacticalPlanVersionSummary[]
+  tacticalLoadFailed?: boolean
+  tacticalVersionsLoadFailed?: boolean
   headerAction?: ReactNode
   emptyDescription?: string
 }
@@ -143,7 +151,10 @@ function PlanViewHeader({ plan, action }: { plan?: NovelPlan; action?: ReactNode
     <div className="plan-view-actions">{plan && <span>Schema {plan.schema_version}</span>}{action}</div></header>
 }
 
-export function NovelPlanView({ plan, headerAction, emptyDescription }: NovelPlanViewProps) {
+export function NovelPlanView({
+  plan, tactical, tacticalVersions, tacticalLoadFailed, tacticalVersionsLoadFailed,
+  headerAction, emptyDescription,
+}: NovelPlanViewProps) {
   return <div className="novel-plan-view">
     <PlanViewHeader plan={plan} action={headerAction} />
     {!plan ? <div className="plan-empty"><Empty image={Empty.PRESENTED_IMAGE_SIMPLE}
@@ -152,6 +163,9 @@ export function NovelPlanView({ plan, headerAction, emptyDescription }: NovelPla
       { key: 'volumes', label: <span><PartitionOutlined /> 分卷</span>, children: <VolumesView volumes={plan.volumes} /> },
       { key: 'arcs', label: <span><BranchesOutlined /> 剧情弧</span>, children: <ArcsView arcs={plan.arcs} /> },
       { key: 'spine', label: <span><OrderedListOutlined /> 章节骨架</span>, children: <ChapterSpineView plan={plan} /> },
+      { key: 'tactical', label: <span><AimOutlined /> 近期战术</span>, children: <TacticalPlanView
+        tactical={tactical} versions={tacticalVersions} loadFailed={tacticalLoadFailed}
+        versionsLoadFailed={tacticalVersionsLoadFailed} /> },
     ]} />}
   </div>
 }

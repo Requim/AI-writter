@@ -19,8 +19,13 @@ from api.workflow_commands import (
 )
 from application.checkpoint_reconciliation import reconcile_pending_checkpoint
 from application.errors import QualityGateReviewRequired, WorkflowBusyError
+from application.feature_policy import feature_policy
 from application.orchestrator import NovelOrchestrator
 from application.quota_service import QuotaService
+from application.tactical_planning import (
+    hydrate_tactical_window,
+    tactical_window_status,
+)
 from infrastructure.database.identity_repository import (
     AIUnavailableError,
     QuotaExceededError,
@@ -34,6 +39,7 @@ from service.value_objects.novel_type import NovelType
 from service.value_objects.outline import Outline
 from service.value_objects.novel_plan import NovelPlan, ScaleContract, planning_options
 from service.value_objects.progress import Progress
+from service.value_objects.tactical_plan import TacticalWindow
 
 router = APIRouter()
 REWRITE_MAX_REVISION_ATTEMPTS = 5
@@ -97,6 +103,10 @@ class ProgressResponse(BaseModel):
     plan_version: int = 0
     plan_status: str = "missing"
     drift_severity: str = "none"
+    tactical_version: int | None = None
+    tactical_window_start: int | None = None
+    tactical_window_end: int | None = None
+    tactical_status: Literal["active", "stale", "missing"] | None = None
 
 
 class GenreOptionResponse(BaseModel):
@@ -320,6 +330,45 @@ async def list_novel_plan_versions(
     return await _plan_version_payloads(repo, _tenant_id(context), novel_id)
 
 
+@router.get("/{novel_id}/tactical-plan", response_model=dict[str, Any])
+async def get_tactical_plan(
+    novel_id: str,
+    context: TenantContext = Depends(get_tenant_context),
+    repo: PostgresNovelRepository = Depends(get_repository),
+) -> dict[str, Any]:
+    novel = await repo.find_by_id(_tenant_id(context), novel_id)
+    if novel is None:
+        raise HTTPException(status_code=404, detail="小说不存在")
+    plan = await repo.get_latest_plan(_tenant_id(context), novel_id)
+    window = await repo.get_latest_tactical_plan(_tenant_id(context), novel_id)
+    progress = novel.progress or Progress()
+    status = _tactical_status(
+        plan, window, progress.current_chapter, progress.plan_status
+    )
+    assembled = (
+        hydrate_tactical_window(window, plan).get("beats", [])
+        if status == "active" and window is not None and plan is not None
+        else []
+    )
+    return {
+        "status": status,
+        "window": window.to_dict() if window else None,
+        "assembled_slots": assembled,
+    }
+
+
+@router.get("/{novel_id}/tactical-plan/versions", response_model=list[dict[str, Any]])
+async def list_tactical_plan_versions(
+    novel_id: str,
+    context: TenantContext = Depends(get_tenant_context),
+    repo: PostgresNovelRepository = Depends(get_repository),
+) -> list[dict[str, Any]]:
+    if await repo.find_by_id(_tenant_id(context), novel_id) is None:
+        raise HTTPException(status_code=404, detail="小说不存在")
+    windows = await repo.list_tactical_plan_versions(_tenant_id(context), novel_id)
+    return [_tactical_version_summary(window) for window in windows]
+
+
 @router.get("/{novel_id}/progress", response_model=ProgressResponse)
 async def get_progress(
     novel_id: str,
@@ -331,7 +380,8 @@ async def get_progress(
         raise HTTPException(status_code=404, detail="小说不存在")
     progress = novel.progress or Progress()
     plan = await repo.get_latest_plan(_tenant_id(context), novel_id)
-    return _progress_response(progress, plan)
+    tactical = await repo.get_latest_tactical_plan(_tenant_id(context), novel_id)
+    return _progress_response(progress, plan, tactical)
 
 
 @router.get("/{novel_id}/chapters", response_model=list[ChapterResponse])
@@ -435,7 +485,12 @@ def _rewrite_config(
             "auto_mode": True,
             "direct_rewrite": True,
             "max_reflection_loops": REWRITE_MAX_REVISION_ATTEMPTS,
-            "discard_following_chapters": True,
+            "discard_following_chapters": False,
+            "feature_policy": feature_policy,
+            "novel_planning_v1_enabled": feature_policy.novel_planning_v1_enabled(
+                context
+            ),
+            "tenant_planning_loader": orchestrator.tenant_planning_loader,
             "llm_config": {"llm_instance": orchestrator._get_llm_instance()},
         }
     }
@@ -447,6 +502,7 @@ def _rewrite_state(
     workflow_run_id: str,
     memory_context: str,
     plan: NovelPlan | None = None,
+    tactical: TacticalWindow | None = None,
 ) -> dict[str, Any]:
     outline = novel.total_outline
     total_outline = (
@@ -464,7 +520,12 @@ def _rewrite_state(
         "memory_context": memory_context,
         "current_chapter_content": "",
         "workflow_run_id": workflow_run_id,
+        "workflow_schema_version": 5 if plan else 2,
         "novel_plan": plan.to_dict() if plan else None,
+        "tactical_window": tactical.to_dict() if tactical else None,
+        "rewrite_chapter_id": str(chapter.id),
+        "rewrite_chapter_version": int(chapter.version),
+        "rewrite_chapter_created_at": chapter.created_at,
     }
 
 
@@ -489,6 +550,7 @@ async def _generate_rewritten_chapter(
         if node_name == "persist_node":
             if state.get("novel_plan"):
                 await _run_rewrite_node("plan_reconciliation_node", state, config)
+                await _mark_rewrite_continuity_stale(config)
             return state
         allowed = {
             "reflection_node": {"persist_node", "revision_node"},
@@ -500,16 +562,26 @@ async def _generate_rewritten_chapter(
     raise HTTPException(status_code=500, detail="章节重写超过最大修订次数")
 
 
+async def _mark_rewrite_continuity_stale(config: dict[str, Any]) -> None:
+    values = config.get("configurable", {})
+    repository = values.get("novel_repository")
+    marker = getattr(repository, "mark_continuity_reconciliation_needed", None)
+    if callable(marker):
+        await marker(values.get("tenant_id", ""), values.get("novel_id", ""))
+
+
 async def _run_rewrite_node(
     node_name: str, state: dict[str, Any], config: dict[str, Any]
 ) -> str:
     from application.agents.chapter_writer_node import chapter_writer_node
+    from application.agents.novel_plan_node import plan_reconciliation_node
     from application.agents.persist_node import persist_node
     from application.agents.reflection_node import reflection_node
     from application.agents.revision_node import revision_node
 
     nodes = {
         "chapter_writer_node": chapter_writer_node,
+        "plan_reconciliation_node": plan_reconciliation_node,
         "reflection_node": reflection_node,
         "revision_node": revision_node,
         "persist_node": persist_node,
@@ -602,7 +674,10 @@ async def _prepare_rewrite(
         _tenant_id(context), novel_id, chapter.chapter_index
     )
     plan = await _optional_latest_plan(repo, _tenant_id(context), novel_id)
-    state = _rewrite_state(novel, chapter, str(run_id), memory, plan)
+    tactical = await _rewrite_tactical_window(
+        repo, _tenant_id(context), novel_id, chapter, plan
+    )
+    state = _rewrite_state(novel, chapter, str(run_id), memory, plan, tactical)
     config = _rewrite_config(request, context, novel_id, repo, quota, orchestrator)
     return state, config
 
@@ -616,6 +691,36 @@ async def _optional_latest_plan(
     result = getter(tenant_id, novel_id)
     resolved = await result if inspect.isawaitable(result) else result
     return resolved if isinstance(resolved, NovelPlan) else None
+
+
+async def _rewrite_tactical_window(
+    repo: Any,
+    tenant_id: str,
+    novel_id: str,
+    chapter: Any,
+    plan: NovelPlan | None,
+) -> TacticalWindow | None:
+    chapter_outline = getattr(chapter, "outline", None)
+    outline = chapter_outline if isinstance(chapter_outline, dict) else {}
+    contract = outline.get("chapter_execution_contract")
+    if plan is None or not isinstance(contract, dict):
+        return None
+    try:
+        version = int(contract.get("tactical_version", 0) or 0)
+    except (TypeError, ValueError):
+        return None
+    getter = getattr(repo, "list_tactical_plan_versions", None)
+    if version < 1 or not callable(getter):
+        return None
+    windows = await getter(tenant_id, novel_id)
+    return next(
+        (
+            window for window in windows
+            if window.version == version
+            and window.novel_plan_version == plan.version
+        ),
+        None,
+    )
 
 
 async def _plan_version_payloads(
@@ -692,7 +797,37 @@ def _volume_progress(plan: NovelPlan | None, current: int) -> dict[str, int | fl
     }
 
 
-def _progress_response(progress: Progress, plan: NovelPlan | None) -> ProgressResponse:
+def _tactical_status(
+    plan: NovelPlan | None,
+    window: TacticalWindow | None,
+    completed_chapters: int,
+    plan_status: str = "accepted",
+) -> Literal["active", "stale", "missing"]:
+    if plan is None or window is None:
+        return "missing"
+    if plan_status in {"needs_reconciliation", "needs_review"}:
+        return "stale"
+    chapter = min(max(completed_chapters + 1, 1), plan.scale.target_chapters)
+    return tactical_window_status(window, plan, chapter, completed_chapters)
+
+
+def _tactical_version_summary(window: TacticalWindow) -> dict[str, Any]:
+    return {
+        "version": window.version,
+        "novel_plan_version": window.novel_plan_version,
+        "story_state_revision": window.story_state_revision,
+        "start_chapter": window.start_chapter,
+        "end_chapter": window.end_chapter,
+        "source": window.source,
+        "created_at": window.created_at.isoformat(),
+    }
+
+
+def _progress_response(
+    progress: Progress,
+    plan: NovelPlan | None,
+    tactical: TacticalWindow | None = None,
+) -> ProgressResponse:
     total_chapters = (
         plan.scale.target_chapters if plan else progress.total_chapters
     )
@@ -727,6 +862,12 @@ def _progress_response(progress: Progress, plan: NovelPlan | None) -> ProgressRe
             else "accepted"
         ),
         drift_severity=progress.drift_severity,
+        tactical_version=tactical.version if tactical else None,
+        tactical_window_start=tactical.start_chapter if tactical else None,
+        tactical_window_end=tactical.end_chapter if tactical else None,
+        tactical_status=_tactical_status(
+            plan, tactical, progress.current_chapter, progress.plan_status
+        ),
     )
 
 

@@ -2,6 +2,12 @@ class RetryableWorkflowError(RuntimeError):
     """A transient workflow failure that can resume from the latest checkpoint."""
 
 
+class PlanningTemporarilyDisabledError(RuntimeError):
+    """Schema 5 was disabled while a resumable workflow was in progress."""
+
+    code = "planning_temporarily_disabled"
+
+
 class QualityGateReviewRequired(RuntimeError):
     """直接重写无法安全自动通过质量门禁，需要调用方明确处理。"""
 

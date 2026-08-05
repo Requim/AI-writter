@@ -8,7 +8,7 @@ from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from typing import Optional, List
+from typing import Any, Optional, List
 
 from service.entities.novel import Novel
 from service.entities.chapter import Chapter
@@ -17,11 +17,16 @@ from service.ports.novel_plan_repository import (
     NovelPlanRepository,
     PlanVersionConflictError,
 )
+from service.ports.tactical_plan_repository import (
+    TacticalPlanRepository,
+    TacticalPlanVersionConflictError,
+)
 from service.value_objects.novel_plan import (
     NovelPlan,
     NovelPlanVersionSummary,
     PlanExecution,
 )
+from service.value_objects.tactical_plan import TacticalWindow
 from service.value_objects.outline import Outline
 from service.value_objects.progress import Progress
 from .models import (
@@ -31,6 +36,7 @@ from .models import (
     NovelModel,
     NovelPlanExecutionModel,
     NovelPlanVersionModel,
+    NovelTacticalPlanVersionModel,
 )
 
 
@@ -372,6 +378,20 @@ async def _latest_plan_model(
     return result.scalar_one_or_none()
 
 
+async def _plan_model_for_idempotency_key(
+    session: AsyncSession, tenant_id: uuid.UUID, novel_id: uuid.UUID,
+    idempotency_key: str,
+) -> NovelPlanVersionModel | None:
+    result = await session.execute(
+        select(NovelPlanVersionModel).where(
+            NovelPlanVersionModel.tenant_id == tenant_id,
+            NovelPlanVersionModel.novel_id == novel_id,
+            NovelPlanVersionModel.idempotency_key == idempotency_key,
+        )
+    )
+    return result.scalar_one_or_none()
+
+
 def _plan_from_model(model: NovelPlanVersionModel) -> NovelPlan:
     payload = dict(model.plan_data or {})
     payload.update(
@@ -380,6 +400,47 @@ def _plan_from_model(model: NovelPlanVersionModel) -> NovelPlan:
         created_at=model.created_at,
     )
     return NovelPlan.from_dict(payload)
+
+
+def _plan_content(plan: NovelPlan) -> dict[str, Any]:
+    payload = plan.to_dict()
+    payload.pop("version", None)
+    payload.pop("created_at", None)
+    return payload
+
+
+def _idempotent_plan_result(
+    model: NovelPlanVersionModel, plan: NovelPlan
+) -> NovelPlan:
+    accepted = _plan_from_model(model)
+    if _plan_content(accepted) != _plan_content(plan):
+        raise PlanVersionConflictError("整书计划幂等键已被不同内容占用")
+    return accepted
+
+
+def _plan_version_model(
+    tenant_id: uuid.UUID,
+    novel_id: uuid.UUID,
+    plan: NovelPlan,
+    idempotency_key: str,
+    created_by_user_id: str | None,
+    trigger_chapter: int | None,
+    change_summary: str,
+) -> NovelPlanVersionModel:
+    return NovelPlanVersionModel(
+        tenant_id=tenant_id,
+        novel_id=novel_id,
+        version=plan.version,
+        source=plan.source,
+        trigger_chapter=trigger_chapter,
+        change_summary=change_summary,
+        idempotency_key=idempotency_key,
+        plan_data=plan.to_dict(),
+        created_by_user_id=(
+            uuid.UUID(created_by_user_id) if created_by_user_id else None
+        ),
+        created_at=plan.created_at,
+    )
 
 
 def _execution_from_model(model: NovelPlanExecutionModel) -> PlanExecution:
@@ -392,8 +453,155 @@ def _execution_from_model(model: NovelPlanExecutionModel) -> PlanExecution:
             "fulfillment": model.fulfillment or {},
             "drift_severity": model.drift_severity,
             "updated_at": model.updated_at,
+            "tactical_version": model.tactical_version,
         }
     )
+
+
+async def _latest_tactical_model(
+    session: AsyncSession, tenant_id: uuid.UUID, novel_id: uuid.UUID
+) -> NovelTacticalPlanVersionModel | None:
+    result = await session.execute(
+        select(NovelTacticalPlanVersionModel)
+        .where(
+            NovelTacticalPlanVersionModel.tenant_id == tenant_id,
+            NovelTacticalPlanVersionModel.novel_id == novel_id,
+        )
+        .order_by(NovelTacticalPlanVersionModel.version.desc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
+async def _tactical_model_for_idempotency_key(
+    session: AsyncSession, tenant_id: uuid.UUID, novel_id: uuid.UUID,
+    idempotency_key: str,
+) -> NovelTacticalPlanVersionModel | None:
+    result = await session.execute(
+        select(NovelTacticalPlanVersionModel).where(
+            NovelTacticalPlanVersionModel.tenant_id == tenant_id,
+            NovelTacticalPlanVersionModel.novel_id == novel_id,
+            NovelTacticalPlanVersionModel.idempotency_key == idempotency_key,
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def _tactical_model_by_version(
+    session: AsyncSession, tenant_id: uuid.UUID, novel_id: uuid.UUID, version: int
+) -> NovelTacticalPlanVersionModel | None:
+    result = await session.execute(
+        select(NovelTacticalPlanVersionModel).where(
+            NovelTacticalPlanVersionModel.tenant_id == tenant_id,
+            NovelTacticalPlanVersionModel.novel_id == novel_id,
+            NovelTacticalPlanVersionModel.version == version,
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+def _tactical_from_model(model: NovelTacticalPlanVersionModel) -> TacticalWindow:
+    payload = dict(model.window_data or {})
+    payload.update(
+        version=model.version,
+        novel_plan_version=model.novel_plan_version,
+        story_state_revision=model.story_state_revision,
+        start_chapter=model.window_start,
+        end_chapter=model.window_end,
+        source=model.source,
+        created_at=model.created_at,
+    )
+    return TacticalWindow.from_dict(payload)
+
+
+def _tactical_content(window: TacticalWindow) -> dict[str, object]:
+    payload = window.to_dict()
+    payload.pop("version", None)
+    payload.pop("created_at", None)
+    return payload
+
+
+def _same_tactical_request(
+    model: NovelTacticalPlanVersionModel, window: TacticalWindow
+) -> bool:
+    return _tactical_content(_tactical_from_model(model)) == _tactical_content(window)
+
+
+def _idempotent_tactical_result(
+    model: NovelTacticalPlanVersionModel, window: TacticalWindow
+) -> TacticalWindow:
+    if not _same_tactical_request(model, window):
+        raise TacticalPlanVersionConflictError("战术幂等键已被不同内容占用")
+    return _tactical_from_model(model)
+
+
+def _tactical_model(
+    tenant_id: uuid.UUID, novel_id: uuid.UUID, window: TacticalWindow,
+    idempotency_key: str, created_by_user_id: str | None,
+) -> NovelTacticalPlanVersionModel:
+    return NovelTacticalPlanVersionModel(
+        tenant_id=tenant_id,
+        novel_id=novel_id,
+        version=window.version,
+        novel_plan_version=window.novel_plan_version,
+        story_state_revision=window.story_state_revision,
+        window_start=window.start_chapter,
+        window_end=window.end_chapter,
+        source=window.source,
+        idempotency_key=idempotency_key,
+        window_data=window.to_dict(),
+        created_by_user_id=(
+            uuid.UUID(created_by_user_id) if created_by_user_id else None
+        ),
+        created_at=window.created_at,
+    )
+
+
+async def _assert_tactical_plan_link(
+    session: AsyncSession, tenant_id: uuid.UUID, novel_id: uuid.UUID,
+    window: TacticalWindow,
+) -> None:
+    plan = await _latest_plan_model(session, tenant_id, novel_id)
+    if plan is None or plan.version != window.novel_plan_version:
+        raise TacticalPlanVersionConflictError("整书计划已更新，战术窗口已过期")
+
+
+async def _assert_execution_versions(
+    session: AsyncSession, tenant_id: uuid.UUID, novel_id: uuid.UUID,
+    execution: PlanExecution,
+) -> None:
+    current = await _latest_plan_model(session, tenant_id, novel_id)
+    if current is None or current.version != execution.plan_version:
+        raise PlanVersionConflictError("计划已更新，执行记录已过期")
+    if execution.tactical_version is None:
+        return
+    tactical = await _tactical_model_by_version(
+        session, tenant_id, novel_id, execution.tactical_version
+    )
+    if tactical is None or tactical.novel_plan_version != execution.plan_version:
+        raise TacticalPlanVersionConflictError("战术计划已更新，执行记录已过期")
+    if not tactical.window_start <= execution.chapter_number <= tactical.window_end:
+        raise TacticalPlanVersionConflictError(
+            f"战术窗口未覆盖第 {execution.chapter_number} 章执行记录"
+        )
+
+
+def _normalize_tactical_idempotency_key(value: str) -> str:
+    key = (value or "").strip()
+    if not key:
+        raise ValueError("战术计划幂等键不能为空")
+    if len(key) > 128:
+        raise ValueError("战术计划幂等键不得超过 128 个字符")
+    return key
+
+
+def _normalize_plan_idempotency_key(value: str) -> str:
+    key = (value or "").strip()
+    if not key:
+        raise ValueError("整书计划幂等键不能为空")
+    if len(key) > 128:
+        raise ValueError("整书计划幂等键不得超过 128 个字符")
+    return key
 
 
 async def _sync_plan_mirrors(
@@ -576,7 +784,9 @@ def _mark_edit_checkpoint_sync(novel: NovelModel, updated_at: datetime) -> None:
     novel.updated_at = updated_at
 
 
-class PostgresNovelRepository(NovelRepository, NovelPlanRepository):
+class PostgresNovelRepository(
+    NovelRepository, NovelPlanRepository, TacticalPlanRepository
+):
     """PostgreSQL小说仓储实现"""
 
     def __init__(
@@ -845,6 +1055,25 @@ class PostgresNovelRepository(NovelRepository, NovelPlanRepository):
                 session, tenant_uuid, novel_uuid,
                 chapter_index + 1, from_chapter=False,
             )
+
+    async def mark_continuity_reconciliation_needed(
+        self, tenant_id: str, novel_id: str
+    ) -> None:
+        """Keep rewritten chapters while invalidating continuity-derived tactics."""
+        tenant_uuid = uuid.UUID(tenant_id)
+        novel_uuid = uuid.UUID(novel_id)
+        async with self.async_session() as session, session.begin():
+            novel = await _lock_novel(session, tenant_uuid, novel_uuid)
+            if novel is None:
+                raise RuntimeError("连续性标记失败：目标小说不存在")
+            progress = dict(novel.progress or {})
+            if (
+                int(progress.get("plan_version", 0) or 0) > 0
+                and progress.get("plan_status") != "needs_review"
+            ):
+                progress["plan_status"] = "needs_reconciliation"
+            novel.progress = progress
+            novel.updated_at = datetime.now()
 
     # --- Chapter operations ---
 
@@ -1121,39 +1350,37 @@ class PostgresNovelRepository(NovelRepository, NovelPlanRepository):
         plan: NovelPlan,
         expected_version: int,
         *,
+        idempotency_key: str,
         created_by_user_id: str | None = None,
         trigger_chapter: int | None = None,
         change_summary: str = "",
     ) -> NovelPlan:
         plan.assert_valid()
+        if expected_version < 0:
+            raise ValueError("预期整书计划版本不得为负数")
         if trigger_chapter is not None and trigger_chapter < 1:
             raise ValueError("触发章节必须大于等于 1")
+        normalized_key = _normalize_plan_idempotency_key(idempotency_key)
         tenant_uuid = uuid.UUID(tenant_id)
         novel_uuid = uuid.UUID(novel_id)
         async with self.async_session() as session, session.begin():
             novel = await _lock_novel(session, tenant_uuid, novel_uuid)
             if novel is None:
                 raise RuntimeError("计划保存失败：目标小说不存在")
+            existing = await _plan_model_for_idempotency_key(
+                session, tenant_uuid, novel_uuid, normalized_key
+            )
+            if existing is not None:
+                return _idempotent_plan_result(existing, plan)
             current = await _latest_plan_model(session, tenant_uuid, novel_uuid)
             current_version = current.version if current else 0
             if current_version != expected_version:
                 raise PlanVersionConflictError("计划已更新，请刷新后重试")
             accepted_plan = replace(plan, version=current_version + 1)
-            session.add(
-                NovelPlanVersionModel(
-                    tenant_id=tenant_uuid,
-                    novel_id=novel_uuid,
-                    version=accepted_plan.version,
-                    source=accepted_plan.source,
-                    trigger_chapter=trigger_chapter,
-                    change_summary=change_summary,
-                    plan_data=accepted_plan.to_dict(),
-                    created_by_user_id=(
-                        uuid.UUID(created_by_user_id) if created_by_user_id else None
-                    ),
-                    created_at=accepted_plan.created_at,
-                )
-            )
+            session.add(_plan_version_model(
+                tenant_uuid, novel_uuid, accepted_plan, normalized_key,
+                created_by_user_id, trigger_chapter, change_summary,
+            ))
             await _sync_plan_mirrors(session, novel, accepted_plan)
         return accepted_plan
 
@@ -1174,11 +1401,13 @@ class PostgresNovelRepository(NovelRepository, NovelPlanRepository):
     async def upsert_plan_execution(
         self, tenant_id: str, novel_id: str, execution: PlanExecution
     ) -> PlanExecution:
-        values = {
-            "tenant_id": uuid.UUID(tenant_id),
-            "novel_id": uuid.UUID(novel_id),
+        tenant_uuid, novel_uuid = uuid.UUID(tenant_id), uuid.UUID(novel_id)
+        values: dict[str, Any] = {
+            "tenant_id": tenant_uuid,
+            "novel_id": novel_uuid,
             "chapter_number": execution.chapter_number,
             "plan_version": execution.plan_version,
+            "tactical_version": execution.tactical_version,
             "status": execution.status,
             "actual_words": execution.actual_words,
             "fulfillment": execution.fulfillment,
@@ -1187,22 +1416,20 @@ class PostgresNovelRepository(NovelRepository, NovelPlanRepository):
         }
         async with self.async_session() as session, session.begin():
             novel = await _lock_novel(
-                session, values["tenant_id"], values["novel_id"]
+                session, tenant_uuid, novel_uuid
             )
             if novel is None:
                 raise RuntimeError("计划执行记录保存失败：目标小说不存在")
-            current = await _latest_plan_model(
-                session, values["tenant_id"], values["novel_id"]
+            await _assert_execution_versions(
+                session, tenant_uuid, novel_uuid, execution
             )
-            if current is None or current.version != execution.plan_version:
-                raise PlanVersionConflictError("计划已更新，执行记录已过期")
             statement = pg_insert(NovelPlanExecutionModel).values(**values)
             await session.execute(
                 statement.on_conflict_do_update(
                     constraint="uq_plan_executions_chapter",
                     set_={key: values[key] for key in (
-                        "plan_version", "status", "actual_words", "fulfillment",
-                        "drift_severity", "updated_at",
+                        "plan_version", "tactical_version", "status",
+                        "actual_words", "fulfillment", "drift_severity", "updated_at",
                     )},
                 )
             )
@@ -1220,3 +1447,59 @@ class PostgresNovelRepository(NovelRepository, NovelPlanRepository):
                     NovelPlanExecutionModel.chapter_number >= chapter_number,
                 )
             )
+
+    async def get_latest_tactical_plan(
+        self, tenant_id: str, novel_id: str
+    ) -> TacticalWindow | None:
+        async with self.async_session() as session:
+            model = await _latest_tactical_model(
+                session, uuid.UUID(tenant_id), uuid.UUID(novel_id)
+            )
+            return _tactical_from_model(model) if model else None
+
+    async def list_tactical_plan_versions(
+        self, tenant_id: str, novel_id: str
+    ) -> list[TacticalWindow]:
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(NovelTacticalPlanVersionModel)
+                .where(
+                    NovelTacticalPlanVersionModel.tenant_id == uuid.UUID(tenant_id),
+                    NovelTacticalPlanVersionModel.novel_id == uuid.UUID(novel_id),
+                )
+                .order_by(NovelTacticalPlanVersionModel.version.desc())
+            )
+            return [_tactical_from_model(model) for model in result.scalars()]
+
+    async def accept_tactical_plan(
+        self, tenant_id: str, novel_id: str, window: TacticalWindow,
+        expected_version: int, *, idempotency_key: str,
+        created_by_user_id: str | None = None,
+    ) -> TacticalWindow:
+        window.assert_valid()
+        if expected_version < 0:
+            raise ValueError("预期战术版本不得为负数")
+        normalized_key = _normalize_tactical_idempotency_key(idempotency_key)
+        tenant_uuid, novel_uuid = uuid.UUID(tenant_id), uuid.UUID(novel_id)
+        async with self.async_session() as session, session.begin():
+            novel = await _lock_novel(session, tenant_uuid, novel_uuid)
+            if novel is None:
+                raise RuntimeError("战术计划保存失败：目标小说不存在")
+            await _assert_tactical_plan_link(
+                session, tenant_uuid, novel_uuid, window
+            )
+            existing = await _tactical_model_for_idempotency_key(
+                session, tenant_uuid, novel_uuid, normalized_key
+            )
+            if existing is not None:
+                return _idempotent_tactical_result(existing, window)
+            current = await _latest_tactical_model(session, tenant_uuid, novel_uuid)
+            current_version = current.version if current else 0
+            if current_version != expected_version:
+                raise TacticalPlanVersionConflictError("战术计划已更新，请刷新后重试")
+            accepted = replace(window, version=current_version + 1)
+            session.add(_tactical_model(
+                tenant_uuid, novel_uuid, accepted,
+                normalized_key, created_by_user_id,
+            ))
+        return accepted

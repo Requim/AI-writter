@@ -95,6 +95,9 @@ def test_scale_contract_rejects_impossible_size() -> None:
     with pytest.raises(NovelPlanValidationError, match="规模预设"):
         ScaleContract("unknown", 12, 50_400)
 
+    with pytest.raises(NovelPlanValidationError, match="锁定窗口固定为 5 章"):
+        ScaleContract("custom", 12, 50_400, lock_window=4)
+
 
 def test_word_allocation_is_exact_bounded_and_deterministic() -> None:
     first = allocate_word_targets(50_403, [1, 2, 3] * 4)
@@ -124,11 +127,15 @@ def test_complete_plan_round_trip_and_validation() -> None:
 
 
 def test_plan_execution_round_trip_and_validation() -> None:
-    execution = PlanExecution(1, 1, "reconciled", 4200, {"fulfilled": True})
+    execution = PlanExecution(
+        1, 1, "reconciled", 4200, {"fulfilled": True}, tactical_version=2
+    )
 
     assert PlanExecution.from_dict(execution.to_dict()).to_dict() == execution.to_dict()
     with pytest.raises(NovelPlanValidationError, match="漂移等级"):
         PlanExecution(1, 1, "reconciled", 4200, {}, "unknown")
+    with pytest.raises(NovelPlanValidationError, match="战术版本"):
+        PlanExecution(1, 1, "reconciled", 4200, {}, tactical_version=0)
 
 
 def test_plan_validation_reports_coverage_references_and_foreshadowing() -> None:
@@ -239,7 +246,21 @@ def test_migration_matches_planning_orm_metadata() -> None:
         migration_columns = {
             item.name for item in migration_items if isinstance(item, Column)
         }
-        assert migration_columns == set(table.columns.keys())
+        model_columns = set(table.columns.keys())
+        model_constraints = _named_schema_items(tuple(table.constraints))
+        if name == "novel_plan_versions":
+            model_columns.remove("idempotency_key")
+            model_constraints -= {
+                "ck_plan_versions_idempotency_key",
+                "uq_plan_versions_idempotency",
+            }
+        if name == "novel_plan_executions":
+            model_columns.remove("tactical_version")
+            model_constraints -= {
+                "ck_plan_execution_tactical_version",
+                "fk_plan_executions_tactical_version",
+            }
+        assert migration_columns == model_columns
         migration_defaults = {
             item.name: str(item.server_default.arg)
             for item in migration_items
@@ -251,9 +272,7 @@ def test_migration_matches_planning_orm_metadata() -> None:
             if column.server_default is not None
         }
         assert migration_defaults == model_defaults
-        assert _named_schema_items(migration_items) == _named_schema_items(
-            tuple(table.constraints)
-        )
+        assert _named_schema_items(migration_items) == model_constraints
         model_indexes = {index.name for index in table.indexes if isinstance(index, Index)}
         migration_indexes = {
             key for key, value in recorder.indexes.items() if value[0] == name

@@ -46,7 +46,8 @@ export function outlineFrom(interrupt: InterruptInfo): JsonRecord | undefined {
   const proposal = proposalFrom(interrupt)
   const payload = proposalPayload(interrupt)
   const direct = ['outline', 'chapter_outline'].includes(proposal?.kind ?? '') ? payload : undefined
-  return asRecord(payload?.outline) || direct || interrupt.ai_generated_outline
+  return asRecord(payload?.chapter_outline) || asRecord(payload?.outline)
+    || direct || interrupt.ai_generated_outline
 }
 
 export function characterDesignFrom(interrupt: InterruptInfo): CharacterDesignProposal | undefined {

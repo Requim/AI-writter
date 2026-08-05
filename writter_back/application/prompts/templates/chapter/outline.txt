@@ -10,6 +10,12 @@ $plan_context
 
 只允许使用以上局部计划；不得自行扩展或推测未提供的远期章节槽位。
 
+【近期滚动战术】
+$tactical_context
+
+【本章执行覆盖要求】
+$execution_requirements
+
 $genre_strategy
 
 【静态故事圣经，不可违背】
@@ -29,7 +35,7 @@ $reserved_name_pool
 5. 依据本章复杂度选择 2-5 个场景，不固定数量；每个场景必须产生不同的转折或代价。
 6. entry_state 继承前文；knowledge_boundaries 禁止角色获得作者视角信息。
 7. callback 与 setup 只在因果需要的位置出现，不按固定百分比机械安放。
-8. rolling_plan 从当前章开始，最多 5 章，不得超过全书第 $total_chapters 章。
+$planning_layer_rule
 9. ending_mode 从 revelation、decision、reversal、arrival、deadline、emotional_shift 中选择；结尾必须来自本章行动后果。
 10. 对照 recent_narrative_patterns，POV、地点、冲突手段、转折类型、结尾类型或高频意象不得无理由连续重复。
 11. 每个场景只选择 1-2 个 sensory_anchors，且细节必须参与行动、判断或冲突，不得填写感官清单。
@@ -65,6 +71,7 @@ $reserved_name_pool
   "continuity_constraints": ["不可违反的既有事实"],
   "scenes": [
     {
+      "scene_index": 1,
       "location": "", "characters": ["人物及入场状态"],
       "scene_goal": "本场景可验证目标", "desire": "", "obstacle": "", "tactic": "",
       "events": {"entry": "", "struggle": "", "result": ""},
@@ -77,6 +84,7 @@ $reserved_name_pool
   "internal_monologue": "视角人物的认知变化：起点 → 触发 → 新认知",
   "logic_hooks": {"callback": "已有伏笔及自然回收方式", "setup": "新伏笔及预计回收章节"},
   "exit_state": {"time": "", "location": "", "characters": [], "last_action": "", "next_pressure": ""},
+$execution_contract_field
   "rolling_plan": [{"chapter_number": $chapter_index, "goal": "", "required_event": "", "state_delta": "", "callback_ids": [], "exit_hook": ""}],
   "estimated_word_count": $word_target
 }

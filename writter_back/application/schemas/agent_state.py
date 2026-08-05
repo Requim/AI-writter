@@ -15,6 +15,7 @@ class PendingProposal(TypedDict):
         "summary",
         "outline",
         "novel_plan",
+        "chapter_plan",
         "chapter_outline",
         "reflection",
         "revision",
@@ -60,7 +61,18 @@ class NovelAgentState(TypedDict):
     plan_replan_request: Optional[Dict]         # 用户或漂移触发的重规划请求
     plan_fulfillment: Optional[Dict]            # 当前章计划兑现结果
     plan_drift_severity: Optional[str]          # none/minor/major
+    tactical_window: Optional[Dict]             # 当前章的战术窗口（候选或已接受）
+    tactical_previous_window: Optional[Dict]    # 生成候选时的上一已接受窗口
+    tactical_window_expected_version: Optional[int]  # 战术追加版本基线
+    tactical_window_persisted: Optional[bool]   # 当前窗口是否已写入版本仓储
+    chapter_quota_reserved_for_chapter: Optional[int]  # 已预占额度的 0 基章节号
+    tactical_plan_feedback: Optional[str]       # 战术层审核修改指令
+    chapter_plan_revision_scope: Optional[str]  # tactical/chapter_outline/both
+    story_state_needs_reconciliation: Optional[bool]  # 回退后禁止复用旧窗口
     last_persisted_chapter: Optional[Dict]      # 正文后对账的最小持久化回执
+    rewrite_chapter_id: Optional[str]           # 独立重写时保持章节资源标识不变
+    rewrite_chapter_version: Optional[int]      # 独立重写前的乐观锁版本
+    rewrite_chapter_created_at: Optional[Any]   # 独立重写时保留首次创建时间
     pending_proposal: Optional[PendingProposal]  # 当前等待审核的生成提案
     pending_proposal_decision: Optional[Any]     # 仅用于恢复旧 checkpoint 的一次性决定
     proposal_versions: Dict[str, int]          # 每类提案的单调版本号

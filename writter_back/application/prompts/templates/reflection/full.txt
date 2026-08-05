@@ -10,6 +10,7 @@
 6. 每个 issue 的 evidence 必须是正文中连续、可精确查找的 20-120 字原句；没有证据就不输出。
 7. 上一轮问题若仍存在则沿用 issue_id，已解决则 issue_resolved=true。
 8. 对照章节细纲中的 plan_context 逐项判断计划兑现；普通延后写入 deferred_items，只有违背结局、卷边界、核心剧情弧或必须改变规模时才标记结构性布尔值。
+9. 对照 tactical_context 独立判断近期战术兑现；战术偏离只能写入 tactical_fulfillment.deviations，不得据此标记结构性 major。
 
 $editorial_checks
 
@@ -83,6 +84,13 @@ $previous_issues
     "core_arc_breached": false,
     "ending_contract_breached": false,
     "scale_change_required": false,
+    "notes": ""
+  },
+  "tactical_fulfillment": {
+    "tactical_goal_fulfilled": true,
+    "approach_followed": true,
+    "exit_hook_established": true,
+    "deviations": [],
     "notes": ""
   }
 }

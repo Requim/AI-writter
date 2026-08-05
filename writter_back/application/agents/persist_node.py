@@ -12,6 +12,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
 
 from application.continuity import extract_story_state
+from application.feature_policy import require_planning_v1
 from application.prompts.memory_prompts import (
     CHAPTER_SUMMARY_SCHEMA,
     CHAPTER_SUMMARY_TEMPERATURE,
@@ -22,7 +23,6 @@ from application.prompts.memory_prompts import (
 )
 from application.schemas.agent_state import NovelAgentState
 from application.streaming import emit_workflow_event
-from config import settings
 from service.entities.chapter import Chapter
 from service.value_objects.outline import Outline
 from service.value_objects.novel_plan import NovelPlan
@@ -121,10 +121,14 @@ def _chapter_review_metadata(state: NovelAgentState) -> dict[str, Any]:
 def _completed_chapter(state: NovelAgentState, content: str, index: int) -> dict[str, Any]:
     outlines = state.get("chapter_outlines") or []
     outline = outlines[-1] if outlines and isinstance(outlines[-1], dict) else {}
+    chapter_id = str(state.get("rewrite_chapter_id") or uuid4())
+    prior_version = int(state.get("rewrite_chapter_version", 0) or 0)
     return {
-        "id": str(uuid4()), "chapter_index": index,
+        "id": chapter_id, "chapter_index": index,
         "title": outline.get("title", f"第{index + 1}章"), "content": content,
         "word_count": len(content), "outline": outline, "status": "completed",
+        "version": prior_version + 1 if prior_version else 1,
+        "created_at": state.get("rewrite_chapter_created_at"),
         **_chapter_review_metadata(state),
     }
 
@@ -146,6 +150,7 @@ def _progress(index: int, total: int) -> tuple[int, float, bool]:
 
 def _chapter_entity(chapter: dict[str, Any], novel_id: str) -> Chapter:
     now = datetime.now()
+    created_at = chapter.get("created_at")
     return Chapter(
         id=UUID(chapter["id"]), novel_id=UUID(novel_id),
         chapter_index=chapter["chapter_index"], title=chapter["title"],
@@ -155,7 +160,9 @@ def _chapter_entity(chapter: dict[str, Any], novel_id: str) -> Chapter:
         user_decision=chapter["user_decision"],
         revision_count=chapter["revision_count"],
         revision_history=chapter["revision_history"],
-        created_at=now, updated_at=now,
+        version=int(chapter.get("version", 1) or 1),
+        created_at=created_at if isinstance(created_at, datetime) else now,
+        updated_at=now,
     )
 
 
@@ -278,6 +285,8 @@ async def _chapter_progress(
     finder = getattr(repository, "find_by_id", None)
     novel = await finder(tenant_id, novel_id) if callable(finder) else None
     previous = novel.progress if novel is not None else None
+    if state.get("rewrite_chapter_id") and previous is not None:
+        return Progress(**previous.to_dict())
     raw_plan = state.get("novel_plan")
     if not isinstance(raw_plan, dict) or not raw_plan:
         return Progress(**fields)
@@ -313,11 +322,14 @@ def _plan_progress_fields(
 
 
 def _writing_command(
-    chapter: dict[str, Any], percentage: float, is_completed: bool,
+    state: NovelAgentState,
+    chapter: dict[str, Any],
+    percentage: float,
+    is_completed: bool,
 ) -> Command[Literal["progress_check_node", "plan_reconciliation_node"]]:
     destination = (
         "plan_reconciliation_node"
-        if settings.NOVEL_PLANNING_V1_ENABLED
+        if int(state.get("workflow_schema_version") or 2) >= 5
         else "progress_check_node"
     )
     return Command(
@@ -337,6 +349,10 @@ async def persist_node(
     state: NovelAgentState, config: RunnableConfig,
 ) -> Command[Literal["progress_check_node", "plan_reconciliation_node"]]:
     """按当前是否存在章节正文选择设定或章节持久化路径。"""
+    await require_planning_v1(
+        config,
+        workflow_schema_version=int(state.get("workflow_schema_version") or 2),
+    )
     values = config["configurable"]
     content = str(state.get("current_chapter_content") or "")
     if not content:
@@ -361,4 +377,4 @@ async def persist_node(
         "persist_node",
     )
     logger.info("【持久化节点】章节与连续性状态已保存 | ch=%s, title=%s", index, chapter["title"])
-    return _writing_command(chapter, percentage, is_completed)
+    return _writing_command(state, chapter, percentage, is_completed)

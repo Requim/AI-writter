@@ -178,6 +178,8 @@ h1, h2, h3 { color: var(--ink); }
 .plan-index > div strong { color: var(--wine); font: 700 17px/1 "Noto Serif SC", serif; }
 .plan-index > div span, .plan-index small { color: var(--muted); font-size: 10px; }
 .plan-index ol { margin: 0; padding: 0; list-style: none; }
+.plan-index .plan-index-tactical { border-top: 1px solid var(--line); }
+.plan-index .plan-index-tactical strong { color: var(--green); font-size: 11px; font-family: "Noto Sans SC", sans-serif; }
 .plan-index li { padding: 11px 8px; display: grid; gap: 3px; border-top: 1px solid var(--line); }
 .plan-index li span { overflow-wrap: anywhere; font: 500 12px/1.5 "Noto Serif SC", serif; }
 .plan-index-empty { padding: 34px 8px; color: var(--muted); border-top: 1px solid var(--line); font-size: 11px; text-align: center; }
@@ -266,6 +268,40 @@ h1, h2, h3 { color: var(--ink); }
 .plan-slot-list details dt, .plan-slot-list details dd { margin: 0; font-size: 9px; line-height: 1.6; }
 .plan-slot-list details dt { color: var(--muted); }
 .plan-empty { min-height: 440px; display: grid; place-items: center; }
+.tactical-plan-view { display: grid; gap: 18px; }
+.tactical-section-heading { display: flex; align-items: center; gap: 10px; padding-bottom: 10px; border-bottom: 1px solid var(--ink); }
+.tactical-section-heading > .anticon { color: var(--wine); font-size: 19px; }
+.tactical-section-heading h3, .tactical-objective h3, .tactical-history h3 { margin: 2px 0 0; font: 600 16px/1.4 "Noto Serif SC", serif; }
+.tactical-window-meta { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; color: var(--muted); font-size: 10px; }
+.tactical-window-meta .ant-tag { margin: 0; }
+.tactical-objective { padding: 14px 0; border-block: 1px solid var(--line); }
+.tactical-objective p { margin: 7px 0 0; color: #403b37; font-size: 12px; line-height: 1.7; }
+.tactical-beat-list { margin: 0; padding: 0; list-style: none; }
+.tactical-beat-item { padding: 15px 3px; border-bottom: 1px solid var(--line); }
+.tactical-beat-item > header { display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: 9px; }
+.tactical-beat-item > header > span { color: var(--wine); font: 500 10px/1.6 monospace; }
+.tactical-beat-item > header strong, .tactical-beat-item > header small { display: block; overflow-wrap: anywhere; }
+.tactical-beat-item > header strong { font: 600 13px/1.5 "Noto Serif SC", serif; }
+.tactical-beat-item > header small { margin-top: 3px; color: var(--muted); font-size: 9px; }
+.tactical-beat-route { margin: 11px 0 0 43px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px 16px; }
+.tactical-beat-route p { margin: 0; display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: 5px; font-size: 10px; line-height: 1.65; }
+.tactical-beat-route b { color: var(--muted); font-weight: 500; }
+.tactical-beat-item details { margin: 10px 0 0 43px; }
+.tactical-beat-item summary { color: var(--green); cursor: pointer; font-size: 10px; }
+.tactical-hard-contract { margin: 8px 0 0; padding-left: 9px; border-left: 2px solid var(--line); }
+.tactical-hard-contract > div { display: grid; grid-template-columns: 62px minmax(0, 1fr); gap: 8px; }
+.tactical-hard-contract dt, .tactical-hard-contract dd { margin: 0; font-size: 9px; line-height: 1.65; }
+.tactical-hard-contract dt { color: var(--muted); }
+.tactical-contract-missing, .tactical-empty { color: var(--muted); font-size: 10px; }
+.tactical-empty { min-height: 160px; display: grid; place-items: center; }
+.tactical-history { margin-top: 4px; padding-top: 18px; border-top: 1px solid var(--ink); }
+.tactical-history > header { display: flex; align-items: flex-start; gap: 9px; }
+.tactical-history > header > .anticon { margin-top: 4px; color: var(--gold); }
+.tactical-history > header p { margin: 4px 0 0; color: var(--muted); font-size: 10px; }
+.tactical-history ol { margin: 13px 0 0; padding: 0; list-style: none; border-top: 1px solid var(--line); }
+.tactical-history li { min-height: 43px; display: grid; grid-template-columns: 42px 100px minmax(0, 1fr) auto; align-items: center; gap: 9px; border-bottom: 1px solid var(--line); font-size: 10px; }
+.tactical-history li strong { color: var(--wine); font-family: monospace; }
+.tactical-history li small, .tactical-history li time { color: var(--muted); }
 .editor-toolbar { min-height: 56px; display: flex; justify-content: space-between; align-items: start; gap: 14px; border-bottom: 1px solid var(--line); }
 .editor-toolbar > div:first-child { min-width: 0; flex: 1; }
 .editor-toolbar h2 { margin: 4px 0 14px; font: 600 18px/1.4 "Noto Serif SC", serif; }
@@ -358,6 +394,28 @@ h1, h2, h3 { color: var(--ink); }
 .review-surface summary { color: var(--wine); cursor: pointer; font-size: 11px; font-weight: 600; }
 .novel-plan-proposal-review .plan-summary { margin-top: 12px; }
 .novel-plan-proposal-review .plan-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.chapter-plan-window { margin-top: 12px; }
+.chapter-plan-window > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.chapter-plan-window > header div span, .chapter-plan-window > header div strong { display: block; }
+.chapter-plan-window > header div span { color: var(--green); font-size: 9px; }
+.chapter-plan-window > header div strong { margin-top: 2px; font: 600 12px/1.5 "Noto Serif SC", serif; }
+.chapter-plan-window > header .ant-tag { margin: 0; font-size: 9px; }
+.chapter-plan-window > p { margin: 8px 0; color: #403b37; font-size: 11px; line-height: 1.6; }
+.chapter-plan-window ol { margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--line); }
+.chapter-plan-window li { padding: 7px 0; display: grid; grid-template-columns: 42px minmax(0, 1fr); gap: 7px; border-bottom: 1px solid var(--line); }
+.chapter-plan-window li > span { color: var(--wine); font-size: 9px; }
+.chapter-plan-window li strong, .chapter-plan-window li small, .chapter-plan-window li em { display: block; overflow-wrap: anywhere; }
+.chapter-plan-window li strong { font-size: 11px; }
+.chapter-plan-window li small { margin-top: 2px; color: var(--muted); font-size: 9px; line-height: 1.5; }
+.chapter-plan-window li em { margin-top: 3px; color: var(--green); font-size: 9px; font-style: normal; }
+.chapter-plan-missing { color: var(--muted); font-size: 10px; }
+.execution-coverage-matrix { margin-top: 8px; border-top: 1px solid var(--line); }
+.execution-coverage-matrix > div { min-height: 29px; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; border-bottom: 1px solid var(--line); }
+.execution-coverage-matrix code { overflow-wrap: anywhere; color: #514b47; font-size: 9px; }
+.execution-coverage-matrix span { color: var(--green); font-size: 9px; }
+.chapter-plan-instruction { display: grid; gap: 8px; }
+.chapter-plan-instruction label { display: grid; gap: 6px; color: var(--muted); font-size: 10px; }
+.chapter-plan-instruction .ant-segmented { width: 100%; }
 .novel-plan-proposal-review .plan-metrics > div:nth-child(2) { border-right: 0; }
 .novel-plan-proposal-review .plan-metrics > div:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
 .novel-plan-proposal-review .plan-boundaries { max-height: 180px; overflow: auto; }
@@ -443,6 +501,9 @@ h1, h2, h3 { color: var(--ink); }
 .studio-failure .ant-empty-footer { display: flex; justify-content: center; gap: 8px; }
 .quota-policy-editor { display: flex; align-items: center; gap: 8px; }
 .quota-policy-editor .ant-input-number { width: 88px; }
+.planning-policy-editor { display: flex; align-items: center; gap: 7px; }
+.planning-policy-editor .ant-tag { margin: 0; white-space: nowrap; }
+.admin-feature-alert { margin-top: 24px; border-radius: 3px; }
 
 .auth-page { min-height: 100vh; display: grid; grid-template-columns: minmax(380px, 0.9fr) minmax(460px, 1.1fr); background: var(--paper); }
 .auth-imprint { min-height: 100vh; padding: 48px clamp(40px, 7vw, 100px); color: #f7f0e4; background-color: #282522; background-image: repeating-linear-gradient(90deg, rgba(255,255,255,0.018) 0, rgba(255,255,255,0.018) 1px, transparent 1px, transparent 5px); display: flex; flex-direction: column; justify-content: space-between; border-right: 12px solid #71313d; }
@@ -553,6 +614,7 @@ h1, h2, h3 { color: var(--ink); }
   .completion-generation-status { padding-right: 0; border-right: 0; }
   .completion-review-status { flex-wrap: wrap; }
   .studio-mobile-tabs { height: 52px; padding: 4px 14px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; background: var(--paper-deep); border-bottom: 1px solid var(--line); }
+  .studio-mobile-tabs[data-count="3"] { grid-template-columns: repeat(3, 1fr); }
   .studio-mobile-tabs button { min-height: 44px; display: flex; align-items: center; justify-content: center; gap: 6px; color: var(--muted); background: transparent; border: 0; border-bottom: 2px solid transparent; font-size: 12px; cursor: pointer; }
   .studio-mobile-tabs button.active { color: var(--wine); background: #fff; border-bottom-color: var(--wine); font-weight: 600; }
   .studio-grid { display: flex; flex-direction: column; }
@@ -576,6 +638,9 @@ h1, h2, h3 { color: var(--ink); }
   .plan-volume-sections header, .plan-arc-list header { align-items: flex-start; flex-direction: column; gap: 4px; padding: 10px 0; }
   .plan-tabs .ant-tabs-tab { padding-inline: 3px; }
   .plan-tabs .ant-tabs-tab-btn > span { gap: 3px; font-size: 11px; }
+  .tactical-beat-route { grid-template-columns: 1fr; }
+  .tactical-history li { grid-template-columns: 34px minmax(0, 1fr) auto; }
+  .tactical-history li small { grid-column: 2; }
   .editor-toolbar { align-items: flex-start; flex-wrap: wrap; }
   .editor-actions { width: 100%; justify-content: flex-end; flex-wrap: wrap; }
   .editor-actions .ant-segmented { margin-right: auto; }

@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
-import type { NovelPlan } from '@/types/novel'
+import type { NovelPlan, TacticalPlanResponse } from '@/types/novel'
 import { NovelPlanView } from './NovelPlanView'
 
 afterEach(cleanup)
@@ -32,6 +32,25 @@ function largePlan(): NovelPlan {
   }
 }
 
+function tacticalPlan(): TacticalPlanResponse {
+  const slot = largePlan().chapter_slots[4]
+  return { status: 'active', window: {
+    schema_version: 1, version: 6, novel_plan_version: 3, story_state_revision: 4,
+    source: 'chapter_refresh', start_chapter: 5, end_chapter: 9, volume_id: 'vol-1',
+    window_objective: '逼近第一卷中点并验证关键证词', created_at: '2026-08-05T10:00:00Z',
+    beats: [{ chapter_number: 5, slot_ref: 'ch5', tactical_goal: '查验证词矛盾',
+      approach: '让主角重访现场', bridge_from_previous: '承接匿名电话', pressure_escalation: '证人失踪',
+      exit_hook: '现场留下第二封信', pacing: '紧凑' }],
+  }, assembled_slots: [{ tactical: {
+    chapter_number: 5, slot_ref: 'ch5', tactical_goal: '查验证词矛盾', approach: '让主角重访现场',
+    bridge_from_previous: '承接匿名电话', pressure_escalation: '证人失踪', exit_hook: '现场留下第二封信', pacing: '紧凑',
+  }, slot_contract: { chapter_number: 5, volume_id: slot.volume_id, arc_ids: slot.arc_ids,
+    story_function: slot.story_function, obligations: [{ id: 'ch5:must:1', event: '关键事件' }],
+    planned_state_delta: { id: 'ch5:state_delta', value: slot.planned_state_delta },
+    setup_requirements: [], payoff_requirements: [], target_words: slot.target_words,
+    detail_level: slot.detail_level, status: slot.status } }] }
+}
+
 describe('NovelPlanView', () => {
   it('keeps a 200-chapter plan grouped by volume and exposes the final slot', () => {
     render(<NovelPlanView plan={largePlan()} />)
@@ -45,5 +64,25 @@ describe('NovelPlanView', () => {
   it('shows a stable empty state before a legacy book receives a plan', () => {
     render(<NovelPlanView />)
     expect(screen.getByText('整书规划尚未建立')).toBeInTheDocument()
+  })
+
+  it('shows the current tactical window, hard contracts, and append-only history', () => {
+    render(<NovelPlanView plan={largePlan()} tactical={tacticalPlan()} tacticalVersions={[{
+      version: 6, novel_plan_version: 3, story_state_revision: 4, start_chapter: 5,
+      end_chapter: 9, source: 'chapter_refresh', created_at: '2026-08-05T10:00:00Z',
+    }]} />)
+    fireEvent.click(screen.getByRole('tab', { name: /近期战术/ }))
+    expect(screen.getByText('逼近第一卷中点并验证关键证词')).toBeInTheDocument()
+    expect(screen.getByText('查验证词矛盾')).toBeInTheDocument()
+    expect(screen.getByText('版本历史')).toBeInTheDocument()
+    expect(screen.getByText('4,200 字')).toBeInTheDocument()
+  })
+
+  it('does not present a tactical history request failure as an empty history', () => {
+    render(<NovelPlanView plan={largePlan()} tactical={tacticalPlan()}
+      tacticalVersionsLoadFailed />)
+    fireEvent.click(screen.getByRole('tab', { name: /近期战术/ }))
+    expect(screen.getByText(/版本历史暂时无法读取/)).toBeInTheDocument()
+    expect(screen.queryByText('尚无历史版本')).not.toBeInTheDocument()
   })
 })

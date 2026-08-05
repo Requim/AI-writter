@@ -87,6 +87,7 @@ async def test_accept_plan_updates_immutable_version_and_mirrors(
 
     accepted = await repository.accept_plan(
         tenant_id, str(sample_novel.id), candidate, 0,
+        idempotency_key="initial-plan-proposal",
         created_by_user_id=str(tenant_context.user_id),
     )
     saved = await repository.find_by_id(tenant_id, str(sample_novel.id))
@@ -103,6 +104,88 @@ async def test_accept_plan_updates_immutable_version_and_mirrors(
 
 
 @pytest.mark.asyncio
+async def test_accept_plan_retry_is_idempotent_and_rejects_key_reuse(
+    repository, tenant_context, sample_novel
+) -> None:
+    tenant_id = str(tenant_context.tenant_id)
+    novel_id = str(sample_novel.id)
+    await repository.save(tenant_id, sample_novel)
+    candidate = _plan()
+
+    accepted = await repository.accept_plan(
+        tenant_id, novel_id, candidate, 0,
+        idempotency_key="retryable-plan-proposal",
+    )
+    retried = await repository.accept_plan(
+        tenant_id, novel_id, candidate, 0,
+        idempotency_key="retryable-plan-proposal",
+    )
+
+    assert accepted.version == retried.version == 1
+    assert [plan.version for plan in await repository.list_plan_versions(
+        tenant_id, novel_id
+    )] == [1]
+    with pytest.raises(PlanVersionConflictError, match="幂等键"):
+        await repository.accept_plan(
+            tenant_id, novel_id, _plan(source="different"), 0,
+            idempotency_key="retryable-plan-proposal",
+        )
+
+
+@pytest.mark.asyncio
+async def test_rewrite_keeps_following_chapters_and_full_progress(
+    repository, tenant_context, sample_novel
+) -> None:
+    tenant_id = str(tenant_context.tenant_id)
+    novel_id = str(sample_novel.id)
+    await repository.save(tenant_id, sample_novel)
+    await repository.accept_plan(
+        tenant_id, novel_id, _plan(), 0, idempotency_key="rewrite-plan-base"
+    )
+    chapters = [
+        await _store_chapter(repository, tenant_id, novel_id, index)
+        for index in range(3)
+    ]
+    before = await repository.find_by_id_with_chapters(tenant_id, novel_id)
+    assert before is not None
+    rewritten = Chapter(
+        id=chapters[1].id,
+        novel_id=UUID(novel_id),
+        chapter_index=1,
+        title="第二章（重写）",
+        outline={"chapter_number": 2},
+        content="重写正文",
+        word_count=3000,
+        status="completed",
+        version=chapters[1].version + 1,
+        created_at=chapters[1].created_at,
+    )
+
+    await repository.replace_chapter(
+        tenant_id,
+        novel_id,
+        rewritten,
+        rewritten.content,
+        {"type": "chapter", "chapter_index": 1},
+        before.progress,
+        chapter_summary="重写摘要",
+        story_state="{}",
+        discard_following=False,
+    )
+    await repository.mark_continuity_reconciliation_needed(tenant_id, novel_id)
+    saved = await repository.find_by_id_with_chapters(tenant_id, novel_id)
+
+    assert saved is not None
+    assert [chapter.chapter_index for chapter in saved.chapters] == [0, 1, 2]
+    assert saved.chapters[1].id == chapters[1].id
+    assert saved.chapters[1].version == chapters[1].version + 1
+    assert saved.progress.current_chapter == 3
+    assert saved.progress.status == "completed"
+    assert saved.progress.completed_words == 11_400
+    assert saved.progress.plan_status == "needs_reconciliation"
+
+
+@pytest.mark.asyncio
 async def test_plan_version_conflict_and_tenant_isolation(
     repository, tenant_context, other_tenant_context, sample_novel
 ) -> None:
@@ -115,15 +198,22 @@ async def test_plan_version_conflict_and_tenant_isolation(
         novel_id,
         _plan(),
         0,
+        idempotency_key="tenant-plan-base",
         created_by_user_id=str(tenant_context.user_id),
         trigger_chapter=2,
         change_summary="调整第二卷节奏",
     )
 
     with pytest.raises(PlanVersionConflictError):
-        await repository.accept_plan(tenant_id, novel_id, _plan(), 0)
+        await repository.accept_plan(
+            tenant_id, novel_id, _plan(), 0,
+            idempotency_key="tenant-plan-stale",
+        )
     with pytest.raises(RuntimeError, match="目标小说不存在"):
-        await repository.accept_plan(other_id, novel_id, _plan(), 0)
+        await repository.accept_plan(
+            other_id, novel_id, _plan(), 0,
+            idempotency_key="tenant-plan-other",
+        )
 
     assert await repository.get_latest_plan(other_id, novel_id) is None
     assert await repository.list_plan_versions(other_id, novel_id) == []
@@ -143,8 +233,13 @@ async def test_execution_upsert_rejects_stale_version_and_updates_progress(
     tenant_id = str(tenant_context.tenant_id)
     novel_id = str(sample_novel.id)
     await repository.save(tenant_id, sample_novel)
-    await repository.accept_plan(tenant_id, novel_id, _plan(), 0)
-    await repository.accept_plan(tenant_id, novel_id, _plan(source="replan"), 1)
+    await repository.accept_plan(
+        tenant_id, novel_id, _plan(), 0, idempotency_key="execution-plan-base",
+    )
+    await repository.accept_plan(
+        tenant_id, novel_id, _plan(source="replan"), 1,
+        idempotency_key="execution-plan-replan",
+    )
 
     with pytest.raises(PlanVersionConflictError):
         await repository.upsert_plan_execution(
@@ -167,7 +262,9 @@ async def test_rewind_clears_executions_and_preserves_plan_mirror(
     tenant_id = str(tenant_context.tenant_id)
     novel_id = str(sample_novel.id)
     await repository.save(tenant_id, sample_novel)
-    await repository.accept_plan(tenant_id, novel_id, _plan(), 0)
+    await repository.accept_plan(
+        tenant_id, novel_id, _plan(), 0, idempotency_key="rewind-plan-base",
+    )
     chapters: list[Chapter] = []
     for index in range(3):
         chapters.append(await _store_chapter(repository, tenant_id, novel_id, index))

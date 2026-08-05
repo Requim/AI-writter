@@ -8,6 +8,7 @@ from typing import Literal
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
 
+from application.feature_policy import require_planning_v1
 from application.prompts.compaction_prompts import build_compaction_prompt
 from application.schemas.agent_state import NovelAgentState
 from application.streaming import emit_workflow_event
@@ -80,6 +81,10 @@ async def chapter_compaction_node(
     state: NovelAgentState, config: RunnableConfig
 ) -> Command[Literal["router_agent"]]:
     """Compact a draft once when deterministic budget checks trigger."""
+    await require_planning_v1(
+        config,
+        workflow_schema_version=int(state.get("workflow_schema_version") or 2),
+    )
     content = str(state.get("current_chapter_content") or "")
     reasons = compaction_reasons(state)
     enabled = config["configurable"].get("adaptive_compaction_enabled", False)

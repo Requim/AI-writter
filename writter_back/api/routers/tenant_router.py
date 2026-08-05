@@ -15,6 +15,7 @@ from api.dependencies import (
     get_identity_repository,
     get_tenant_context,
 )
+from api.tenant_features import tenant_feature_list
 from application.auth_service import AuthService
 from config import settings
 from infrastructure.database.identity_repository import IdentityRepository
@@ -45,7 +46,7 @@ async def list_tenants(
     user: CurrentUser = Depends(get_current_user),
     identity: IdentityRepository = Depends(get_identity_repository),
 ) -> list[dict[str, Any]]:
-    return await identity.list_tenants(user.id)
+    return tenant_feature_list(await identity.list_tenants(user.id))
 
 
 @router.get("/current/usage")

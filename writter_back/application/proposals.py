@@ -18,6 +18,7 @@ PROPOSAL_KINDS = {
     "summary",
     "outline",
     "novel_plan",
+    "chapter_plan",
     "chapter_outline",
     "reflection",
     "revision",
@@ -35,6 +36,7 @@ class ReviewDecision:
     value: Any = None
     instruction: str = ""
     feedback: str = ""
+    scope: str = ""
 
 
 _REPLACEMENT_TYPES: dict[str, tuple[type, ...]] = {
@@ -44,6 +46,7 @@ _REPLACEMENT_TYPES: dict[str, tuple[type, ...]] = {
     "summary": (str, Mapping),
     "outline": (Mapping,),
     "novel_plan": (Mapping,),
+    "chapter_plan": (Mapping,),
     "chapter_outline": (Mapping,),
     "reflection": (str,),
     "revision": (str,),
@@ -142,6 +145,15 @@ def _instruction(raw: Mapping[str, Any]) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
+def _revision_scope(raw: Mapping[str, Any], proposal: PendingProposal) -> str:
+    if proposal["kind"] != "chapter_plan":
+        return ""
+    scope = str(raw.get("scope") or "both")
+    if scope not in {"tactical", "chapter_outline", "both"}:
+        raise InvalidReviewDecisionError("chapter_plan 修改范围无效")
+    return scope
+
+
 def _modify_decision(
     raw: Mapping[str, Any], proposal: PendingProposal
 ) -> ReviewDecision:
@@ -153,7 +165,9 @@ def _modify_decision(
         instruction = ""
     if not instruction and value.strip() != "revise":
         raise InvalidReviewDecisionError("modify 必须提供修改要求")
-    return ReviewDecision("revise", instruction=instruction)
+    return ReviewDecision(
+        "revise", instruction=instruction, scope=_revision_scope(raw, proposal)
+    )
 
 
 def _envelope_decision(
@@ -167,12 +181,18 @@ def _envelope_decision(
     if action == "accept":
         return ReviewDecision("accept")
     if action == "regenerate":
-        return ReviewDecision("regenerate", feedback=_feedback(raw))
+        return ReviewDecision(
+            "regenerate",
+            feedback=_feedback(raw),
+            scope=_revision_scope(raw, proposal),
+        )
     if action == "revise":
         instruction = _instruction(raw)
         if not instruction:
             raise InvalidReviewDecisionError("revise 必须提供 instruction")
-        return ReviewDecision("revise", instruction=instruction)
+        return ReviewDecision(
+            "revise", instruction=instruction, scope=_revision_scope(raw, proposal)
+        )
     if action == "replace":
         return _replacement_decision(proposal["kind"], raw.get("value"))
     raise InvalidReviewDecisionError("未知审核决定")

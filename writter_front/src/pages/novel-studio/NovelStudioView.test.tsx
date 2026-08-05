@@ -11,7 +11,7 @@ function completedController(): NovelStudioController {
   const action = vi.fn()
   return {
     novelId: 'novel-1', autoMode: false, autoRunActive: false, isCompleted: true,
-    canDelete: true, hasUnsavedChanges: false, hasRecoverableCheckpoint: false,
+    canDelete: true, hasUnsavedChanges: false, hasRecoverableCheckpoint: false, planningEnabled: true,
     recoveryLabel: '继续创作', confirmDiscardChanges: action,
     document: {
       novel: { id: 'novel-1', novel_type: 'suspense', title: '三章完稿', status: 'completed' },
@@ -27,7 +27,7 @@ function completedController(): NovelStudioController {
         status: 'completed', version: 1, review_status: 'unknown', quality_score: null,
       }],
       editorTitle: '', editorContent: '', editorMode: 'read', workspaceMode: 'chapter',
-      mobilePanel: 'editor', loading: false, saving: false, rewriting: false,
+      mobilePanel: 'editor', loading: false, saving: false, rewriting: false, tacticalVersions: [],
     },
     workflow: { state: initialWorkflowState, sync: vi.fn() } as unknown as NovelStudioController['workflow'],
     refresh: async () => undefined, openChapter: action, saveChapter: vi.fn(async () => true),
@@ -113,6 +113,20 @@ describe('NovelStudioView completed state', () => {
     expect(screen.getAllByText('第一卷')).toHaveLength(2)
   })
 
+  it('returns the mobile planning index to chapter mode from the directory tab', () => {
+    const controller = completedController()
+    controller.document.plan = studioPlan()
+    controller.document.workspaceMode = 'plan'
+    controller.document.mobilePanel = 'plan'
+    render(<NovelStudioView controller={controller} />)
+
+    fireEvent.click(screen.getByRole('tab', { name: /目录/ }))
+
+    expect(controller.setEditor).toHaveBeenCalledWith({
+      mobilePanel: 'chapters', workspaceMode: 'chapter',
+    })
+  })
+
   it('starts a scoped replan and opens the workflow panel for review', () => {
     const controller = completedController()
     controller.isCompleted = false
@@ -152,5 +166,18 @@ describe('NovelStudioView completed state', () => {
     controller.isCompleted = true
     rerender(<NovelStudioView controller={controller} />)
     expect(screen.getByRole('button', { name: '调整规划' })).toBeDisabled()
+  })
+
+  it('hides all planning workspace entries when the tenant flag is ineffective', () => {
+    const controller = completedController()
+    controller.planningEnabled = false
+    controller.document.plan = studioPlan()
+    controller.document.workspaceMode = 'plan'
+    controller.document.mobilePanel = 'plan'
+    render(<NovelStudioView controller={controller} />)
+    expect(screen.queryByRole('radio', { name: '规划' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('tab', { name: '规划' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '调整规划' })).not.toBeInTheDocument()
+    expect(screen.getByText('稿纸已经铺好').closest('section')).toHaveClass('mobile-active')
   })
 })

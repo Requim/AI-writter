@@ -40,6 +40,7 @@ class NovelPlanRepository(ABC):
         plan: NovelPlan,
         expected_version: int,
         *,
+        idempotency_key: str,
         created_by_user_id: str | None = None,
         trigger_chapter: int | None = None,
         change_summary: str = "",

@@ -10,6 +10,7 @@ from api.dependencies import (
     get_current_user,
     get_identity_repository,
 )
+from api.tenant_features import tenant_feature_list
 from application.auth_service import AuthService, AuthenticationError
 from infrastructure.database.identity_repository import (
     DuplicateIdentityError,
@@ -57,7 +58,7 @@ async def _session_response(
     return {
         **tokens,
         "user": _user_payload(user),
-        "tenants": await identity.list_tenants(user.id),
+        "tenants": tenant_feature_list(await identity.list_tenants(user.id)),
     }
 
 
@@ -117,7 +118,7 @@ async def me(
 ) -> dict[str, Any]:
     return {
         "user": _user_payload(user),
-        "tenants": await identity.list_tenants(user.id),
+        "tenants": tenant_feature_list(await identity.list_tenants(user.id)),
     }
 
 

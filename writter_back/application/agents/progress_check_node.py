@@ -7,6 +7,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.types import Overwrite, interrupt
 
 from application.schemas.agent_state import NovelAgentState
+from application.feature_policy import require_planning_v1
 
 logger = logging.getLogger("uvicorn")
 
@@ -71,6 +72,11 @@ def _rewind_cleanup(state: NovelAgentState, current_index: int) -> dict[str, obj
         "user_decision": {},
         "chapter_outlines": Overwrite(outlines),
         "completed_chapters": Overwrite(completed),
+        "tactical_window": None,
+        "tactical_previous_window": None,
+        "tactical_window_expected_version": None,
+        "tactical_window_persisted": False,
+        "story_state_needs_reconciliation": True,
     }
 
 
@@ -92,6 +98,11 @@ async def progress_check_node(
 ) -> dict[str, object]:
     total_chapters = _safe_get_total_chapters(state)
     current_index, is_completed, rewound = await _trusted_progress(state, config)
+    if (
+        not is_completed
+        and int(state.get("workflow_schema_version") or 2) >= 5
+    ):
+        await require_planning_v1(config)
     updates = _rewind_cleanup(state, current_index) if rewound else {}
     logger.info(
         "【进度检查节点】当前章节=%s, 总章节=%s, 是否完成=%s",

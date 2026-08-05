@@ -79,16 +79,20 @@ const mobileTabs = [
 ] as const
 
 function StudioMobileTabs({ controller }: { controller: NovelStudioController }) {
-  const current = controller.document.mobilePanel
+  const current = !controller.planningEnabled && controller.document.mobilePanel === 'plan'
+    ? 'editor' : controller.document.mobilePanel
+  const tabs = controller.planningEnabled
+    ? mobileTabs : mobileTabs.filter((tab) => tab.value !== 'plan')
   return (
-    <div className="studio-mobile-tabs" role="tablist" aria-label="创作台视图">
-      {mobileTabs.map((tab) => (
+    <div className="studio-mobile-tabs" data-count={tabs.length} role="tablist" aria-label="创作台视图">
+      {tabs.map((tab) => (
         <button
           key={tab.value} type="button" role="tab" aria-selected={current === tab.value}
           className={current === tab.value ? 'active' : ''}
           onClick={() => controller.setEditor({
             mobilePanel: tab.value,
-            ...(tab.value === 'editor' ? { workspaceMode: 'chapter' as const } : {}),
+            ...(['editor', 'chapters'].includes(tab.value)
+              ? { workspaceMode: 'chapter' as const } : {}),
             ...(tab.value === 'plan' ? { workspaceMode: 'plan' as const } : {}),
           })}
         >
@@ -148,7 +152,7 @@ function CompletionSummary({ controller }: { controller: NovelStudioController }
 
 function ChapterSidebar({ controller }: { controller: NovelStudioController }) {
   const { chapters, mobilePanel, workspaceMode } = controller.document
-  const showPlan = workspaceMode === 'plan'
+  const showPlan = controller.planningEnabled && workspaceMode === 'plan'
   return (
     <aside className={`manuscript-panel studio-pane ${mobilePanel === 'chapters' ? 'mobile-active' : ''}`}>
       <div className="panel-heading">
@@ -157,11 +161,11 @@ function ChapterSidebar({ controller }: { controller: NovelStudioController }) {
           <Button type="text" icon={<ReloadOutlined />} onClick={() => void controller.refresh()} />
         </Tooltip>
       </div>
-      <Segmented className="studio-navigation-switch" size="small" block value={showPlan ? 'plan' : 'chapters'}
+      {controller.planningEnabled && <Segmented className="studio-navigation-switch" size="small" block value={showPlan ? 'plan' : 'chapters'}
         onChange={(value) => controller.setEditor(value === 'plan'
           ? { workspaceMode: 'plan', mobilePanel: 'plan' }
           : { workspaceMode: 'chapter', mobilePanel: 'chapters' })}
-        options={[{ label: '目录', value: 'chapters' }, { label: '规划', value: 'plan' }]} />
+        options={[{ label: '目录', value: 'chapters' }, { label: '规划', value: 'plan' }]} />}
       {showPlan ? <PlanIndex controller={controller} /> : <ol className="chapter-list">
           {chapters.map((chapter) => <ChapterItem key={chapter.id} chapter={chapter} controller={controller} />)}
           {chapters.length === 0 && <li className="chapter-empty">章节将在这里归档</li>}
@@ -171,10 +175,13 @@ function ChapterSidebar({ controller }: { controller: NovelStudioController }) {
 }
 
 function PlanIndex({ controller }: { controller: NovelStudioController }) {
-  const { plan, planLoadFailed } = controller.document
+  const { plan, planLoadFailed, tacticalPlan } = controller.document
   if (planLoadFailed) return <div className="plan-index-empty">规划暂时无法读取</div>
   if (!plan) return <div className="plan-index-empty">等待整书规划归档</div>
+  const window = tacticalPlan?.window
   return <div className="plan-index"><div><strong>V{plan.version}</strong><span>{plan.scale.target_chapters} 章 · {plan.scale.target_volumes} 卷</span></div>
+    {window && <div className="plan-index-tactical"><strong>战术 V{window.version}</strong>
+      <span>近期 {window.start_chapter} - {window.end_chapter} 章</span></div>}
     <ol>{plan.volumes.map((volume) => <li key={volume.volume_id}><span>{volume.title || volume.volume_id}</span>
       <small>{volume.start_chapter} - {volume.end_chapter} 章</small></li>)}</ol></div>
 }
@@ -283,7 +290,9 @@ function EditorBody({ controller, live }: { controller: NovelStudioController; l
 
 function ChapterEditor({ controller }: { controller: NovelStudioController }) {
   const live = Boolean(controller.workflow.state.draft)
-  const active = controller.document.mobilePanel === 'editor' ? 'mobile-active' : ''
+  const selected = controller.document.mobilePanel === 'editor'
+    || (!controller.planningEnabled && controller.document.mobilePanel === 'plan')
+  const active = selected ? 'mobile-active' : ''
   return (
     <section className={`editor-panel studio-pane ${active}`}>
       <EditorToolbar controller={controller} live={live} />
@@ -305,7 +314,11 @@ function PlanningWorkspace({ controller }: { controller: NovelStudioController }
   const replanAction = <PlanReplanDialog disabledReason={planReplanDisabledReason(controller)}
     onSubmit={controller.replanPlan} />
   return <section className={`planning-workspace studio-pane ${active}`}>
-    <NovelPlanView plan={controller.document.plan} headerAction={replanAction}
+    <NovelPlanView plan={controller.document.plan} tactical={controller.document.tacticalPlan}
+      tacticalVersions={controller.document.tacticalVersions}
+      tacticalLoadFailed={controller.document.tacticalLoadFailed}
+      tacticalVersionsLoadFailed={controller.document.tacticalVersionsLoadFailed}
+      headerAction={replanAction}
       emptyDescription={controller.document.planLoadFailed ? '整书规划暂时无法读取，请刷新后重试' : undefined} />
   </section>
 }
@@ -335,7 +348,7 @@ export function NovelStudioView({ controller }: { controller: NovelStudioControl
       <StudioMobileTabs controller={controller} />
       <div className="studio-grid">
         <ChapterSidebar controller={controller} />
-        {controller.document.workspaceMode === 'plan'
+        {controller.planningEnabled && controller.document.workspaceMode === 'plan'
           ? <PlanningWorkspace controller={controller} /> : <ChapterEditor controller={controller} />}
         <WorkflowSidebar controller={controller} />
       </div>

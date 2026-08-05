@@ -37,7 +37,9 @@ export const tenantApi = {
 export const adminApi = {
   tenants: () => data<AdminTenant[]>(apiClient.get('/v1/admin/tenants')),
   users: () => data<AdminUser[]>(apiClient.get('/v1/admin/users')),
-  updateTenant: (tenantId: string, payload: Partial<Pick<AdminTenant, 'status' | 'ai_enabled' | 'monthly_generation_limit' | 'monthly_generation_unlimited'>>) =>
+  updateTenant: (tenantId: string, payload: Partial<Pick<AdminTenant,
+    'status' | 'ai_enabled' | 'monthly_generation_limit' | 'monthly_generation_unlimited'
+    | 'novel_planning_v1_enabled'>>) =>
     apiClient.patch(`/v1/admin/tenants/${tenantId}`, payload),
   updateUser: (userId: string, status: 'active' | 'suspended') =>
     apiClient.patch(`/v1/admin/users/${userId}`, { status }),

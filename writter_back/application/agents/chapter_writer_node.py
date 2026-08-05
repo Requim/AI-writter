@@ -8,6 +8,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
 
 from application.continuity import build_story_bible
+from application.feature_policy import require_planning_v1
 from application.prompts.chapter_writer_prompts import (
     CHAPTER_WRITER_TEMPERATURE,
     build_chapter_continue_prompt,
@@ -112,6 +113,12 @@ async def _reserve_quota(state: NovelAgentState, config: RunnableConfig) -> None
         return
     if values.get("quota_operation_pre_reserved", False):
         return
+    if (
+        int(state.get("workflow_schema_version") or 2) >= 5
+        and state.get("chapter_quota_reserved_for_chapter")
+        == state.get("current_chapter_index", 0)
+    ):
+        return
     await service.reserve(context, run_id, "chapter", state.get("current_chapter_index", 0))
 
 
@@ -162,6 +169,10 @@ async def chapter_writer_node(
     state: NovelAgentState, config: RunnableConfig
 ) -> Command[Literal["router_agent"]]:
     """Generate one chapter and leave review decisions to downstream nodes."""
+    await require_planning_v1(
+        config,
+        workflow_schema_version=int(state.get("workflow_schema_version") or 2),
+    )
     llm = config["configurable"].get("llm_config", {}).get("llm_instance")
     if not llm:
         raise RuntimeError("章节正文生成失败：LLM 不可用")

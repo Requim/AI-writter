@@ -11,6 +11,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
+    false,
     func,
     Index,
     Integer,
@@ -52,6 +53,9 @@ class TenantModel(Base):
     ai_enabled = Column(Boolean, nullable=False, default=True)
     monthly_generation_limit = Column(Integer, nullable=False, default=30)
     monthly_generation_unlimited = Column(Boolean, nullable=False, default=False)
+    novel_planning_v1_enabled = Column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
     created_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now)
 
@@ -123,6 +127,11 @@ class NovelModel(Base):
     plan_executions = relationship(
         "NovelPlanExecutionModel", back_populates="novel", cascade="all, delete-orphan"
     )
+    tactical_plan_versions = relationship(
+        "NovelTacticalPlanVersionModel",
+        back_populates="novel",
+        cascade="all, delete-orphan",
+    )
 
 
 class NovelPlanVersionModel(Base):
@@ -137,6 +146,10 @@ class NovelPlanVersionModel(Base):
         UniqueConstraint(
             "tenant_id", "novel_id", "version", name="uq_plan_versions_version"
         ),
+        UniqueConstraint(
+            "tenant_id", "novel_id", "idempotency_key",
+            name="uq_plan_versions_idempotency",
+        ),
         Index(
             "ix_plan_versions_tenant_novel",
             "tenant_id",
@@ -150,6 +163,10 @@ class NovelPlanVersionModel(Base):
             name="ck_plan_versions_trigger_chapter",
         ),
         CheckConstraint(
+            "idempotency_key IS NULL OR idempotency_key <> ''",
+            name="ck_plan_versions_idempotency_key",
+        ),
+        CheckConstraint(
             "jsonb_typeof(plan) = 'object'", name="ck_plan_versions_plan_object"
         ),
     )
@@ -161,6 +178,7 @@ class NovelPlanVersionModel(Base):
     source = Column(String(30), nullable=False)
     trigger_chapter = Column(Integer, nullable=True)
     change_summary = Column(Text, nullable=False, default="", server_default="")
+    idempotency_key = Column(String(128), nullable=True)
     plan_data = Column("plan", JSONB, nullable=False)
     created_by_user_id = Column(
         UUID(as_uuid=True),
@@ -172,6 +190,84 @@ class NovelPlanVersionModel(Base):
     )
 
     novel = relationship("NovelModel", back_populates="plan_versions")
+
+
+class NovelTacticalPlanVersionModel(Base):
+    __tablename__ = "novel_tactical_plan_versions"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "novel_id"],
+            ["novels.tenant_id", "novels.id"],
+            ondelete="CASCADE",
+            name="fk_tactical_versions_tenant_novel",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "novel_id", "novel_plan_version"],
+            [
+                "novel_plan_versions.tenant_id",
+                "novel_plan_versions.novel_id",
+                "novel_plan_versions.version",
+            ],
+            ondelete="CASCADE",
+            name="fk_tactical_versions_plan_version",
+        ),
+        UniqueConstraint(
+            "tenant_id", "novel_id", "version",
+            name="uq_tactical_versions_version",
+        ),
+        UniqueConstraint(
+            "tenant_id", "novel_id", "idempotency_key",
+            name="uq_tactical_versions_idempotency",
+        ),
+        Index(
+            "ix_tactical_versions_tenant_novel",
+            "tenant_id", "novel_id", "version",
+        ),
+        CheckConstraint("version >= 1", name="ck_tactical_versions_version"),
+        CheckConstraint(
+            "novel_plan_version >= 1", name="ck_tactical_versions_plan_version"
+        ),
+        CheckConstraint(
+            "story_state_revision >= 0", name="ck_tactical_versions_story_revision"
+        ),
+        CheckConstraint(
+            "window_start >= 1 AND window_end >= window_start "
+            "AND window_end - window_start <= 6",
+            name="ck_tactical_versions_window",
+        ),
+        CheckConstraint("source <> ''", name="ck_tactical_versions_source"),
+        CheckConstraint(
+            "idempotency_key <> ''",
+            name="ck_tactical_versions_idempotency_key",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(window) = 'object'",
+            name="ck_tactical_versions_window_object",
+        ),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    tenant_id = Column(UUID(as_uuid=True), nullable=False)
+    novel_id = Column(UUID(as_uuid=True), nullable=False)
+    version = Column(Integer, nullable=False)
+    novel_plan_version = Column(Integer, nullable=False)
+    story_state_revision = Column(Integer, nullable=False)
+    window_start = Column(Integer, nullable=False)
+    window_end = Column(Integer, nullable=False)
+    source = Column(String(30), nullable=False)
+    idempotency_key = Column(String(128), nullable=False)
+    window_data = Column("window", JSONB, nullable=False)
+    created_by_user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at = Column(
+        DateTime(timezone=True), nullable=False,
+        default=utc_now, server_default=func.now(),
+    )
+
+    novel = relationship("NovelModel", back_populates="tactical_plan_versions")
 
 
 class NovelPlanExecutionModel(Base):
@@ -193,6 +289,16 @@ class NovelPlanExecutionModel(Base):
             ondelete="CASCADE",
             name="fk_plan_executions_plan_version",
         ),
+        ForeignKeyConstraint(
+            ["tenant_id", "novel_id", "tactical_version"],
+            [
+                "novel_tactical_plan_versions.tenant_id",
+                "novel_tactical_plan_versions.novel_id",
+                "novel_tactical_plan_versions.version",
+            ],
+            ondelete="CASCADE",
+            name="fk_plan_executions_tactical_version",
+        ),
         UniqueConstraint(
             "tenant_id",
             "novel_id",
@@ -207,6 +313,10 @@ class NovelPlanExecutionModel(Base):
         ),
         CheckConstraint("chapter_number >= 1", name="ck_plan_execution_chapter"),
         CheckConstraint("plan_version >= 1", name="ck_plan_execution_version"),
+        CheckConstraint(
+            "tactical_version IS NULL OR tactical_version >= 1",
+            name="ck_plan_execution_tactical_version",
+        ),
         CheckConstraint("actual_words >= 0", name="ck_plan_execution_words"),
         CheckConstraint("status <> ''", name="ck_plan_execution_status"),
         CheckConstraint(
@@ -224,6 +334,7 @@ class NovelPlanExecutionModel(Base):
     novel_id = Column(UUID(as_uuid=True), nullable=False)
     chapter_number = Column(Integer, nullable=False)
     plan_version = Column(Integer, nullable=False)
+    tactical_version = Column(Integer, nullable=True)
     status = Column(String(30), nullable=False)
     actual_words = Column(Integer, nullable=False, default=0, server_default="0")
     fulfillment = Column(JSONB, nullable=False, default=dict, server_default="{}")

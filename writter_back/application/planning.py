@@ -374,7 +374,13 @@ def classify_drift(
         return "major"
     deviation = abs(actual_words - target_words) / max(target_words, 1)
     delayed = fulfillment.get("deferred_items") or fulfillment.get("missing_required_events")
-    return "minor" if deviation > 0.2 or delayed else "none"
+    tactical = fulfillment.get("tactical_fulfillment")
+    tactical_drift = (
+        tactical.get("deviations")
+        if isinstance(tactical, dict)
+        else None
+    )
+    return "minor" if deviation > 0.2 or delayed or tactical_drift else "none"
 
 
 def plan_diff(previous: NovelPlan | None, candidate: NovelPlan) -> dict[str, Any]:

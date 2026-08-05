@@ -16,6 +16,8 @@ export interface TenantSummary {
   ai_enabled: boolean
   monthly_generation_limit: number
   monthly_generation_unlimited: boolean
+  novel_planning_v1_enabled?: boolean
+  novel_planning_v1_effective?: boolean
 }
 
 export interface AuthSession {
@@ -52,6 +54,9 @@ export interface AdminTenant {
   ai_enabled: boolean
   monthly_generation_limit: number
   monthly_generation_unlimited: boolean
+  novel_planning_v1_enabled?: boolean
+  novel_planning_v1_effective?: boolean
+  novel_planning_v1_globally_enabled?: boolean
   member_count: number
   usage: number
 }

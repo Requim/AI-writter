@@ -27,7 +27,10 @@ from application.agents.novel_plan_node import (
 from application.agents.chapter_outline_node import (
     chapter_outline_node,
     chapter_outline_review_node,
+    chapter_plan_review_node,
 )
+from application.agents.tactical_plan_node import tactical_plan_node
+from application.agents.chapter_quota_node import chapter_quota_node
 from application.agents.metadata_persist_node import metadata_persist_node
 from application.agents.chapter_writer_node import chapter_writer_node
 from application.agents.chapter_compaction_node import chapter_compaction_node
@@ -57,6 +60,9 @@ __all__ = [
     "plan_reconciliation_node",
     "chapter_outline_node",
     "chapter_outline_review_node",
+    "chapter_plan_review_node",
+    "tactical_plan_node",
+    "chapter_quota_node",
     "metadata_persist_node",
     "chapter_writer_node",
     "chapter_compaction_node",

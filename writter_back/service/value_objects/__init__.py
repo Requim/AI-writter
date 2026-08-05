@@ -16,9 +16,18 @@ from .novel_plan import (
     validate_novel_plan,
     validate_plan_transition,
 )
+from .tactical_plan import (
+    ChapterExecutionContract,
+    TacticalBeat,
+    TacticalPlanValidationError,
+    TacticalWindow,
+    chapter_slot_ref,
+    obligation_id,
+)
 
 __all__ = [
     "ChapterOutline",
+    "ChapterExecutionContract",
     "ChapterSlot",
     "NovelPlan",
     "NovelPlanVersionSummary",
@@ -29,8 +38,13 @@ __all__ = [
     "Progress",
     "ScaleContract",
     "StoryArc",
+    "TacticalBeat",
+    "TacticalPlanValidationError",
+    "TacticalWindow",
     "VolumePlan",
     "allocate_word_targets",
+    "chapter_slot_ref",
+    "obligation_id",
     "planning_options",
     "validate_novel_plan",
     "validate_plan_transition",

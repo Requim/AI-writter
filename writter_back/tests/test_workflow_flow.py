@@ -281,7 +281,10 @@ async def test_router_is_invoked_by_langgraph_with_config_contract():
 
     for destination in (
         "outline_node",
+        "novel_plan_initialize_node",
         "memory_retrieval_node",
+        "chapter_quota_node",
+        "tactical_plan_node",
         "chapter_outline_node",
         "chapter_writer_node",
         "chapter_compaction_node",

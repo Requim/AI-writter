@@ -3,13 +3,15 @@ import axios from 'axios'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate, useParams } from 'react-router'
 import { novelApi } from '@/api/novel'
+import { tenantApi } from '@/api/auth'
 import { useWorkflowStream, type WorkflowViewState } from '@/hooks/useWorkflowStream'
 import { useUnsavedChangesGuard, type DiscardConfirmation } from '@/hooks/useUnsavedChangesGuard'
-import { currentTenant } from '@/stores/authStore'
+import { currentTenant, useAuthStore } from '@/stores/authStore'
 import { useNovelStore } from '@/stores/novelStore'
 import { refreshQuota } from '@/stores/quotaStore'
 import type {
   ChapterDetail, ChapterSummary, NovelPlan, NovelResponse, PlanReplanRequest, ProgressResponse,
+  TacticalPlanResponse, TacticalPlanVersionSummary,
 } from '@/types/novel'
 import {
   autoResumeValue, hasChapterChanges, interruptKey, rewindImpactText, shouldAutoResume,
@@ -24,6 +26,10 @@ interface DocumentState {
   novel?: NovelResponse
   plan?: NovelPlan
   planLoadFailed?: boolean
+  tacticalPlan?: TacticalPlanResponse
+  tacticalVersions: TacticalPlanVersionSummary[]
+  tacticalLoadFailed?: boolean
+  tacticalVersionsLoadFailed?: boolean
   progress?: ProgressResponse
   chapters: ChapterSummary[]
   selectedChapter?: ChapterDetail
@@ -50,7 +56,7 @@ interface DocumentModel {
 const initialDocumentState: DocumentState = {
   chapters: [], editorTitle: '', editorContent: '', editorMode: 'read',
   workspaceMode: 'chapter', mobilePanel: 'editor', loading: true,
-  saving: false, saveFailed: false, rewriting: false,
+  tacticalVersions: [], saving: false, saveFailed: false, rewriting: false,
 }
 
 const REWRITE_SYNC_CODES = new Set([
@@ -101,6 +107,7 @@ function useDocumentRefresh(
   model: DocumentModel,
   novelId: string,
   message: AppContext['message'],
+  planningEnabled: boolean,
 ) {
   const { setState, selectedRef, loadedRef } = model
   return useCallback(async () => {
@@ -108,12 +115,16 @@ function useDocumentRefresh(
     if (!loadedRef.current) setState((current) => ({ ...current, loading: true, loadError: undefined }))
     try {
       const [novel, progress, chapters, planning] = await Promise.all([
-        novelApi.get(novelId), novelApi.progress(novelId), novelApi.chapters(novelId), loadOptionalPlan(novelId),
+        novelApi.get(novelId), novelApi.progress(novelId), novelApi.chapters(novelId),
+        loadOptionalPlanning(novelId, planningEnabled),
       ])
       loadedRef.current = true
       setState((current) => ({
         ...current, novel, progress, chapters, plan: planning.plan,
-        planLoadFailed: planning.failed, loadError: undefined,
+        planLoadFailed: planning.planFailed, tacticalPlan: planning.tactical,
+        tacticalVersions: planning.tacticalVersions, tacticalLoadFailed: planning.tacticalFailed,
+        tacticalVersionsLoadFailed: planning.tacticalVersionsFailed,
+        loadError: undefined,
       }))
       if (!selectedRef.current && chapters.length > 0) {
         applySelectedChapter(setState, selectedRef, await novelApi.chapter(novelId, chapters.at(-1)!.id))
@@ -124,7 +135,7 @@ function useDocumentRefresh(
     } finally {
       setState((current) => ({ ...current, loading: false }))
     }
-  }, [loadedRef, message, novelId, selectedRef, setState])
+  }, [loadedRef, message, novelId, planningEnabled, selectedRef, setState])
 }
 
 async function loadOptionalPlan(novelId: string): Promise<{ plan?: NovelPlan; failed?: boolean }> {
@@ -134,6 +145,37 @@ async function loadOptionalPlan(novelId: string): Promise<{ plan?: NovelPlan; fa
   } catch (error) {
     if (axios.isAxiosError(error) && error.response?.status === 404) return {}
     return { failed: true }
+  }
+}
+
+interface PlanningDocuments {
+  plan?: NovelPlan
+  tactical?: TacticalPlanResponse
+  tacticalVersions: TacticalPlanVersionSummary[]
+  planFailed?: boolean
+  tacticalFailed?: boolean
+  tacticalVersionsFailed?: boolean
+}
+
+async function loadOptionalPlanning(novelId: string, enabled: boolean): Promise<PlanningDocuments> {
+  if (!enabled) return { tacticalVersions: [] }
+  const [planning, tactical] = await Promise.all([loadOptionalPlan(novelId), loadOptionalTactical(novelId)])
+  return {
+    plan: planning.plan, planFailed: planning.failed, tactical: tactical.response,
+    tacticalVersions: tactical.versions, tacticalFailed: tactical.responseFailed,
+    tacticalVersionsFailed: tactical.versionsFailed,
+  }
+}
+
+async function loadOptionalTactical(novelId: string) {
+  const [response, versions] = await Promise.allSettled([
+    novelApi.tacticalPlan(novelId), novelApi.tacticalPlanVersions(novelId),
+  ])
+  return {
+    response: response.status === 'fulfilled' ? response.value : undefined,
+    versions: versions.status === 'fulfilled' ? versions.value : [] as TacticalPlanVersionSummary[],
+    responseFailed: response.status === 'rejected',
+    versionsFailed: versions.status === 'rejected',
   }
 }
 
@@ -209,13 +251,17 @@ function useChapterSave(
 async function syncRewrittenChapter(
   model: DocumentModel,
   novelId: string,
-  chapterId: string,
+  selected: Pick<ChapterSummary, 'id' | 'chapter_index'>,
   refresh: () => Promise<void> | undefined,
 ): Promise<void> {
-  const [detail] = await Promise.all([
-    novelApi.chapter(novelId, chapterId), refresh(), refreshQuota(),
-  ])
+  const chapters = await novelApi.chapters(novelId)
+  model.setState((current) => ({ ...current, chapters }))
+  const chapterId = chapters.find(
+    (chapter) => chapter.chapter_index === selected.chapter_index,
+  )?.id || selected.id
+  const detail = await novelApi.chapter(novelId, chapterId)
   applySelectedChapter(model.setState, model.selectedRef, detail)
+  await Promise.all([refresh(), refreshQuota()])
 }
 
 function useChapterRewrite(
@@ -243,7 +289,7 @@ function useChapterRewrite(
             app.message.error('章节重写失败，请稍后重试')
             throw error
           }
-          await syncRewrittenChapter(model, novelId, selected.id, refresh)
+          await syncRewrittenChapter(model, novelId, selected, refresh)
           app.message.info('重写请求正在处理或已完成，已同步当前章节与额度')
         } finally {
           model.setState((current) => ({ ...current, rewriting: false }))
@@ -384,10 +430,10 @@ function useInitialWorkflowSync(
   }, [ready, sync])
 }
 
-async function fetchPersistedData(novelId: string, chapterId: string) {
+async function fetchPersistedData(novelId: string, chapterId: string, planningEnabled: boolean) {
   const [novel, progress, chapters, detail, planning] = await Promise.all([
     novelApi.get(novelId), novelApi.progress(novelId), novelApi.chapters(novelId),
-    novelApi.chapter(novelId, chapterId), loadOptionalPlan(novelId),
+    novelApi.chapter(novelId, chapterId), loadOptionalPlanning(novelId, planningEnabled),
   ])
   return { novel, progress, chapters, detail, planning }
 }
@@ -400,7 +446,10 @@ function applyPersistedData(
 ): void {
   setState((current) => ({
     ...current, novel: data.novel, progress: data.progress, chapters: data.chapters,
-    plan: data.planning.plan, planLoadFailed: data.planning.failed,
+    plan: data.planning.plan, planLoadFailed: data.planning.planFailed,
+    tacticalPlan: data.planning.tactical, tacticalVersions: data.planning.tacticalVersions,
+    tacticalLoadFailed: data.planning.tacticalFailed,
+    tacticalVersionsLoadFailed: data.planning.tacticalVersionsFailed,
   }))
   if (!keepEditor) applySelectedChapter(setState, selectedRef, data.detail)
 }
@@ -411,20 +460,21 @@ function usePersistedChapterSync(
   chapterId: string | undefined,
   hasChanges: boolean,
   message: AppContext['message'],
+  planningEnabled: boolean,
 ): void {
   const handledRef = useRef<string | undefined>(undefined)
   const { selectedRef, setState } = model
   useEffect(() => {
     if (!chapterId || !novelId || handledRef.current === chapterId) return
     let active = true
-    void fetchPersistedData(novelId, chapterId).then((data) => {
+    void fetchPersistedData(novelId, chapterId, planningEnabled).then((data) => {
       if (!active) return
       handledRef.current = chapterId
       applyPersistedData(setState, selectedRef, data, hasChanges)
       if (hasChanges) message.warning('新章节已归档，当前未保存修改仍保留在编辑器中')
     }).catch(() => { if (active) message.warning('章节已保存，目录暂时未能刷新') })
     return () => { active = false }
-  }, [chapterId, hasChanges, message, novelId, selectedRef, setState])
+  }, [chapterId, hasChanges, message, novelId, planningEnabled, selectedRef, setState])
 }
 
 function useMetadataSync(model: DocumentModel, workflowState: WorkflowViewState): void {
@@ -475,18 +525,20 @@ function useWorkflowCommands(params: WorkflowCommandParams) {
       input: { novel_id: params.novelId, novel_type: params.novelType, _auto_mode: params.autoMode },
     })
   }, [params])
-  const resume = useCallback((value: unknown) => {
+  const resume = useCallback(async (value: unknown) => {
     const interrupt = params.workflow.state.interrupt
     if (interrupt) setInterruptRef(params.lastInterruptRef, interruptKey(interrupt))
     params.setActive(params.autoMode)
-    return params.workflow.resume(value, params.autoMode)
+    await params.workflow.resume(value, params.autoMode)
+    await params.refresh()
   }, [params])
-  const continueAuto = useCallback(() => {
+  const continueAuto = useCallback(async () => {
     const interrupt = params.workflow.state.interrupt
     if (!interrupt) return start()
     setInterruptRef(params.lastInterruptRef, interruptKey(interrupt))
     params.setActive(true)
-    return params.workflow.resume(autoResumeValue(interrupt, params.novelType), true)
+    await params.workflow.resume(autoResumeValue(interrupt, params.novelType), true)
+    await params.refresh()
   }, [params, start])
   const stop = useCallback(async () => {
     params.setActive(false)
@@ -543,6 +595,7 @@ export interface NovelStudioController {
   canDelete: boolean
   hasUnsavedChanges: boolean
   hasRecoverableCheckpoint: boolean
+  planningEnabled: boolean
   recoveryLabel: string
   confirmDiscardChanges: ReturnType<typeof useUnsavedChangesGuard>
   refresh: () => Promise<void> | undefined
@@ -571,6 +624,7 @@ function useControllerEffects(
   lastInterruptRef: React.MutableRefObject<string | undefined>,
   hasChanges: boolean,
   message: AppContext['message'],
+  planningEnabled: boolean,
 ): void {
   useInitialWorkflowSync(Boolean(model.state.novel), workflow.sync)
   useInitialWorkflowStart(model.state.novel, autoMode, workflow.run, setActive)
@@ -578,13 +632,15 @@ function useControllerEffects(
   useAutoRunReset(workflow.state.status, setActive)
   useDetachedSync(workflow.state.connection, workflow.state.status, workflow.sync)
   useQuotaRefresh(workflow.state.activeCommandId, workflow.state.lastPersistedChapterId)
-  usePersistedChapterSync(model, novelId, workflow.state.lastPersistedChapterId, hasChanges, message)
+  usePersistedChapterSync(
+    model, novelId, workflow.state.lastPersistedChapterId, hasChanges, message, planningEnabled,
+  )
   useMetadataSync(model, workflow.state)
 }
 
-function useStudioDocument(novelId: string, app: AppContext) {
+function useStudioDocument(novelId: string, app: AppContext, planningEnabled: boolean) {
   const model = useDocumentModel()
-  const refresh = useDocumentRefresh(model, novelId, app.message)
+  const refresh = useDocumentRefresh(model, novelId, app.message, planningEnabled)
   useInitialRefresh(refresh)
   const loadChapter = useChapterLoader(model, novelId)
   const saveChapter = useChapterSave(model, novelId, refresh, app)
@@ -623,13 +679,33 @@ function useEditorInteractions(
   return { setEditor, changeAutoMode, openChapter }
 }
 
+function planningEffectivelyEnabled(state: ReturnType<typeof useAuthStore.getState>): boolean {
+  return Boolean(state.tenants.find((tenant) => tenant.id === state.currentTenantId)
+    ?.novel_planning_v1_effective)
+}
+
+
+function usePlanningFeatureStatus(): boolean {
+  const setTenants = useAuthStore((state) => state.setTenants)
+  useEffect(() => {
+    let active = true
+    void tenantApi.list().then((tenants) => {
+      if (active) setTenants(tenants)
+    }).catch(() => undefined)
+    return () => { active = false }
+  }, [setTenants])
+  return useAuthStore(planningEffectivelyEnabled)
+}
+
+
 export function useNovelStudioController(): NovelStudioController {
   const { novelId = '' } = useParams<{ novelId: string }>()
   const navigate = useNavigate()
   const app = App.useApp()
   const autoMode = useNovelStore((state) => state.autoMode)
   const setStoredAutoMode = useNovelStore((state) => state.setAutoMode)
-  const document = useStudioDocument(novelId, app)
+  const planningEnabled = usePlanningFeatureStatus()
+  const document = useStudioDocument(novelId, app, planningEnabled)
   const threadId = document.model.state.novel?.thread_id || novelId
   const workflow = useWorkflowStream(threadId)
   const [autoRunActive, setAutoRunActive] = useState(false)
@@ -646,14 +722,17 @@ export function useNovelStudioController(): NovelStudioController {
     lastInterruptRef, refresh: document.refresh,
   })
   const gated = useSaveGate(hasChanges, document.saveChapter, app.modal)
-  useControllerEffects(document.model, workflow, novelId, autoMode, autoRunActive, setAutoRunActive, lastInterruptRef, hasChanges, app.message)
+  useControllerEffects(
+    document.model, workflow, novelId, autoMode, autoRunActive, setAutoRunActive,
+    lastInterruptRef, hasChanges, app.message, planningEnabled,
+  )
   const interactions = useEditorInteractions(
     document.model, state, confirmDiscard, document.loadChapter, setStoredAutoMode,
   )
   return {
     novelId, document: state, workflow, autoMode, autoRunActive, isCompleted,
     canDelete: ['owner', 'admin'].includes(currentTenant()?.role || ''),
-    hasUnsavedChanges: hasChanges, hasRecoverableCheckpoint: recovery.recoverable,
+    hasUnsavedChanges: hasChanges, hasRecoverableCheckpoint: recovery.recoverable, planningEnabled,
     recoveryLabel: recovery.label, confirmDiscardChanges: confirmDiscard,
     refresh: document.refresh, openChapter: interactions.openChapter, saveChapter: document.saveChapter,
     deleteChapter: document.deleteChapter,
