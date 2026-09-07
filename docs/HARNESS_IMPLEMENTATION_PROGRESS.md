@@ -6,14 +6,14 @@
 ## 当前恢复点
 
 - 状态：实施中
-- 当前阶段：P3.2 验收通过，待提交部署；P3 总阶段尚未完成
+- 当前阶段：P3.2 已提交、已部署腾讯云并验收；P3 总阶段尚未完成，下一步 P3.3
 - 当前分支：`codex/harness-usability-reliability`
 - 基准提交：`b310aee`
 - 最后更新时间：2026-09-07
-- 最后确认代码提交：后端 `8bce179fef6a6284bb5c20e1c271dc3fdc5e496c`（P3.1），前端保持 `7b7b7ea`（P1）；均已部署，Git 未推送
-- 下一唯一动作：完成 P3.2 全量回归、规范提交、腾讯云部署与运行时验收，再进入 P3.3 正文断言和归档门禁
+- 最后确认代码提交：后端 `2ddedb78f60d84c19ffd782f1ea739f843d500bf`（P3.2），前端保持 `7b7b7ea`（P1）；均已部署，Git 未推送
+- 下一唯一动作：开始 P3.3 正文证据断言、覆盖范围与报告绑定、硬冲突/未知分流及同一归档事务内快照复验；不能把输入快照当作输出通过
 - 当前阻塞：无；P3.2 后端全量454项通过、零跳过，最新定向24项通过，Ruff和mypy37源文件通过
-- 回滚点：P3.1 应用可回退 `harness-61d65b6`，使用 CP-007 的回滚配置；保留0007事实表，不执行数据库降级
+- 回滚点：P3.2 应用可回退 `harness-8bce179`，使用 CP-009 的回滚配置；保留0007及已入账事实，不执行数据库降级
 
 ### 既有未提交改动
 
@@ -62,7 +62,7 @@
 
 阶段状态依次为：实现中 → 待验收 → 已提交待部署 → 已部署待验证 → 完成。阻塞时保留实际状态和原因。Git 推送与云部署分别记录，不将二者混同；若发布流程需要远端拉取，先确认目标分支并核对远端 SHA，禁止强推。
 
-当前部署检查（2026-09-07）：P0/P1/P2 和 P3.1 已完成部署；当前后端P3.1、前端P1、数据库0007，详见 CP-007。
+当前部署检查（2026-09-07）：P0/P1/P2、P3.1/P3.2 已完成部署；当前后端P3.2、前端P1、数据库0007，详见 CP-009。
 
 ## 阶段看板
 
@@ -71,7 +71,7 @@
 | P0 | 完成（阶段上线验收通过） | 建立恢复文档，清理基线失败，修复 fail-open，统一错误分类 | 后端 pytest、Ruff、mypy；前端 test、lint、build |
 | P1 | 完成（阶段上线验收通过） | 重构“创作进度”、中文术语、用户状态与技术状态 | 组件测试、状态矩阵、三视口截图 |
 | P2 | 完成（阶段上线验收通过） | 建立规范化实体、事实版本和事实校验最小闭环 | Alembic、仓储集成测试、事实规则单测 |
-| P3 | 实施中（P3.1 已上线，P3.2 验收中） | 在章纲、正文、修订和归档前接入确定性门禁 | 工作流测试、辛/陆祠堂回归用例 |
+| P3 | 实施中（P3.2 已上线，下一步 P3.3） | 在章纲、正文、修订和归档前接入确定性门禁 | 工作流测试、辛/陆祠堂回归用例 |
 | P4 | 待开始 | 建立冲突中心、证据审阅和版本化纠错 | 前后端契约、审阅 E2E、版本冲突测试 |
 | P5 | 待开始 | 持久运行事件、SSE 重放、共享租约和恢复机制 | Redis/PostgreSQL 集成、断线与重启测试 |
 | P6 | 待开始 | 建立评估集、CI 门禁、可观测性和默认开启策略 | 指标报告、视觉回归、部署前检查 |
@@ -108,7 +108,7 @@
 ### P3 分步交付
 
 - P3.1（完成）：章节约束快照、一致性读取、事务内失效检查。独立测试、提交与部署，不宣称已接入工作流。
-- P3.2：从真正已确认的设定入账，在章纲、正文和修订输入中绑定快照；旧 checkpoint 明确兼容，不采信模型自报确认。
+- P3.2（完成）：从真正已确认的显式人物姓氏入账，在章纲、正文和修订输入中绑定快照；旧 checkpoint 明确兼容，不采信模型自报确认。整书规划中的关系事实仍待显式结构化来源扩展。
 - P3.3：正文断言证据、覆盖范围与报告绑定；确定性门禁和人工审核分流；同一归档事务内复验，不允许用户接受质量问题绕过硬事实冲突。
 - P3.4：完整工作流与重写入口回归，验证事实修正期间的并发归档与恢复行为；完成后才将 P3 标为完成。
 
@@ -120,9 +120,9 @@
 - [ ] 定义 `ValidationFinding`、`ValidationReport`、`FactCorrectionProposal`
 - [x] 新增事实相关数据库表和 Alembic 迁移
 - [x] 实现事实仓储和租户隔离
-- [ ] 从已确认人物设定和整书规划编译规范事实
+- [ ] 从已确认人物设定和整书规划编译规范事实（人物显式姓氏已接入；整书规划关系事实待扩展）
 - [ ] 实现姓氏、家族、祠堂、亲属、地点、时间、知识和状态规则
-- [ ] 编译每章 `ChapterConstraintSet`
+- [x] 编译每章 `ChapterConstraintSet`
 - [ ] 在章纲、正文、修订、持久化前执行门禁
 - [ ] 缺失、异常或不可解析结果进入 `unknown`，禁止静默通过
 - [ ] 新增“事实台账”和“冲突中心”接口
@@ -321,7 +321,26 @@ sudo docker exec novel-writer-frontend nginx -s reload
 - 此阶段只约束模型输入，尚不拦截输出冲突或用户接受后的归档；P3.3 必须补充正文证据断言、覆盖范围、语义未知分流及同一归档事务内版本复验。
 - 定向32项通过；后续新增 Patch/回退、流失败及生产入口测试时修正了一处测试参数断言（代理使用位置参数）。最终全量454 passed、零跳过（644.55秒），1条既有 LangGraph 依赖未来默认值变更警告；最终导入位置归位后定向24项再次通过。
 - Ruff 通过，mypy37源文件通过。无新增依赖、无数据库迁移、无前端源码改动。
-- 临时测试资源：novel-writer-harness-p32-test（tmpfs，回环55442），SSH隧道PID30744；验收后按身份核对清理，不动生产卷。生产仍为 P3.1 镜像，尚未发布本轮代码。
+- 临时测试资源：novel-writer-harness-p32-test（tmpfs，回环55442），SSH隧道PID30744；已在验收后核对身份并清理，不动生产卷。本轮发布结果见 CP-009。
+
+### CP-009：P3.2 腾讯云部署完成
+
+- 验证时间：2026-09-07 19:41（Asia/Shanghai）。代码提交 2ddedb78f60d84c19ffd782f1ea739f843d500bf，提交信息 feat(harness): 接入人工确认事实与章节生成约束；Git 未推送。
+- 后端镜像 novel-writer-backend:harness-2ddedb7，摘要 sha256:3bc4b162a05bd2872e996126c09436402aed4d3f1109de74eef94d0a674d911e；线上 revision 标签与代码提交一致。
+- Git 归档仅含后端，传输前后 SHA-256 一致：524420fca01383de7db59e5b4e0f90aa543b2fa3765504829dbb31ee138da16c。复用 P3.1 依赖镜像；项目依赖和锁解析摘要与 CP-005 一致，无新依赖或迁移。
+- 发布目录 /opt/novel-writer/releases/2ddedb7；compose.harness-p32.yml 叠加基础/生产/P1/P2/P3.1 覆盖文件。Dockerfile.harness-p32 和 check-p32-runtime.py 同目录保留。
+- 发布前 active_command_leases=0，Compose 配置通过；仅替换 backend，nginx -t 和 reload 通过。前端仍为 P1，双网络和回环5173入口保留。
+- 上线运行时用替身执行真实 chapter_writer_node 的正文和补写调用，确认两个调用都带同一快照摘要、checkpoint 记录 not_checked 且共享模型不变；provider_calls=0。不是实际模型质量验收，也不是生产账号人工确认全流程验收。
+- 后端 /health/ready 返回 ready，前端200、同源未登录鉴权401，四个生产服务 healthy。数据库只读确认0007，检查脚本 production_writes=0；数据库/Redis容器ID、挂载和数据卷与发布前一致。
+- 应用回滚文件 compose.harness-p32-rollback.yml 指向 P3.1 镜像 harness-8bce179，摘要 sha256:a28410051b23dc3fb4e2c36f15c4365d7e921f381adc96d2b12d2e0fefdcf7d2。回滚配置解析通过，未实际回滚；保留正常迁移入口及全部已入账事实，不 downgrade。
+- 测试容器/tmpfs数据与SSH隧道已清理。未改前端、未回填历史章节。P3.2 已接入生成输入，输出/归档事实门禁仍未启用，下一步 P3.3。
+
+P3.2 应用回滚命令（仅在确认需要回滚后执行）：
+
+~~~bash
+sudo docker compose --project-directory /opt/novel-writer -p novel-writer --env-file /opt/novel-writer/.env -f /opt/novel-writer/docker-compose.yml -f /opt/novel-writer/docker-compose.prod.yml -f /opt/novel-writer/releases/7b7b7ea/compose.harness-release.yml -f /opt/novel-writer/releases/61d65b6/compose.harness-p2.yml -f /opt/novel-writer/releases/8bce179/compose.harness-p31.yml -f /opt/novel-writer/releases/2ddedb7/compose.harness-p32-rollback.yml up -d --no-deps --no-build --wait --wait-timeout 120 backend
+sudo docker exec novel-writer-frontend nginx -s reload
+~~~
 
 ## 变更历史
 
