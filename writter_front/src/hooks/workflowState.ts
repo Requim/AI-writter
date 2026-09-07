@@ -13,6 +13,7 @@ export interface WorkflowViewState {
   consecutiveSyncFailures?: number
   connectionRecovering?: boolean
   syncState?: 'syncing' | 'confirmed' | 'unknown'
+  isSubmitting?: boolean
   reasoning?: string
   qualityScore?: number
   qualityDecision?: string
@@ -45,6 +46,7 @@ export type WorkflowAction =
   | { type: 'sync_succeeded'; at: string }
   | { type: 'sync_failed' }
   | { type: 'cancelling' }
+  | { type: 'command_settled' }
   | { type: 'cancelled' }
   | { type: 'detached' }
   | { type: 'hydrate'; interrupt?: InterruptInfo }
@@ -83,6 +85,7 @@ function startState(state: WorkflowViewState, action: Extract<WorkflowAction, { 
   const now = new Date().toISOString()
   return {
     ...state, status: 'running' as const, connection: 'streaming' as const,
+    isSubmitting: true,
     draft: action.preserveDraft ? state.draft : '', activeNode: undefined,
     activeCommandId: action.commandId, stageStartedAt: undefined, reasoning: undefined,
     qualityScore: undefined, qualityDecision: undefined, planResult: undefined,
@@ -118,6 +121,19 @@ function snapshotStatus(
   return hasDraft || hasPending ? 'recoverable' as const : 'idle' as const
 }
 
+export function readPlanResult(value: unknown): WorkflowViewState['planResult'] {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const data = value as Record<string, unknown>
+  const chapter = data.chapter_number
+  if (typeof chapter !== 'number' || !Number.isInteger(chapter) || chapter < 1) return undefined
+  return {
+    chapter,
+    status: typeof data.status === 'string' ? data.status : 'unknown',
+    drift: typeof data.drift_severity === 'string' ? data.drift_severity : 'unknown',
+    version: typeof data.plan_version === 'number' ? data.plan_version : undefined,
+  }
+}
+
 function reduceSnapshot(state: WorkflowViewState, snapshot: WorkflowSnapshot): WorkflowViewState {
   const execution = snapshot.execution
   const interrupt = snapshot.interrupts?.[0]
@@ -130,6 +146,7 @@ function reduceSnapshot(state: WorkflowViewState, snapshot: WorkflowSnapshot): W
   const completed = status === 'completed'
   return {
     ...state, status, syncState: 'confirmed',
+    planResult: readPlanResult(snapshot.state?.last_plan_execution),
     connection: snapshot.status === 'running' && !completed ? 'detached' : 'idle',
     activeNode: completed ? undefined : nodeForInterrupt(interrupt) || execution?.active_node || snapshot.next_nodes?.[0],
     activeCommandId: completed ? undefined : execution?.command_id || state.activeCommandId,
@@ -259,6 +276,7 @@ function reduceEvent(state: WorkflowViewState, event: WorkflowEvent): WorkflowVi
 
 export function workflowReducer(state: WorkflowViewState, action: WorkflowAction): WorkflowViewState {
   if (action.type === 'start') return startState(state, action)
+  if (action.type === 'command_settled') return { ...state, isSubmitting: false }
   if (action.type === 'event') return reduceEvent(state, action.event)
   if (action.type === 'snapshot') {
     return snapshotIsOld(state, action.snapshot, action.force) ? state : reduceSnapshot(state, action.snapshot)

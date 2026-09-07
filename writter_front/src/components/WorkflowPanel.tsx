@@ -1,4 +1,4 @@
-import { Progress } from 'antd'
+import { ConfigProvider, Progress } from 'antd'
 import type { WorkflowViewState } from '@/hooks/useWorkflowStream'
 import { WorkflowError } from './workflow/WorkflowError'
 import { WorkflowHeader } from './workflow/WorkflowHeader'
@@ -28,7 +28,9 @@ export function WorkflowPanel(props: WorkflowPanelProps) {
       <WorkflowHeader status={state.status} syncState={state.syncState} />
       {typeof state.progress === 'number' && <Progress percent={Math.round(state.progress)} showInfo={false} strokeColor="#176b5b" />}
       <WorkflowOverview state={state} chapterPrefix={chapterPrefix} onRefresh={onRefresh} onCancel={onCancel} />
-      <WorkflowReview interrupt={state.interrupt} autoMode={autoMode} onResume={onResume} onRetry={onRetry} />
+      <ConfigProvider componentDisabled={state.isSubmitting || state.syncState === 'unknown'}>
+        <WorkflowReview interrupt={state.interrupt} autoMode={autoMode} onResume={onResume} onRetry={onRetry} />
+      </ConfigProvider>
       <WorkflowError state={state} chapterNumber={chapterNumber} onRetry={onRetry} onRefresh={onRefresh} />
       <WorkflowQualitySummary state={state} />
       <section className="workflow-recent" aria-label="最近完成的步骤">

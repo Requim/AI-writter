@@ -61,6 +61,7 @@ class NovelAgentState(TypedDict):
     plan_replan_request: Optional[Dict]         # 用户或漂移触发的重规划请求
     plan_fulfillment: Optional[Dict]            # 当前章计划兑现结果
     plan_drift_severity: Optional[str]          # none/minor/major
+    last_plan_execution: Optional[Dict]
     tactical_window: Optional[Dict]             # 当前章的战术窗口（候选或已接受）
     tactical_previous_window: Optional[Dict]    # 生成候选时的上一已接受窗口
     tactical_window_expected_version: Optional[int]  # 战术追加版本基线

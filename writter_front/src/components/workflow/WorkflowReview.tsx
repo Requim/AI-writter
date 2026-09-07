@@ -1,5 +1,5 @@
 import { PauseCircleOutlined } from '@ant-design/icons'
-import { Button, Input, Segmented } from 'antd'
+import { Button, Input, Popconfirm, Segmented } from 'antd'
 import { useState } from 'react'
 import type {
   ChapterPlanRevisionScope, InterruptInfo, JsonValue, ReviewDecision, TitleSuggestion,
@@ -108,7 +108,9 @@ function QualityActions({ interrupt, onResume }: Omit<Props, 'autoMode' | 'onRet
   const revise = () => onResume(decisionValue(interrupt, 'revise', 'revise'))
   const regenerate = () => onResume(decisionValue(interrupt, 'regenerate'))
   return <div className="interrupt-actions">
-    <Button type="primary" onClick={accept}>{primaryLabel(interrupt.action)}</Button>
+    <Popconfirm title="仍要接受当前章节？" description="已发现的问题或未确认的结果不会因此变为通过。" okText="确认接受" cancelText="返回核对" onConfirm={accept}>
+      <Button type="primary">{primaryLabel(interrupt.action)}</Button>
+    </Popconfirm>
     <Button onClick={revise}>按建议修订</Button>
     <Button onClick={regenerate}>重新生成正文</Button>
   </div>
@@ -120,7 +122,9 @@ function UnavailableActions({ interrupt, onResume }: Omit<Props, 'autoMode' | 'o
   const rewrite = () => onResume(decisionValue(interrupt, 'regenerate'))
   return <div className="interrupt-actions">
     <Button type="primary" onClick={retry}>重新审读</Button>
-    <Button onClick={accept}>接受并标记未审读</Button>
+    <Popconfirm title="接受未经审读的章节？" description="本章将保留未审读标记，不代表质量通过。" okText="确认接受" cancelText="返回核对" onConfirm={accept}>
+      <Button>接受并标记未审读</Button>
+    </Popconfirm>
     <Button onClick={rewrite}>重写正文</Button>
   </div>
 }

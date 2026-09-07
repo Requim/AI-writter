@@ -1,8 +1,9 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { WorkflowPanel } from '../WorkflowPanel'
 import { initialWorkflowState, workflowReducer, type WorkflowViewState } from '@/hooks/workflowState'
 import { planningFieldLabel } from './terminology'
+import { WorkflowReview } from './WorkflowReview'
 
 afterEach(cleanup)
 
@@ -12,6 +13,27 @@ function show(state: Partial<WorkflowViewState>) {
 }
 
 describe('创作进度的用户视图', () => {
+  it('requires explicit confirmation before accepting a problem chapter', () => {
+    const onResume = vi.fn()
+    render(<WorkflowReview interrupt={{ action: 'quality_gate_human_review' }} autoMode={false} onResume={onResume} onRetry={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: '接受当前版本' }))
+    expect(onResume).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: '确认接受' }))
+    expect(onResume).toHaveBeenCalledWith('accept')
+  })
+
+  it('restores persisted plan results and clears unsupported legacy results', () => {
+    const snapshot = { thread_id: 'novel', status: 'idle' as const, has_interrupt: false, interrupts: [],
+      state: { last_plan_execution: { chapter_number: 3, status: 'breached', drift_severity: 'major', plan_version: 2 } } }
+    const restored = workflowReducer(initialWorkflowState, { type: 'snapshot', snapshot })
+    expect(restored.planResult).toEqual({ chapter: 3, status: 'breached', drift: 'major', version: 2 })
+    const legacy = workflowReducer(restored, { type: 'snapshot', snapshot: { ...snapshot, state: {} } })
+    expect(legacy.planResult).toBeUndefined()
+  })
+
+})
+
+describe('创作进度的展示边界', () => {
   it('folds internal nodes and reasoning away from the current task', () => {
     show({ status: 'running', activeNode: 'chapter_writer_node', reasoning: 'router_debug_only' })
     expect(screen.getByRole('heading', { name: '创作进度' })).toBeInTheDocument()

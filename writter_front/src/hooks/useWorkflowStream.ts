@@ -71,8 +71,10 @@ function useRunCommand(
   controllerRef: React.MutableRefObject<AbortController | null>,
   sync: WorkflowSync,
 ) {
+  const inFlight = useRef(false)
   return useCallback(async (payload: WorkflowRequest, preserveDraft = false) => {
-    if (!threadId) return
+    if (!threadId || inFlight.current) return
+    inFlight.current = true
     const controller = replaceController(controllerRef)
     const commandId = createIdempotencyKey()
     dispatch({ type: 'start', preserveDraft, commandId })
@@ -90,6 +92,9 @@ function useRunCommand(
       }
       dispatch({ type: 'failure', ...failureDetails(error) })
       await sync(true).catch(() => undefined)
+    } finally {
+      inFlight.current = false
+      dispatch({ type: 'command_settled' })
     }
   }, [controllerRef, dispatch, sync, threadId])
 }

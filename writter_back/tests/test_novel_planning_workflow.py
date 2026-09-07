@@ -230,6 +230,10 @@ async def test_minor_drift_auto_reschedules_only_outside_lock_window() -> None:
     command = await plan_reconciliation_node(state, _config(PlanningLLM(12, 50_400), repository))
     accepted = NovelPlan.from_dict(command.update["novel_plan"])
     assert command.goto == "progress_check_node" and accepted.version == 2
+    execution = command.update["last_plan_execution"]
+    assert execution["chapter_number"] == 1
+    assert execution["plan_version"] == 1
+    assert execution["drift_severity"] == "minor"
     assert repository.idempotency_keys[-1] == "auto-drift:plan:1:chapter:1"
     assert all(asdict(accepted.chapter_slots[index - 1]) == original[index] for index in range(1, 7))
     assert "延后线索" in accepted.chapter_slots[6].must_happen
@@ -256,6 +260,7 @@ async def test_major_drift_always_enters_human_replanning_path() -> None:
     request = command.update["plan_replan_request"]
     assert command.goto == "novel_plan_initialize_node"
     assert request["trigger"] == "drift" and request["expected_version"] == 1
+    assert command.update["last_plan_execution"]["drift_severity"] == "major"
 
 
 @pytest.mark.asyncio

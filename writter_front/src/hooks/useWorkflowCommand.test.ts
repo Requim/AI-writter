@@ -31,6 +31,21 @@ const pausedSnapshot: WorkflowSnapshot = {
 }
 
 describe('useWorkflowStream command reconciliation', () => {
+  it('ignores duplicate clicks while a command is pending and releases after completion', async () => {
+    let finish!: (value: { terminal: boolean }) => void
+    streamMock.mockReset().mockImplementation(() => new Promise((resolve) => { finish = resolve }))
+    stateMock.mockResolvedValue(pausedSnapshot)
+    const { result } = renderHook(() => useWorkflowStream('thread-1'))
+    let first!: Promise<void>
+    act(() => { first = result.current.resume('accept', false) })
+    await act(async () => { await result.current.resume('accept', false) })
+    expect(streamMock).toHaveBeenCalledTimes(1)
+    await act(async () => { finish({ terminal: true }); await first })
+    streamMock.mockResolvedValue({ terminal: true })
+    await act(async () => { await result.current.retry(false) })
+    expect(streamMock).toHaveBeenCalledTimes(2)
+  })
+
   beforeEach(() => {
     stateMock.mockReset().mockResolvedValue(pausedSnapshot)
     streamMock.mockReset()

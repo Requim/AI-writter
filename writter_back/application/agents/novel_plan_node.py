@@ -650,6 +650,7 @@ async def plan_reconciliation_node(
         "plan_reconciled", execution.to_dict(), "plan_reconciliation_node"
     )
     base_update = {
+        "last_plan_execution": execution.to_dict(),
         "plan_fulfillment": fulfillment,
         "plan_drift_severity": execution.drift_severity,
     }
