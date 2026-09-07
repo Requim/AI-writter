@@ -39,6 +39,7 @@ export function FactReview({ interrupt, onResume }: Props) {
         <Button type="primary" disabled={!canAccept}>人工核对后继续</Button>
       </Popconfirm>
       <Button disabled={!proposalId} onClick={() => send('regenerate')}>重新生成</Button>
+      <Button disabled={!proposalId} onClick={() => send('recheck')}>重新核对事实</Button>
     </div>
     <div className="review-instruction">
       <Input.TextArea aria-label="事实修订要求" value={instruction} onChange={event => setInstruction(event.target.value)}

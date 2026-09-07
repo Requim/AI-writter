@@ -105,3 +105,23 @@ async def test_complete_legacy_workflow_keeps_fact_reviews_separate_from_auto_qu
     decision = result["last_persisted_chapter"]["user_decision"]
     assert decision["fact_gate"]["status"] == "unknown"
     assert decision["fact_review"]["reviewed_by"]
+
+
+@pytest.mark.asyncio
+async def test_corrected_ledger_can_recheck_same_draft_without_regeneration():
+    from tests.test_fact_gate import judge
+    value = setup_gate()
+    content = "辛家祖祠归陆家所有。"
+    llm = judge(value, "辛家祖祠归陆家所有")
+    llm.structured_generate.return_value["claims"][0]["object_entity_id"] = str(value.entities[-1].id)
+    cfg = config(value, llm)
+    cfg["configurable"]["thread_id"] = "correct-and-recheck"
+    app = graph()
+    result = await app.ainvoke({"current_chapter_content": content}, cfg)
+    proposal = result["__interrupt__"][0].value["proposal_id"]
+    corrected = value.fact_heads[0].model_copy(update={"version": 2, "object_entity_id": value.entities[-1].id})
+    cfg["configurable"]["story_fact_repository"].capture_constraints.return_value = value.model_copy(update={"fact_heads": (corrected,)})
+    result = await app.ainvoke(Command(resume={"proposal_id": proposal, "decision": "recheck"}), cfg)
+    assert result["title"] == "已继续"
+    assert result["current_chapter_content"] == content
+    assert result["fact_reports"]["body"]["status"] == "pass"

@@ -73,6 +73,17 @@ def _fact_retry(state: Any, decision: Any) -> Command:
         "user_decision": {"action": "revise", "instructions": instruction}})
 
 
+async def _recheck_fact(state: Any, config: RunnableConfig, artifact: dict, continuation: dict) -> Command:
+    reports = dict(state.get("fact_reports") or {})
+    reports.pop(artifact["kind"], None)
+    acknowledgements = dict(state.get("fact_acknowledgements") or {})
+    acknowledgements.pop(artifact["kind"], None)
+    next_state = {**state, "fact_reports": reports, "fact_acknowledgements": acknowledgements}
+    command = Command(goto=continuation["goto"], update={"pending_proposal": None, "pending_proposal_decision": None,
+        "fact_continuation": None, "fact_artifact": None, **continuation["update"]})
+    return await check_fact_artifact(next_state, config, artifact["content"], artifact["kind"], command)
+
+
 async def fact_review_node(state: Any, config: RunnableConfig) -> Command:
     """人工必须对当前事实提案确认，自动模式和质量接受不能替代。"""
     proposal = require_proposal(state, "fact_review", state.get("current_chapter_index", 0) + 1)
@@ -90,6 +101,8 @@ async def fact_review_node(state: Any, config: RunnableConfig) -> Command:
         fact_report=report.model_dump(mode="json"), artifact_content=artifact["content"])
     if decision.action in {"regenerate", "revise"}:
         return _fact_retry(state, decision)
+    if decision.action == "recheck":
+        return await _recheck_fact(state, config, artifact, continuation)
     if decision.action != "accept" or report.status == "blocked":
         raise InvalidReviewDecisionError("明确事实冲突不可直接接受，请修订或重新生成")
     actor = getattr(config["configurable"].get("tenant_context"), "user_id", None)

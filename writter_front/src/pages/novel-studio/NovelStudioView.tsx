@@ -7,6 +7,7 @@ import { MarkdownManuscript } from '@/components/MarkdownManuscript'
 import { NovelPlanView } from '@/components/novel-plan/NovelPlanView'
 import { PlanReplanDialog } from '@/components/novel-plan/PlanReplanDialog'
 import { WorkflowPanel } from '@/components/WorkflowPanel'
+import { FactLedger } from '@/components/workflow/FactLedger'
 import { qualityScoreOutOfFive } from '@/components/workflow/presentation'
 import type { ChapterSummary } from '@/types/novel'
 import type { NovelStudioController } from './useNovelStudioController'
@@ -47,6 +48,7 @@ function StudioHeader({ controller }: { controller: NovelStudioController }) {
         <h1>{novel?.title || '未命名作品'}</h1>
       </div>
       <div className="studio-actions">
+        <FactLedger novelId={controller.novelId} activeReview={controller.workflow.state.interrupt} onResume={controller.resumeWriting} />
         <Segmented
           value={controller.autoMode ? 'auto' : 'manual'}
           onChange={(value) => controller.setAutoMode(value === 'auto')}

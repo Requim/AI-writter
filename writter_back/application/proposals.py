@@ -26,7 +26,7 @@ PROPOSAL_KINDS = {
 }
 LEGACY_WORKFLOW_SCHEMA_VERSION = 2
 CURRENT_WORKFLOW_SCHEMA_VERSION = 5
-ReviewAction = Literal["accept", "regenerate", "revise", "replace"]
+ReviewAction = Literal["accept", "regenerate", "revise", "replace", "recheck"]
 
 
 @dataclass(frozen=True)
@@ -178,6 +178,8 @@ def _envelope_decision(
     if raw.get("proposal_id") != proposal["proposal_id"]:
         raise StaleWorkflowDecisionError("提案已更新，本次决定未执行")
     action = raw.get("decision")
+    if action == "recheck" and proposal["kind"] == "fact_review":
+        return ReviewDecision("recheck")
     if action == "modify":
         return _modify_decision(raw, proposal)
     if action == "accept":

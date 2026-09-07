@@ -86,6 +86,8 @@ files = [
     "application/fact_deterministic.py",
     "application/fact_archive_guard.py",
     "application/fact_gate_workflow.py",
+    "application/fact_corrections.py",
+    "api/routers/story_fact_router.py",
     "service/value_objects/fact_gate.py",
     "application/fact_prompt_binding.py",
     "service/value_objects/story_fact.py",
