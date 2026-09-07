@@ -4,13 +4,14 @@ from uuid import UUID
 from typing import Any, TypeVar
 
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from infrastructure.database.models import (
     NovelModel, StoryEntityModel, StoryFactAssertionModel, StoryFactVersionModel,
 )
 from service.ports.story_fact_repository import FactVersionConflictError
+from service.value_objects.chapter_constraints import ChapterConstraintSet
 from service.value_objects.story_fact import CanonicalFact, FactStatement, Predicate, StoryEntity, StoryFactAssertion, StoryFactVersion
 
 Contract = TypeVar("Contract", bound=BaseModel)
@@ -57,6 +58,38 @@ class PostgresStoryFactRepository:
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self.async_session = session_factory
+
+    async def _capture_constraints(self, session: AsyncSession, tenant_id: str,
+                                   novel_id: str, chapter_number: int) -> ChapterConstraintSet:
+        if await session.scalar(text("SHOW transaction_isolation")) != "read committed":
+            raise ValueError("章节事实复验要求 READ COMMITTED 事务隔离级别")
+        await _authorize(session, tenant_id, novel_id, lock=True)
+        entities = await session.scalars(_scoped(StoryEntityModel, tenant_id, novel_id))
+        model = StoryFactVersionModel
+        query = _scoped(model, tenant_id, novel_id).distinct(model.subject_id, model.predicate)
+        facts = await session.scalars(query.order_by(model.subject_id, model.predicate, model.version.desc()))
+        return ChapterConstraintSet(tenant_id=UUID(str(tenant_id)), novel_id=UUID(str(novel_id)),
+            chapter_number=chapter_number, entities=tuple(_contract(StoryEntity, row) for row in entities),
+            fact_heads=tuple(_contract(StoryFactVersion, row) for row in facts))
+
+    async def capture_constraints(self, tenant_id: str, novel_id: str, chapter_number: int) -> ChapterConstraintSet:
+        """在同一小说行锁内读取实体和版本头，避免生成混合版本的章节输入。"""
+        async with self.async_session() as session, session.begin():
+            return await self._capture_constraints(session, tenant_id, novel_id, chapter_number)
+
+    async def assert_constraints_current(self, session: AsyncSession, tenant_id: str, novel_id: str,
+                                         chapter_number: int, snapshot: ChapterConstraintSet) -> None:
+        """必须在章节写入事务内调用；小说锁保留至调用方提交，禁止单独复验后另开事务写入。"""
+        if not session.in_transaction():
+            raise ValueError("事实快照复验必须在章节写入事务内执行")
+        snapshot = ChapterConstraintSet.model_validate(snapshot.model_dump())
+        if (snapshot.tenant_id, snapshot.novel_id, snapshot.chapter_number) != (
+            UUID(str(tenant_id)), UUID(str(novel_id)), chapter_number,
+        ):
+            raise FactVersionConflictError("章节快照归属或章节不匹配")
+        current = await self._capture_constraints(session, tenant_id, novel_id, chapter_number)
+        if current.digest != snapshot.digest:
+            raise FactVersionConflictError("章节事实约束已变化，请重新生成或复验")
 
     async def ensure_entity(self, tenant_id: str, novel_id: str, entity: StoryEntity) -> StoryEntity:
         """精确复用实体键；不允许重试覆盖姓名或类型。"""

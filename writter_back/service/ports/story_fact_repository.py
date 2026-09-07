@@ -2,6 +2,7 @@
 
 from typing import Protocol
 
+from service.value_objects.chapter_constraints import ChapterConstraintSet
 from service.value_objects.story_fact import CanonicalFact, StoryEntity, StoryFactAssertion, StoryFactVersion
 
 
@@ -10,6 +11,10 @@ class FactVersionConflictError(ValueError):
 
 
 class StoryFactRepository(Protocol):
+    async def capture_constraints(self, tenant_id: str, novel_id: str, chapter_number: int) -> ChapterConstraintSet:
+        """以一致性读取编译章节约束；空快照不表示章节已通过校验。"""
+        ...
+
     async def ensure_entity(self, tenant_id: str, novel_id: str, entity: StoryEntity) -> StoryEntity:
         """新增或精确复用小说实体，不原地改写已有实体。"""
         ...

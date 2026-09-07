@@ -6,13 +6,13 @@
 ## 当前恢复点
 
 - 状态：实施中
-- 当前阶段：P2 已提交、已部署腾讯云并通过阶段验收；下一阶段 P3
+- 当前阶段：P3.1 验收通过，待提交部署；P3 总阶段尚未完成
 - 当前分支：`codex/harness-usability-reliability`
 - 基准提交：`b310aee`
 - 最后更新时间：2026-09-07
 - 最后确认代码提交：后端 `61d65b673632dbda048bb4a62cc98f0bca641566`（P2），前端保持 `7b7b7ea`（P1）；均已部署，Git 未推送
-- 下一唯一动作：开始 P3，将已确认来源与事实台账接入细纲/正文/修订/归档，构建章节约束快照并校验事实版本变化
-- 当前阻塞：无；P2 全量399项、最新定向32项及级联清理1项通过，生产0007验收通过
+- 下一唯一动作：完成 P3.1 快照与事务复验测试、提交和腾讯云部署；随后接入 P3.2 已确认来源与生成链路
+- 当前阻塞：无；P3.1 后端全量434项通过、零跳过，Ruff和mypy通过
 - 回滚点：P2 应用可回退 `harness-7b7b7ea`；必须使用 CP-005 的专用回滚入口并保留0007事实表，不执行破坏性数据库降级
 
 ### 既有未提交改动
@@ -71,7 +71,7 @@
 | P0 | 完成（阶段上线验收通过） | 建立恢复文档，清理基线失败，修复 fail-open，统一错误分类 | 后端 pytest、Ruff、mypy；前端 test、lint、build |
 | P1 | 完成（阶段上线验收通过） | 重构“创作进度”、中文术语、用户状态与技术状态 | 组件测试、状态矩阵、三视口截图 |
 | P2 | 完成（阶段上线验收通过） | 建立规范化实体、事实版本和事实校验最小闭环 | Alembic、仓储集成测试、事实规则单测 |
-| P3 | 待开始 | 在章纲、正文、修订和归档前接入确定性门禁 | 工作流测试、辛/陆祠堂回归用例 |
+| P3 | 实施中（P3.1 快照基础） | 在章纲、正文、修订和归档前接入确定性门禁 | 工作流测试、辛/陆祠堂回归用例 |
 | P4 | 待开始 | 建立冲突中心、证据审阅和版本化纠错 | 前后端契约、审阅 E2E、版本冲突测试 |
 | P5 | 待开始 | 持久运行事件、SSE 重放、共享租约和恢复机制 | Redis/PostgreSQL 集成、断线与重启测试 |
 | P6 | 待开始 | 建立评估集、CI 门禁、可观测性和默认开启策略 | 指标报告、视觉回归、部署前检查 |
@@ -104,6 +104,17 @@
 - [x] 补充组件、状态 reducer 和视觉回归测试
 
 ## P2-P4 事实一致性任务清单
+
+### P3 分步交付
+
+- P3.1：章节约束快照、一致性读取、事务内失效检查。独立测试、提交与部署，不宣称已接入工作流。
+- P3.2：从真正已确认的设定入账，在章纲、正文和修订输入中绑定快照；旧 checkpoint 明确兼容，不采信模型自报确认。
+- P3.3：正文断言证据、覆盖范围与报告绑定；确定性门禁和人工审核分流；同一归档事务内复验，不允许用户接受质量问题绕过硬事实冲突。
+- P3.4：完整工作流与重写入口回归，验证事实修正期间的并发归档与恢复行为；完成后才将 P3 标为完成。
+
+每个子阶段同样执行上述提交、部署和证据记录规范。P3.1 不新增迁移，不启用自动内容阻断。
+
+### 跨阶段任务
 
 - [x] 定义 `StoryEntity`、`StoryFactVersion`、`StoryFactAssertion`
 - [ ] 定义 `ValidationFinding`、`ValidationReport`、`FactCorrectionProposal`
@@ -266,6 +277,17 @@ P2 专用应用回滚命令（先确认需要回滚；不会降级数据库）�
 sudo docker compose --project-directory /opt/novel-writer -p novel-writer --env-file /opt/novel-writer/.env -f /opt/novel-writer/docker-compose.yml -f /opt/novel-writer/docker-compose.prod.yml -f /opt/novel-writer/releases/7b7b7ea/compose.harness-release.yml -f /opt/novel-writer/releases/61d65b6/compose.harness-p2-rollback.yml up -d --no-deps --no-build --wait --wait-timeout 120 backend
 sudo docker exec novel-writer-frontend nginx -s reload
 ~~~
+
+### CP-006：P3.1 章节约束快照（验收通过）
+
+- 新增 ChapterConstraintSet：作用域、章节、实体、全部事实版本头和稳定摘要；生效事实单独筛选，撤回/未来/过期记录继续参与版本检测。
+- 事实仓储增加 capture_constraints 与 assert_constraints_current。前者在小说锁内一致读取，后者要求调用方写入事务且保持锁至提交，拒绝错租户、错小说、错章节、内容变化及不安全隔离级别。
+- 初轮单元40项、数据库定向19项、静态约束4项通过；Ruff 和 mypy 35源文件通过。最终全量434 passed、零跳过（571.89秒），包含最后增加的 READ COMMITTED 限制与测试；1条既有 LangGraph 依赖未来默认值变更警告。
+- 无数据库迁移、无依赖变更、无前端变更。没有接入真实生成和归档入口，空快照不会生成“通过”结论，P3 总阶段仍在实施中。
+- 已只读核对线上后端 P2 镜像、前端 P1 镜像、后端无挂载、前端双网络及回环端口；依赖元数据与解析锁文件摘要与 CP-005 一致。
+- 本轮隔离库：novel-writer-harness-p31-test，回环55441，tmpfs；SSH 隧道PID37884。验收后须清理，仅针对该容器和经过核对的进程，不清生产卷。
+- 下一步来源接入须特别注意：character_design_review_node 在 decide_proposal 验证当前提案后才 resolve_character_design；_accept_design 同时被旧设定恢复路径调用，不能直接把所有 _accept_design 调用都当作新的人工确认。必须记录真正的确认来源版本、摘要与幂等键。
+- 下一步归档接入须将快照复验放到 PostgresNovelRepository 的章节写入事务中，不能在 persist_node 单独开启事实仓储事务后再保存。章纲、正文、修订、直接重写和旧 checkpoint 路径都必须有明确覆盖策略。
 
 ## 变更历史
 

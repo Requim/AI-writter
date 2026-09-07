@@ -82,6 +82,7 @@ files = [
     "application/streaming.py",
     "application/story_facts.py",
     "service/value_objects/story_fact.py",
+    "service/value_objects/chapter_constraints.py",
     "service/ports/story_fact_repository.py",
     "infrastructure/database/story_fact_repository.py",
     "application/agents",
