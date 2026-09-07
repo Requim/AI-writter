@@ -11,6 +11,7 @@ WorkflowEventType = Literal[
     "chapter_persisted",
     "metadata_updated",
     "quality",
+    "plan_reconciled",
     "interrupt",
     "progress",
     "completed",

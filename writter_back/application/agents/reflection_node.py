@@ -10,8 +10,15 @@ from langgraph.types import Command
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from application.continuity import build_story_bible, related_character_cards
-from application.errors import QualityGateReviewRequired, RetryableWorkflowError
+from application.errors import (
+    QualityGateReviewRequired,
+    RetryableWorkflowError,
+    StructuredOutputInvalidError,
+)
 from application.feature_policy import require_planning_v1
+from application.fulfillment import (
+    PlanFulfillment, TacticalFulfillment, fulfillment_passes, normalize_fulfillment,
+)
 from application.prompts.reflection_prompts import (
     AGGREGATION_SCHEMA,
     CHUNK_REFLECTION_SCHEMA,
@@ -211,7 +218,9 @@ def _validate_reflection_metrics(result: dict) -> _ReflectionMetrics:
         fields = [".".join(str(part) for part in error["loc"]) for error in exc.errors()]
         logger.warning("【反思检查节点】评分字段格式无效 | 字段=%s", ",".join(fields))
         detail = ",".join(fields[:12])
-        raise RetryableWorkflowError(f"章节质量审读失败：评分字段格式无效 ({detail})") from exc
+        raise StructuredOutputInvalidError(
+            f"章节质量审读失败：评分字段格式无效 ({detail})"
+        ) from exc
 
 
 def _quality_score(metrics: _ReflectionMetrics) -> float:
@@ -279,18 +288,20 @@ async def _generate_valid_review(
     llm: LLMService, prompt: str, schema: dict[str, Any]
 ) -> dict:
     """Retry one business-contract failure with explicit scale feedback."""
-    last_error: RetryableWorkflowError | None = None
+    last_error: StructuredOutputInvalidError | None = None
     for attempt in range(2):
         result = await llm.structured_generate(
             prompt, schema, temperature=0.1, max_attempts=1
         )
         if not isinstance(result, dict) or not result:
-            last_error = RetryableWorkflowError("章节质量审读失败：模型未返回有效结果")
+            last_error = StructuredOutputInvalidError(
+                "章节质量审读失败：模型未返回有效结果"
+            )
         else:
             try:
                 _validate_reflection_metrics(result)
                 return result
-            except RetryableWorkflowError as exc:
+            except StructuredOutputInvalidError as exc:
                 last_error = exc
         if attempt == 0:
             prompt += (
@@ -298,7 +309,9 @@ async def _generate_valid_review(
                 f"score_scale 必须为整数 5，不得混用百分制或文本；错误：{last_error}。"
                 "只重新输出完整 JSON。"
             )
-    raise last_error or RetryableWorkflowError("章节质量审读失败：结果无效")
+    raise last_error or StructuredOutputInvalidError(
+        "章节质量审读失败：结果无效"
+    )
 
 
 def _merge_issues(primary: object, chunks: list[dict]) -> list[dict]:
@@ -338,7 +351,7 @@ async def _review_content(
     return result
 
 
-def _quality_gate(result: dict, content: str) -> tuple[dict, list[dict]]:
+def _quality_gate(result: dict, content: str, *, require_fulfillment: bool = False) -> tuple[dict, list[dict]]:
     metrics = _validate_reflection_metrics(result)
     audit = _rubric_audit(result, metrics.score_scale)
     issues = _annotate_issues(_normalize_issues(result.get("issues")), content)
@@ -370,37 +383,19 @@ def _quality_gate(result: dict, content: str) -> tuple[dict, list[dict]]:
         "tactical_fulfillment": _tactical_fulfillment(result),
         **audit,
     }
+    if require_fulfillment and not fulfillment_passes(gate["plan_fulfillment"], gate["tactical_fulfillment"]):
+        if gate["decision"] == "pass":
+            gate["decision"] = "human_review"
+        gate["fulfillment_review_required"] = True
     return gate, issues
 
 
 def _plan_fulfillment(result: dict[str, Any]) -> dict[str, Any]:
-    value = result.get("plan_fulfillment")
-    supplied = dict(value) if isinstance(value, dict) else {}
-    defaults = {
-        "must_happen_covered": [],
-        "missing_required_events": [],
-        "state_delta_fulfilled": True,
-        "deferred_items": [],
-        "volume_boundary_breached": False,
-        "core_arc_breached": False,
-        "ending_contract_breached": False,
-        "scale_change_required": False,
-        "notes": "",
-    }
-    return {**defaults, **supplied}
+    return normalize_fulfillment(result.get("plan_fulfillment"), PlanFulfillment)
 
 
 def _tactical_fulfillment(result: dict[str, Any]) -> dict[str, Any]:
-    value = result.get("tactical_fulfillment")
-    supplied = dict(value) if isinstance(value, dict) else {}
-    defaults = {
-        "tactical_goal_fulfilled": True,
-        "approach_followed": True,
-        "exit_hook_established": True,
-        "deviations": [],
-        "notes": "",
-    }
-    return {**defaults, **supplied}
+    return normalize_fulfillment(result.get("tactical_fulfillment"), TacticalFulfillment)
 
 
 def _choice_command(
@@ -450,6 +445,8 @@ def _review_payload(action: str, state: NovelAgentState, gate: dict, issues: lis
     message = "质量证据与分项评分不一致，请人工复核" if needs_evidence else "质量闸门未通过，请审阅证据后决定"
     if exhausted:
         message = "自动修订已达上限，请人工决定接受、重写或继续修订"
+    if gate.get("fulfillment_review_required"):
+        message = "计划兑现未确认或存在偏差，章节尚未归档，请核对本章要求后决定"
     return {
         "action": action,
         "message": message,
@@ -564,7 +561,9 @@ async def reflection_node(
         if config["configurable"].get("direct_rewrite", False):
             raise QualityGateReviewRequired(str(exc)) from exc
         return _unavailable_proposal(state, str(exc))
-    gate, issues = _quality_gate(result, content)
+    gate, issues = _quality_gate(
+        result, content, require_fulfillment=int(state.get("workflow_schema_version") or 2) >= 5,
+    )
     gate["chapter_number"] = chapter
     logger.info("【反思检查节点】评分审计 | scale=%s raw=%s", gate.get("source_score_scale"), gate.get("raw_rubric_scores"))
     emit_workflow_event(
@@ -592,6 +591,8 @@ def _route_quality_result(
     if values.get("auto_mode", False) and gate["decision"] in {"patch", "refactor"} and attempts < maximum:
         return _choice_command(ReviewDecision("revise"), issues, gate)
     if values.get("direct_rewrite", False):
+        if gate.get("fulfillment_review_required"):
+            raise QualityGateReviewRequired("计划兑现尚未确认，章节未归档，请重新审阅")
         if attempts < maximum:
             return _direct_rewrite_revision(gate, issues)
         raise QualityGateReviewRequired("章节重写已达到自动修订上限，且仍未通过质量门禁")

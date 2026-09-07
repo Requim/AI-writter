@@ -25,7 +25,12 @@ from application.agents.router_agent import _route
 from application.agents.router_agent import router_agent
 from application.agents.outline_generator_node import apply_creation_constraints
 from application.continuity import build_story_bible
-from application.errors import RetryableWorkflowError, WorkflowBusyError
+from application.errors import (
+    RetryableWorkflowError,
+    StructuredOutputInvalidError,
+    WorkflowBusyError,
+    WorkflowCheckpointUnavailableError,
+)
 from application.agents.progress_check_node import progress_check_node
 from application.orchestrator import NovelOrchestrator
 from application.prompts.chapter_outline_prompts import CHAPTER_OUTLINE_SCHEMA
@@ -730,6 +735,19 @@ async def test_retry_checkpoint_prioritizes_original_failed_node():
 
 
 @pytest.mark.asyncio
+async def test_retry_checkpoint_reports_when_no_checkpoint_is_available():
+    service = orchestrator()
+    service._workflow = SimpleNamespace(
+        aget_state=AsyncMock(return_value=SimpleNamespace(
+            values={}, next=(), tasks=[],
+        )),
+    )
+
+    with pytest.raises(WorkflowCheckpointUnavailableError):
+        await service.prepare_retry_checkpoint(tenant_context(), str(uuid4()))
+
+
+@pytest.mark.asyncio
 async def test_retry_attempt_is_visible_in_execution_snapshot():
     service = orchestrator()
     context = tenant_context()
@@ -940,13 +958,39 @@ def test_provider_524_is_safe_and_retryable():
 
 def test_invalid_structured_output_is_safe_and_retryable():
     payload = _public_error_data(
-        RetryableWorkflowError("private malformed reflection payload")
+        StructuredOutputInvalidError("private malformed reflection payload")
     )
 
     assert payload == {
         "code": "structured_output_invalid",
         "message": "模型返回的审读结果格式不符合要求，请重试当前步骤",
         "retryable": True,
+    }
+    assert "private" not in payload["message"]
+
+
+def test_generic_retryable_error_is_not_reported_as_structured_output():
+    payload = _public_error_data(
+        RetryableWorkflowError("private retryable workflow details")
+    )
+
+    assert payload == {
+        "code": "workflow_retryable",
+        "message": "当前步骤暂时无法继续，请同步创作现场后重试",
+        "retryable": True,
+    }
+    assert "private" not in payload["message"]
+
+
+def test_missing_retry_checkpoint_is_not_retryable():
+    payload = _public_error_data(
+        WorkflowCheckpointUnavailableError("private checkpoint details")
+    )
+
+    assert payload == {
+        "code": "workflow_checkpoint_unavailable",
+        "message": "当前没有可重试的创作现场，请先同步现场",
+        "retryable": False,
     }
     assert "private" not in payload["message"]
 

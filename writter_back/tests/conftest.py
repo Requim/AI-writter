@@ -19,7 +19,6 @@ os.environ["ENVIRONMENT"] = "test"
 os.environ.setdefault("JWT_SECRET", "test-secret-that-is-longer-than-thirty-two-characters")
 
 from api.dependencies import get_tenant_context
-from config import settings
 from infrastructure.database.models import (
     Base,
     TenantMembershipModel,
@@ -32,17 +31,20 @@ from service.entities.novel import Novel
 from service.value_objects.novel_type import NovelType
 from service.value_objects.outline import Outline
 from service.value_objects.progress import Progress
+from tests.database_safety import database_required, isolated_database_url
 
 
 @pytest_asyncio.fixture(scope="session")
 async def setup_test_database():
-    engine = create_async_engine(settings.DATABASE_URL)
+    engine = create_async_engine(isolated_database_url())
     try:
         async with engine.begin() as connection:
             await connection.run_sync(Base.metadata.drop_all)
             await connection.run_sync(Base.metadata.create_all)
     except (OSError, ConnectionRefusedError):
         await engine.dispose()
+        if database_required():
+            pytest.fail("独立 PostgreSQL 测试库不可用；CI 或显式测试库配置不允许跳过", pytrace=False)
         pytest.skip("PostgreSQL test database is not available")
     yield
     async with engine.begin() as connection:
@@ -52,7 +54,7 @@ async def setup_test_database():
 
 @pytest_asyncio.fixture
 async def repository(setup_test_database):
-    repo = PostgresNovelRepository(settings.DATABASE_URL)
+    repo = PostgresNovelRepository(isolated_database_url())
     yield repo
     async with repo.async_session() as session, session.begin():
         for table in reversed(Base.metadata.sorted_tables):

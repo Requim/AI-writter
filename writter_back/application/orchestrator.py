@@ -16,7 +16,7 @@ from application.events import WorkflowEvent
 from application.feature_policy import TenantPlanningLoader, feature_policy
 from application.quota_service import QuotaService
 from application.errors import (
-    RetryableWorkflowError,
+    WorkflowCheckpointUnavailableError,
     StaleWorkflowDecisionError,
     WorkflowBusyError,
 )
@@ -581,7 +581,9 @@ class NovelOrchestrator(AgentOrchestrator):
             next_node = str(next_nodes[0])
             reasoning = f"从 checkpoint 重试 {next_node}"
         else:
-            raise RetryableWorkflowError("当前没有可重试的工作流 checkpoint")
+            raise WorkflowCheckpointUnavailableError(
+                "当前没有可重试的工作流 checkpoint"
+            )
 
         self.record_activity(
             context,

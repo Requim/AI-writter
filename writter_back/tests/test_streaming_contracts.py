@@ -349,6 +349,26 @@ def test_workflow_event_sse_does_not_embed_large_state():
     assert "current_chapter_content" not in frame
 
 
+def test_workflow_event_accepts_plan_reconciled_contract():
+    event = WorkflowEvent(
+        id=8,
+        type="plan_reconciled",
+        thread_id="thread-1",
+        node="plan_reconciliation_node",
+        data={"chapter_number": 2, "drift_severity": "none"},
+    )
+
+    payload = json.loads(
+        next(
+            line[6:]
+            for line in event.to_sse().splitlines()
+            if line.startswith("data: ")
+        )
+    )
+    assert payload["type"] == "plan_reconciled"
+    assert payload["node"] == "plan_reconciliation_node"
+
+
 @pytest.mark.asyncio
 async def test_empty_chapter_outline_fails_explicitly():
     llm = SimpleNamespace(structured_generate=lambda **_kwargs: asyncio.sleep(0, result={}))

@@ -2,6 +2,14 @@ class RetryableWorkflowError(RuntimeError):
     """A transient workflow failure that can resume from the latest checkpoint."""
 
 
+class StructuredOutputInvalidError(RetryableWorkflowError):
+    """The model returned data that could not satisfy a structured contract."""
+
+
+class WorkflowCheckpointUnavailableError(RuntimeError):
+    """A retry was requested after the workflow no longer had a retry checkpoint."""
+
+
 class PlanningTemporarilyDisabledError(RuntimeError):
     """Schema 5 was disabled while a resumable workflow was in progress."""
 

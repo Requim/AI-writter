@@ -31,6 +31,8 @@ from application.errors import (
     PlanningTemporarilyDisabledError,
     RetryableWorkflowError,
     StaleWorkflowDecisionError,
+    StructuredOutputInvalidError,
+    WorkflowCheckpointUnavailableError,
 )
 from application.events import WorkflowEvent
 from application.feature_policy import feature_policy
@@ -398,7 +400,7 @@ def _workflow_contract_error(exc: Exception) -> dict[str, Any] | None:
     return None
 
 
-def _public_error_data(exc: Exception) -> dict[str, Any]:
+def _known_workflow_error(exc: Exception) -> dict[str, Any] | None:
     contract_error = _workflow_contract_error(exc)
     if contract_error:
         return contract_error
@@ -412,12 +414,31 @@ def _public_error_data(exc: Exception) -> dict[str, Any]:
         return {"code": exc.code, "message": str(exc), "retryable": True}
     if isinstance(exc, (QuotaExceededError, AIUnavailableError)):
         return {"code": "quota_exceeded", "message": str(exc), "retryable": False}
-    if isinstance(exc, RetryableWorkflowError):
+    if isinstance(exc, StructuredOutputInvalidError):
         return {
             "code": "structured_output_invalid",
             "message": "模型返回的审读结果格式不符合要求，请重试当前步骤",
             "retryable": True,
         }
+    if isinstance(exc, WorkflowCheckpointUnavailableError):
+        return {
+            "code": "workflow_checkpoint_unavailable",
+            "message": "当前没有可重试的创作现场，请先同步现场",
+            "retryable": False,
+        }
+    if isinstance(exc, RetryableWorkflowError):
+        return {
+            "code": "workflow_retryable",
+            "message": "当前步骤暂时无法继续，请同步创作现场后重试",
+            "retryable": True,
+        }
+    return None
+
+
+def _public_error_data(exc: Exception) -> dict[str, Any]:
+    known_error = _known_workflow_error(exc)
+    if known_error:
+        return known_error
     if settings.DEBUG:
         return {"code": "workflow_failed", "message": str(exc), "retryable": False}
     provider_error = _provider_status_error(exc)
