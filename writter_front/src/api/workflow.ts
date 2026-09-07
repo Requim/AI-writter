@@ -100,6 +100,11 @@ export async function parseSseStream(
   if (!response.body) throw new Error('浏览器未提供可读取的响应流')
 
   const reader = response.body.getReader()
+  try { return await consumeFrames(reader, onEvent) }
+  finally { await reader.cancel().catch(() => undefined); reader.releaseLock() }
+}
+
+async function consumeFrames(reader: ReadableStreamDefaultReader<Uint8Array>, onEvent: (event: WorkflowEvent) => void): Promise<{ terminal: boolean }> {
   const decoder = new TextDecoder()
   let buffer = ''
   let terminal = false
@@ -141,7 +146,34 @@ export async function streamWorkflow(
     }
   }
   if (response.status === 401) redirectToLogin()
-  return parseSseStream(response, onEvent)
+  return consumeRecoverableStream(threadId, response, onEvent, signal)
+}
+
+export function orderedEvents(onEvent: (event: WorkflowEvent) => void) {
+  let cursor = 0
+  const receive = (event: WorkflowEvent) => {
+    if (event.type === 'heartbeat' || event.id <= 0) { onEvent(event); return }
+    if (event.id <= cursor) return
+    if (cursor > 0 && event.id !== cursor + 1) throw new Error('创作事件存在缺口，正在重新同步')
+    cursor = event.id
+    onEvent(event)
+  }
+  return { receive, cursor: () => cursor }
+}
+
+async function consumeRecoverableStream(threadId: string, response: Response, onEvent: (event: WorkflowEvent) => void, signal?: AbortSignal) {
+  if (!response.ok) return parseSseStream(response, onEvent)
+  const ordered = orderedEvents(onEvent)
+  try {
+    const result = await parseSseStream(response, ordered.receive)
+    if (result.terminal || signal?.aborted) return result
+  } catch (error) {
+    if (signal?.aborted) throw error
+  }
+  const replay = await fetch(`/api/v1/workflows/${threadId}/events`, {
+    headers: { ...workflowHeaders(), 'Last-Event-ID': String(ordered.cursor()) }, signal,
+  })
+  return parseSseStream(replay, ordered.receive)
 }
 
 function isWorkflowEvent(value: unknown): value is WorkflowEvent {

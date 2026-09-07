@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, cast
 
-from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from infrastructure.database.fenced_checkpointer import FencedPostgresSaver as AsyncPostgresSaver
 from langgraph.types import Command, Overwrite
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool

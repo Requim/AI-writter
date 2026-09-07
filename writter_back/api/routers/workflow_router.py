@@ -35,6 +35,8 @@ from application.errors import (
     WorkflowCheckpointUnavailableError,
 )
 from application.events import WorkflowEvent
+from application.execution_fence import execution_fence, ExecutionLeaseLost
+from infrastructure.database.runtime_journal import RuntimeJournal
 from application.feature_policy import feature_policy
 from application.orchestrator import NovelOrchestrator
 from application.proposals import (
@@ -100,10 +102,21 @@ def _resolve_command_id(idempotency_key: str | None) -> str:
 class StreamChannel:
     queue: asyncio.Queue[StreamItem]
     disconnected: asyncio.Event
+    journal: RuntimeJournal | None = None
+
+    async def emit(self, item: StreamItem) -> None:
+        owner = execution_fence.get()
+        if isinstance(item, WorkflowEvent) and self.journal is not None and owner is not None:
+            item = await self.journal.append(owner, item)
+        self.publish(item)
 
     def publish(self, item: StreamItem) -> None:
         if not self.disconnected.is_set():
-            self.queue.put_nowait(item)
+            try:
+                self.queue.put_nowait(item)
+            except asyncio.QueueFull:
+                self.disconnect()
+                self.queue.put_nowait(None)
 
     def disconnect(self) -> None:
         self.disconnected.set()
@@ -436,6 +449,8 @@ def _known_workflow_error(exc: Exception) -> dict[str, Any] | None:
 
 
 def _public_error_data(exc: Exception) -> dict[str, Any]:
+    if isinstance(exc, ExecutionLeaseLost):
+        return {"code": "execution_lease_lost", "message": "当前执行权已失效，请同步创作现场", "retryable": False}
     known_error = _known_workflow_error(exc)
     if known_error:
         return known_error
@@ -764,6 +779,12 @@ async def invoke_workflow(
             )
 
 
+async def _shared_run_state(repository: PostgresNovelRepository, context: TenantContext, thread_id: str) -> dict[str, Any] | None:
+    if not isinstance(repository, PostgresNovelRepository):
+        return None
+    return await RuntimeJournal(repository.async_session).status(str(context.tenant_id), thread_id)
+
+
 @router.get("/{thread_id}/state")
 async def get_workflow_state(
     thread_id: str,
@@ -773,6 +794,10 @@ async def get_workflow_state(
 ) -> dict[str, Any]:
     novel = await _authorize_thread(context, thread_id, repository)
     try:
+        shared = await _shared_run_state(repository, context, thread_id)
+        if shared and shared["running"] and not orchestrator.is_executing(context, thread_id):
+            return {"thread_id": thread_id, "status": "running", "has_interrupt": False, "interrupts": [],
+                "state": {"current_chapter_index": novel.progress.current_chapter}, "execution": shared}
         if not orchestrator.is_executing(context, thread_id):
             status = await reconcile_pending_checkpoint(
                 repository, orchestrator, context, thread_id
@@ -818,7 +843,7 @@ async def _produce_stream_events(
                 orchestrator, context, thread_id, current
             ):
                 sequence += 1
-                channel.publish(event.model_copy(update={"id": sequence}))
+                await channel.emit(event.model_copy(update={"id": sequence}))
             return
         except Exception as exc:
             if not _should_auto_retry(current, exc, attempt):
@@ -828,7 +853,7 @@ async def _produce_stream_events(
             _record_retry_attempt(orchestrator, context, thread_id, attempt)
             sequence += 1
             delay = _retry_after_seconds(exc) or 0.0
-            channel.publish(
+            await channel.emit(
                 _auto_retry_event(thread_id, sequence, current, delay)
             )
             await _wait_for_auto_retry(exc)
@@ -992,11 +1017,12 @@ async def _run_stream_execution(
             )
         applied = True
     except asyncio.TimeoutError:
-        channel.publish(_stream_timeout_error(thread_id, prepared.command.command_id))
+        await channel.emit(_stream_timeout_error(thread_id, prepared.command.command_id))
     except asyncio.CancelledError:
         raise
     except Exception as exc:
-        channel.publish(exc)
+        await channel.emit(WorkflowEvent(id=0, type="error", thread_id=thread_id,
+            command_id=prepared.command.command_id, data=_public_error_data(exc)))
     finally:
         try:
             await _settle_stream_command(
@@ -1030,7 +1056,9 @@ def _start_stream_execution(
     thread_id: str,
     prepared: PreparedWorkflow,
 ) -> tuple[StreamChannel, asyncio.Task[None]]:
-    channel = StreamChannel(asyncio.Queue(), asyncio.Event())
+    channel = StreamChannel(asyncio.Queue(maxsize=1000), asyncio.Event())
+    if hasattr(command_store, "sessions"):
+        channel.journal = RuntimeJournal(command_store.sessions)
     producer = asyncio.create_task(
         _run_stream_execution(
             channel, orchestrator, command_store, context, thread_id, prepared
@@ -1038,6 +1066,10 @@ def _start_stream_execution(
         name=f"workflow:{context.tenant_id}:{thread_id}",
     )
     orchestrator.register_task(context, thread_id, producer)
+    bind = getattr(command_store, "bind", None)
+    if bind is not None:
+        bind(prepared.command.lease_token, producer)
+        execution_fence.set(None)
     return channel, producer
 
 
@@ -1128,14 +1160,19 @@ async def cancel_workflow(
     context: TenantContext = Depends(get_tenant_context),
     orchestrator: NovelOrchestrator = Depends(get_orchestrator),
     repository: PostgresNovelRepository = Depends(get_repository),
+    command_store: WorkflowCommandStore = Depends(get_workflow_command_store),
 ) -> dict[str, str]:
     await _authorize_thread(context, thread_id, repository)
+    request_cancel = getattr(command_store, "cancel", None)
+    remote_cancel = await request_cancel(str(context.tenant_id), thread_id) if request_cancel else False
     cancelled = await orchestrator.cancel(context, thread_id)
     return {
         "thread_id": thread_id,
         "status": (
             "cancelled"
             if cancelled
+            else "cancelling"
+            if remote_cancel
             else "running"
             if orchestrator.is_executing(context, thread_id)
             else "idle"

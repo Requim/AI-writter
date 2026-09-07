@@ -11,6 +11,7 @@ from infrastructure.database.models import (
     NovelModel, StoryEntityModel, StoryFactAssertionModel, StoryFactVersionModel,
 )
 from service.ports.story_fact_repository import FactVersionConflictError
+from infrastructure.database.runtime_guard import assert_execution_owner
 from service.value_objects.chapter_constraints import ChapterConstraintSet
 from service.value_objects.story_fact import CanonicalFact, FactStatement, Predicate, StoryEntity, StoryFactAssertion, StoryFactVersion
 
@@ -34,6 +35,8 @@ async def _authorize(session: AsyncSession, tenant_id: str, novel_id: str, *, lo
         query = query.with_for_update()
     if await session.scalar(query) is None:
         raise ValueError("小说不存在或不可访问")
+    if lock:
+        await assert_execution_owner(session, tenant_id, novel_id)
 
 
 async def _check_entities(session: AsyncSession, tenant_id: str, novel_id: str, statement: FactStatement) -> None:

@@ -39,18 +39,21 @@ from .models import (
     NovelPlanVersionModel,
     NovelTacticalPlanVersionModel,
 )
+from infrastructure.database.runtime_guard import assert_execution_owner
 
 
 async def _lock_novel(
     session: AsyncSession, tenant_id: uuid.UUID, novel_id: uuid.UUID
 ) -> NovelModel | None:
-    return (
+    result = (
         await session.execute(
             select(NovelModel)
             .where(NovelModel.tenant_id == tenant_id, NovelModel.id == novel_id)
             .with_for_update()
         )
     ).scalar_one_or_none()
+    await assert_execution_owner(session, tenant_id, novel_id)
+    return result
 
 
 def _checkpoint_sync_request(
@@ -993,6 +996,7 @@ class PostgresNovelRepository(
     async def update(self, tenant_id: str, novel: Novel) -> Novel:
         """更新小说"""
         async with self.async_session() as session:
+            await _lock_novel(session, uuid.UUID(tenant_id), novel.id)
             stmt = (
                 update(NovelModel)
                 .where(
@@ -1017,6 +1021,7 @@ class PostgresNovelRepository(
     async def delete(self, tenant_id: str, novel_id: str) -> None:
         """删除小说"""
         async with self.async_session() as session:
+            await _lock_novel(session, uuid.UUID(tenant_id), uuid.UUID(novel_id))
             stmt = delete(NovelModel).where(
                 NovelModel.tenant_id == uuid.UUID(tenant_id),
                 NovelModel.id == uuid.UUID(novel_id),
@@ -1039,6 +1044,7 @@ class PostgresNovelRepository(
             ).one_or_none()
             if location is None:
                 return
+            await _lock_novel(session, tenant_uuid, location.novel_id)
             await session.execute(delete(ChapterModel).where(
                 ChapterModel.tenant_id == uuid.UUID(tenant_id),
                 ChapterModel.id == chapter_uuid,
@@ -1055,6 +1061,7 @@ class PostgresNovelRepository(
         tenant_uuid = uuid.UUID(tenant_id)
         novel_uuid = uuid.UUID(novel_id)
         async with self.async_session() as session, session.begin():
+            await _lock_novel(session, tenant_uuid, novel_uuid)
             await session.execute(
                 delete(ChapterModel)
                 .where(ChapterModel.tenant_id == tenant_uuid)
@@ -1092,6 +1099,7 @@ class PostgresNovelRepository(
     ) -> Chapter:
         """保存章节"""
         async with self.async_session() as session:
+            await _lock_novel(session, uuid.UUID(tenant_id), uuid.UUID(novel_id))
             chapter_model = ChapterModel(
                 id=chapter.id,
                 tenant_id=uuid.UUID(tenant_id),
@@ -1268,6 +1276,15 @@ class PostgresNovelRepository(
             _mark_edit_checkpoint_sync(novel, chapter.updated_at)
         chapter.version = next_version
         return chapter
+
+    async def defer_checkpoint_sync(self, tenant_id: str, novel_id: str, expected: dict, replacement: dict) -> bool:
+        """仅对仍未变化的恢复请求追加退避元数据，避免覆盖新的编辑操作。"""
+        async with self.async_session() as session, session.begin():
+            novel = await _lock_novel(session, uuid.UUID(tenant_id), uuid.UUID(novel_id))
+            if novel is None or (novel.progress or {}).get("checkpoint_sync") != expected:
+                return False
+            novel.progress = {**novel.progress, "checkpoint_sync": replacement}
+            return True
 
     async def clear_checkpoint_sync(
         self,

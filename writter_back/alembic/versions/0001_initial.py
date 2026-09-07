@@ -1,5 +1,5 @@
 """Create the application schema without replacing existing compatible tables."""
-from infrastructure.database.models import Base
+from infrastructure.database.migration_baseline import Base
 
 revision = "0001_initial"
 down_revision = None

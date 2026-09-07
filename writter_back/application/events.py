@@ -30,8 +30,9 @@ class WorkflowEvent(BaseModel):
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     def to_sse(self) -> str:
+        identifier = f"id: {self.id}\n" if self.id > 0 and self.type != "heartbeat" else ""
         return (
-            f"id: {self.id}\n"
+            identifier +
             f"event: {self.type}\n"
             f"data: {self.model_dump_json()}\n\n"
         )

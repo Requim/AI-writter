@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import axios from 'axios'
-import { parseSseStream, streamWorkflow, WorkflowRequestError } from './workflow'
+import { orderedEvents, parseSseStream, streamWorkflow, WorkflowRequestError } from './workflow'
 import type { WorkflowEvent } from '@/types/novel'
 import { useAuthStore } from '@/stores/authStore'
 
@@ -52,7 +52,7 @@ describe('parseSseStream', () => {
       accessToken: 'access-token',
       currentTenantId: 'tenant-id',
     })
-    const fetchMock = vi.fn().mockResolvedValue(responseFrom([]))
+    const fetchMock = vi.fn().mockImplementation(async () => responseFrom([]))
     vi.stubGlobal('fetch', fetchMock)
     await streamWorkflow('novel-id', { input: {} }, () => undefined)
     expect(fetchMock).toHaveBeenCalledWith(
@@ -64,6 +64,29 @@ describe('parseSseStream', () => {
         }),
       }),
     )
+  })
+})
+
+describe('durable replay', () => {
+  it('deduplicates replay and detects missing sequence', () => {
+    const receive = vi.fn()
+    const ordered = orderedEvents(receive)
+    const event = { id: 10, type: 'status', thread_id: 'n', data: {}, timestamp: '2026-09-07T00:00:00Z' } as WorkflowEvent
+    ordered.receive(event)
+    ordered.receive(event)
+    expect(receive).toHaveBeenCalledTimes(1)
+    expect(() => ordered.receive({ ...event, id: 12 })).toThrow('缺口')
+    expect(ordered.cursor()).toBe(10)
+  })
+  it('reconnects with GET and Last-Event-ID without another command', async () => {
+    const event = { id: 7, type: 'status', thread_id: 'n', data: {}, timestamp: '2026-09-07T00:00:00Z' }
+    const fetchMock = vi.fn().mockResolvedValueOnce(responseFrom([`data: ${JSON.stringify(event)}\n\n`]))
+      .mockResolvedValueOnce(responseFrom([`data: ${JSON.stringify({ ...event, id: 8, type: 'completed' })}\n\n`]))
+    vi.stubGlobal('fetch', fetchMock)
+    const result = await streamWorkflow('n', { input: {} }, () => undefined)
+    expect(result.terminal).toBe(true)
+    expect(fetchMock.mock.calls[1]).toEqual(['/api/v1/workflows/n/events', expect.objectContaining({ headers: expect.objectContaining({ 'Last-Event-ID': '7' }) })])
+    expect(fetchMock.mock.calls.filter(call => call[1].method === 'POST')).toHaveLength(1)
   })
 })
 
@@ -94,6 +117,7 @@ describe('workflow request recovery', () => {
     } })
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response('', { status: 401 }))
+      .mockResolvedValueOnce(responseFrom([]))
       .mockResolvedValueOnce(responseFrom([]))
     vi.stubGlobal('fetch', fetchMock)
     await streamWorkflow('novel-id', { command: { retry: true } }, () => undefined, undefined, 'command-7')

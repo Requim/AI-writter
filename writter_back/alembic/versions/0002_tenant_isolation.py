@@ -4,7 +4,7 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
-from infrastructure.database.models import Base
+from infrastructure.database.migration_baseline import Base
 
 revision = "0002_tenant_isolation"
 down_revision = "0001_initial"

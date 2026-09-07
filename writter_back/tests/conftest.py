@@ -1,6 +1,7 @@
 """Shared fixtures for optional PostgreSQL tenant-isolation integration tests."""
 
 from datetime import datetime
+import asyncio
 import os
 from uuid import uuid4
 
@@ -32,6 +33,14 @@ from service.value_objects.novel_type import NovelType
 from service.value_objects.outline import Outline
 from service.value_objects.progress import Progress
 from tests.database_safety import database_required, isolated_database_url
+
+
+@pytest.fixture(scope="session")
+def event_loop_policy():
+    """Windows下Psycopg需要Selector循环，与生产Linux异步驱动保持兼容。"""
+    if hasattr(asyncio, "WindowsSelectorEventLoopPolicy"):
+        return asyncio.WindowsSelectorEventLoopPolicy()
+    return asyncio.DefaultEventLoopPolicy()
 
 
 @pytest_asyncio.fixture(scope="session")

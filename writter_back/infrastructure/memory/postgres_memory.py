@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy import text
 
 from service.ports.memory_service import MemoryService
+from infrastructure.database.runtime_guard import lock_execution_write
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +149,7 @@ class PostgresMemoryAdapter(MemoryService):
         """存储记忆"""
         memory_id = str(uuid.uuid4())
         async with self.async_session() as session:
+            await lock_execution_write(session, tenant_id, novel_id)
             # 简化版：不存储向量，仅存储文本
             # 完整版需要pgvector扩展和向量化
             stmt = text("""
@@ -220,6 +222,7 @@ class PostgresMemoryAdapter(MemoryService):
     ) -> None:
         """删除指定章节索引的旧记忆"""
         async with self.async_session() as session:
+            await lock_execution_write(session, tenant_id, novel_id)
             stmt = text("""
                 DELETE FROM novel_memories
                 WHERE tenant_id = :tenant_id AND novel_id = :novel_id
@@ -272,6 +275,7 @@ class PostgresMemoryAdapter(MemoryService):
         """Upsert S-layer story state (delete old type='story_state', insert new)"""
         logger.info("Updating story state for novel %s", novel_id)
         async with self.async_session() as session:
+            await lock_execution_write(session, tenant_id, novel_id)
             # Delete existing story_state
             stmt = text("""
                 DELETE FROM novel_memories

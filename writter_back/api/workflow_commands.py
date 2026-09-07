@@ -7,6 +7,7 @@ from uuid import uuid4
 from fastapi import HTTPException, Request
 
 from config import settings
+from application.execution_fence import execution_fence
 from service.entities.identity import TenantContext
 from service.ports.workflow_command_store import (
     WorkflowCommandClaimStatus,
@@ -71,11 +72,14 @@ async def claim_command(
             503, "idempotency_store_unavailable", "命令保护服务暂时不可用，请稍后重试"
         ) from exc
     if claim.status is WorkflowCommandClaimStatus.IN_PROGRESS:
-        raise command_error(409, "workflow_command_in_progress", "该命令正在执行")
+        raise command_error(409, "workflow_command_in_progress", "该作品已有创作任务，请查看当前进度")
     if claim.status is WorkflowCommandClaimStatus.ALREADY_APPLIED:
         raise command_error(409, "workflow_command_already_applied", "该命令已执行")
     if claim.lease_token is None:
         raise command_error(503, "idempotency_store_unavailable", "命令租约无效")
+    bind = getattr(store, "bind", None)
+    if bind is not None:
+        bind(claim.lease_token)
     return ClaimedWorkflowCommand(command_id, claim.lease_token)
 
 
@@ -95,6 +99,8 @@ async def finalize_command(
         )
     except asyncio.TimeoutError as exc:
         raise WorkflowCommandStoreUnavailable from exc
+    finally:
+        _clear_command_context(command)
     if not finalized:
         raise WorkflowCommandStoreUnavailable("workflow command lease was lost")
 
@@ -129,8 +135,16 @@ async def release_command(
         )
     except asyncio.TimeoutError as exc:
         raise WorkflowCommandStoreUnavailable from exc
+    finally:
+        _clear_command_context(command)
     if not released:
         raise WorkflowCommandStoreUnavailable("workflow command lease was lost")
+
+
+def _clear_command_context(command: ClaimedWorkflowCommand) -> None:
+    owner = execution_fence.get()
+    if owner is not None and owner.token == command.lease_token:
+        execution_fence.set(None)
 
 
 async def release_command_or_http(

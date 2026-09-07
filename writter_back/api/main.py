@@ -7,12 +7,13 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.routers import novel_router, workflow_router
+from api.routers import workflow_replay_router
 from api.routers import admin_router, auth_router, tenant_router, story_fact_router
 from application.auth_service import AuthService
 from application.orchestrator import NovelOrchestrator
 from application.quota_service import QuotaService
 from config import settings
-from infrastructure.command_store import RedisWorkflowCommandStore
+from infrastructure.command_store.postgres_command_store import PostgresWorkflowCommandStore
 from infrastructure.database.repository import PostgresNovelRepository
 from infrastructure.database.identity_repository import IdentityRepository
 from infrastructure.memory.postgres_memory import PostgresMemoryAdapter
@@ -33,7 +34,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     auth_service = AuthService(identity_repository, settings)
     quota_service = QuotaService(identity_repository)
     memory_service = PostgresMemoryAdapter(settings.DATABASE_URL, repository.async_session)
-    workflow_command_store = RedisWorkflowCommandStore(settings.REDIS_URL)
+    workflow_command_store = PostgresWorkflowCommandStore(repository.async_session)
+    await workflow_command_store.recover_expired()
     orchestrator = NovelOrchestrator(
         repository=repository,
         memory_service=memory_service,
@@ -87,6 +89,7 @@ app.add_middleware(
 app.include_router(story_fact_router.router, prefix="/api/v1/novels", tags=["Story Facts"])
 app.include_router(novel_router.router, prefix="/api/v1/novels", tags=["Novels"])
 app.include_router(workflow_router.router, prefix="/api/v1/workflows", tags=["Workflows"])
+app.include_router(workflow_replay_router.router, prefix="/api/v1/workflows", tags=["Workflow Recovery"])
 app.include_router(auth_router.router, prefix="/api/v1/auth", tags=["Auth"])
 app.include_router(tenant_router.router, prefix="/api/v1/tenants", tags=["Tenants"])
 app.include_router(admin_router.router, prefix="/api/v1/admin", tags=["Admin"])
@@ -106,7 +109,7 @@ async def readiness(request: Request) -> dict[str, str]:
     try:
         await request.app.state.workflow_command_store.ping()
     except Exception as exc:
-        raise HTTPException(status_code=503, detail="redis unavailable") from exc
+        raise HTTPException(status_code=503, detail="workflow store unavailable") from exc
     return {"status": "ready"}
 
 
