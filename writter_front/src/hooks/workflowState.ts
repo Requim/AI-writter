@@ -12,8 +12,11 @@ export interface WorkflowViewState {
   lastSyncedAt?: string
   consecutiveSyncFailures?: number
   connectionRecovering?: boolean
+  syncState?: 'syncing' | 'confirmed' | 'unknown'
   reasoning?: string
   qualityScore?: number
+  qualityDecision?: string
+  planResult?: { chapter: number; status: string; drift: string; version?: number }
   interrupt?: InterruptInfo
   progress?: number
   retryable?: boolean
@@ -49,6 +52,7 @@ export type WorkflowAction =
 export const initialWorkflowState: WorkflowViewState = {
   status: 'idle', connection: 'idle', draft: '', issues: [], events: [],
   consecutiveSyncFailures: 0, connectionRecovering: false,
+  syncState: 'syncing',
 }
 
 const interruptNodes: Record<string, string> = {
@@ -62,6 +66,7 @@ const interruptNodes: Record<string, string> = {
   review_or_modify_novel_plan: 'novel_plan_review_node',
   review_novel_plan: 'novel_plan_review_node',
   review_or_provide_chapter_outline: 'chapter_outline_review_node',
+  review_or_modify_chapter_plan: 'chapter_plan_review_node',
   review_reflection_issues: 'reflection_review_node',
   quality_gate_exhausted: 'reflection_review_node',
   quality_gate_human_review: 'reflection_review_node',
@@ -80,7 +85,8 @@ function startState(state: WorkflowViewState, action: Extract<WorkflowAction, { 
     ...state, status: 'running' as const, connection: 'streaming' as const,
     draft: action.preserveDraft ? state.draft : '', activeNode: undefined,
     activeCommandId: action.commandId, stageStartedAt: undefined, reasoning: undefined,
-    qualityScore: undefined, issues: [], interrupt: undefined, events: [], error: undefined,
+    qualityScore: undefined, qualityDecision: undefined, planResult: undefined,
+    issues: [], interrupt: undefined, events: [], error: undefined,
     retryable: undefined, retryAfter: undefined, retryCount: undefined,
     errorCode: undefined, errorNode: undefined, isStale: false,
     lastSyncedAt: undefined, consecutiveSyncFailures: 0, connectionRecovering: false,
@@ -123,7 +129,7 @@ function reduceSnapshot(state: WorkflowViewState, snapshot: WorkflowSnapshot): W
   const checkpointReason = snapshot.state?.router_reasoning
   const completed = status === 'completed'
   return {
-    ...state, status,
+    ...state, status, syncState: 'confirmed',
     connection: snapshot.status === 'running' && !completed ? 'detached' : 'idle',
     activeNode: completed ? undefined : nodeForInterrupt(interrupt) || execution?.active_node || snapshot.next_nodes?.[0],
     activeCommandId: completed ? undefined : execution?.command_id || state.activeCommandId,
@@ -186,7 +192,16 @@ function reduceTypedEvent(next: WorkflowViewState, event: WorkflowEvent): void {
   }
   if (event.type === 'quality') {
     next.qualityScore = typeof event.data.score === 'number' ? event.data.score : undefined
+    next.qualityDecision = typeof event.data.decision === 'string' ? event.data.decision : undefined
     next.issues = Array.isArray(event.data.issues) ? event.data.issues as ReflectionIssue[] : []
+  }
+  if (event.type === 'plan_reconciled') {
+    next.planResult = {
+      chapter: typeof event.data.chapter_number === 'number' ? event.data.chapter_number : 0,
+      status: typeof event.data.status === 'string' ? event.data.status : 'unknown',
+      drift: typeof event.data.drift_severity === 'string' ? event.data.drift_severity : 'unknown',
+      version: typeof event.data.plan_version === 'number' ? event.data.plan_version : undefined,
+    }
   }
   if (event.type === 'progress' && typeof event.data.percentage === 'number') next.progress = event.data.percentage
   if (event.type === 'metadata_updated') {
@@ -211,7 +226,7 @@ function reduceTerminalEvent(next: WorkflowViewState, event: WorkflowEvent): voi
     next.connection = 'idle'
     next.hasCheckpointDraft = false
     next.hasPendingCheckpoint = false
-    if (next.status !== 'paused') next.status = event.data.is_completed === true ? 'completed' : 'idle'
+    if (!['paused', 'error'].includes(next.status)) next.status = event.data.is_completed === true ? 'completed' : 'idle'
   }
   if (event.type === 'error') {
     next.status = 'error'
@@ -249,11 +264,11 @@ export function workflowReducer(state: WorkflowViewState, action: WorkflowAction
     return snapshotIsOld(state, action.snapshot, action.force) ? state : reduceSnapshot(state, action.snapshot)
   }
   if (action.type === 'sync_succeeded') return {
-    ...state, lastSyncedAt: action.at, consecutiveSyncFailures: 0, connectionRecovering: false,
+    ...state, lastSyncedAt: action.at, consecutiveSyncFailures: 0, connectionRecovering: false, syncState: 'confirmed',
   }
   if (action.type === 'sync_failed') {
     const failures = (state.consecutiveSyncFailures ?? 0) + 1
-    return { ...state, consecutiveSyncFailures: failures, connectionRecovering: failures >= 2 }
+    return { ...state, consecutiveSyncFailures: failures, connectionRecovering: failures >= 2, syncState: 'unknown' }
   }
   if (action.type === 'failure') return {
     ...state, status: 'error', connection: 'idle', error: action.message,

@@ -6,6 +6,7 @@ import type {
   TacticalPlanVersionSummary, VolumePlan,
 } from '@/types/novel'
 import { TacticalPlanView } from './TacticalPlanView'
+import { planningFieldLabel, reviewValueLabels } from '../workflow/terminology'
 
 const sourceLabels: Record<string, string> = {
   initial: '初始规划', legacy_upgrade: '旧作补全', volume_detail: '卷内细化',
@@ -21,9 +22,9 @@ function displayValue(value: JsonValue): string {
   if (value == null) return '未约定'
   if (Array.isArray(value)) return value.map(displayValue).join('；')
   if (typeof value === 'object') {
-    return Object.entries(value).map(([key, item]) => `${key.replaceAll('_', ' ')}：${displayValue(item)}`).join('；')
+    return Object.entries(value).map(([key, item]) => `${planningFieldLabel(key)}：${displayValue(item)}`).join('；')
   }
-  return String(value)
+  return reviewValueLabels[String(value)] || String(value)
 }
 
 function PlanMetrics({ plan }: { plan: NovelPlan }) {
@@ -51,7 +52,7 @@ function VolumeBoundaryList({ volumes }: { volumes: VolumePlan[] }) {
 export function NovelPlanSummary({ plan }: { plan: NovelPlan }) {
   return <div className="plan-summary">
     <div className="plan-document-meta">
-      <span>V{plan.version}</span><span>{sourceLabels[plan.source] || plan.source}</span>
+      <span>V{plan.version}</span><span>{sourceLabels[plan.source] || '其他调整'}</span>
       <span>浮动 ±{Math.round(plan.scale.tolerance_ratio * 100)}%</span>
       <span>锁定未来 {plan.scale.lock_window} 章</span>
     </div>
@@ -64,9 +65,9 @@ function PlanOverview({ plan }: { plan: NovelPlan }) {
   return <div className="plan-tab-panel">
     <NovelPlanSummary plan={plan} />
     <section className="plan-ending-contract">
-      <span className="eyebrow">Ending Contract</span><h3>结局契约</h3>
+      <span className="eyebrow">故事收束</span><h3>结局要求</h3>
       <dl>{Object.entries(plan.ending_contract).map(([key, value]) => <div key={key}>
-        <dt>{key.replaceAll('_', ' ')}</dt><dd>{displayValue(value)}</dd>
+        <dt>{planningFieldLabel(key)}</dt><dd>{displayValue(value)}</dd>
       </div>)}</dl>
     </section>
   </div>
@@ -101,7 +102,7 @@ function ArcEscalations({ arc }: { arc: StoryArc }) {
 
 function ArcsView({ arcs }: { arcs: StoryArc[] }) {
   return <div className="plan-arc-list">{arcs.map((arc) => <section key={arc.arc_id}>
-    <header><div><Tag color={arc.is_core ? 'red' : 'default'}>{arc.is_core ? '核心弧' : arc.arc_type}</Tag>
+    <header><div><Tag color={arc.is_core ? 'red' : 'default'}>{arc.is_core ? '核心剧情线' : reviewValueLabels[arc.arc_type] || '其他剧情线'}</Tag>
       <h3>{arc.goal}</h3></div><span>第 {arc.start_chapter} - {arc.end_chapter} 章</span></header>
     <p><strong>解决条件</strong>{arc.resolution_condition}</p>
     <div className="plan-escalations"><strong>升级节点</strong><ArcEscalations arc={arc} /></div>
@@ -110,10 +111,10 @@ function ArcsView({ arcs }: { arcs: StoryArc[] }) {
 
 function SlotObligations({ slot }: { slot: ChapterSlot }) {
   const events = slot.must_happen.length ? slot.must_happen.join('；') : '待细化'
-  return <details><summary>本章义务</summary><dl>
+  return <details><summary>本章必须完成</summary><dl>
     <div><dt>必发事件</dt><dd>{events}</dd></div>
     <div><dt>状态变化</dt><dd>{slot.planned_state_delta || '待细化'}</dd></div>
-    <div><dt>剧情弧</dt><dd>{slot.arc_ids.join('、') || '未关联'}</dd></div>
+    <div><dt>剧情线</dt><dd>{slot.arc_ids.join('、') || '未关联'}</dd></div>
     <div><dt>伏笔</dt><dd>{[...slot.setup_ids.map((id) => `埋设 ${id}`), ...slot.payoff_ids.map((id) => `回收 ${id}`)].join('；') || '无'}</dd></div>
   </dl></details>
 }
@@ -122,7 +123,7 @@ function SlotList({ slots }: { slots: ChapterSlot[] }) {
   return <ol className="plan-slot-list">{slots.map((slot) => <li key={slot.chapter_number}>
     <div className="plan-slot-main"><span>{String(slot.chapter_number).padStart(3, '0')}</span>
       <div><strong>{slot.story_function || '待规划章节功能'}</strong><small>{slot.target_words.toLocaleString()} 字 · {slot.detail_level === 'detailed' ? '已细化' : '骨架'}</small></div>
-      <Tag>{statusLabels[slot.status] || slot.status}</Tag></div>
+      <Tag>{statusLabels[slot.status] || '状态待确认'}</Tag></div>
     <SlotObligations slot={slot} />
   </li>)}</ol>
 }
@@ -147,8 +148,8 @@ interface NovelPlanViewProps {
 }
 
 function PlanViewHeader({ plan, action }: { plan?: NovelPlan; action?: ReactNode }) {
-  return <header className="plan-view-heading"><div><span className="eyebrow">Production Blueprint</span><h2>整书规划</h2></div>
-    <div className="plan-view-actions">{plan && <span>Schema {plan.schema_version}</span>}{action}</div></header>
+  return <header className="plan-view-heading"><div><span className="eyebrow">全书安排</span><h2>整书规划</h2></div>
+    <div className="plan-view-actions">{plan && <details><summary>技术详情</summary><span>格式版本 {plan.schema_version}</span></details>}{action}</div></header>
 }
 
 export function NovelPlanView({
@@ -157,13 +158,16 @@ export function NovelPlanView({
 }: NovelPlanViewProps) {
   return <div className="novel-plan-view">
     <PlanViewHeader plan={plan} action={headerAction} />
+    <ol className="planning-lineage" aria-label="创作规划层级">
+      <li>整书规划</li><li>近期推进方案</li><li>章节细纲</li><li>正文</li>
+    </ol>
     {!plan ? <div className="plan-empty"><Empty image={Empty.PRESENTED_IMAGE_SIMPLE}
       description={emptyDescription || '整书规划尚未建立'} /></div> : <Tabs className="plan-tabs" items={[
       { key: 'overview', label: <span><BookOutlined /> 整书</span>, children: <PlanOverview plan={plan} /> },
       { key: 'volumes', label: <span><PartitionOutlined /> 分卷</span>, children: <VolumesView volumes={plan.volumes} /> },
-      { key: 'arcs', label: <span><BranchesOutlined /> 剧情弧</span>, children: <ArcsView arcs={plan.arcs} /> },
+      { key: 'arcs', label: <span><BranchesOutlined /> 剧情线</span>, children: <ArcsView arcs={plan.arcs} /> },
       { key: 'spine', label: <span><OrderedListOutlined /> 章节骨架</span>, children: <ChapterSpineView plan={plan} /> },
-      { key: 'tactical', label: <span><AimOutlined /> 近期战术</span>, children: <TacticalPlanView
+      { key: 'tactical', label: <span><AimOutlined /> 近期推进方案</span>, children: <TacticalPlanView
         tactical={tactical} versions={tacticalVersions} loadFailed={tacticalLoadFailed}
         versionsLoadFailed={tacticalVersionsLoadFailed} /> },
     ]} />}

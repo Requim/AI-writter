@@ -11,7 +11,7 @@ interface Props {
 }
 
 function draftNote(state: WorkflowViewState): string | undefined {
-  if (state.hasCheckpointDraft) return '服务端 checkpoint 已保存本章草稿，重试会从已保存现场继续。'
+  if (state.hasCheckpointDraft) return '服务端已保留本章草稿，可从已保存进度重试。'
   if (state.draft) return '未完成预览已保留在当前页面，服务端没有可继续的草稿；重试将从本章重新生成。'
   return undefined
 }
@@ -31,11 +31,13 @@ export function WorkflowError({ state, chapterNumber, onRetry, onRefresh }: Prop
   return (
     <div className="error-note" role="alert">
       <strong>{state.error}</strong>
+      <details><summary>错误详情</summary>
       <dl className="error-diagnostics">
         <div><dt>错误码</dt><dd>{state.errorCode || '未提供'}</dd></div>
         <div><dt>出错节点</dt><dd>{nodeLabels[state.errorNode || state.activeNode || ''] || state.errorNode || state.activeNode || '未提供'}</dd></div>
         <div><dt>重试情况</dt><dd><Tag color={state.retryable ? 'warning' : 'default'}>{retryText(state)}</Tag></dd></div>
       </dl>
+      </details>
       {note && <small>{note}</small>}
       <div className="error-actions">
         <Button size="small" icon={<SyncOutlined />} onClick={onRefresh}>同步现场</Button>

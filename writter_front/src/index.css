@@ -691,3 +691,11 @@ h1, h2, h3 { color: var(--ink); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }
+.workflow-recent, .workflow-diagnostics, .workflow-plan-result { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); min-width: 0; }
+.workflow-recent h3, .workflow-plan-result h3 { margin: 0 0 8px; font-size: 13px; font-weight: 600; }
+.workflow-diagnostics summary, .quality-block summary, .error-note summary { cursor: pointer; font-size: 12px; }
+.workflow-diagnostics code, .error-diagnostics dd { overflow-wrap: anywhere; word-break: break-word; }
+.workflow-plan-result p { margin: 6px 0; font-size: 12px; line-height: 1.6; }
+.planning-lineage { display: flex; flex-wrap: wrap; gap: 6px 12px; padding: 10px 0; margin: 0 0 12px; list-style: none; border-bottom: 1px solid var(--line); font-size: 12px; }
+.planning-lineage li { display: flex; gap: 8px; align-items: center; }
+.planning-lineage li + li::before { content: '>'; color: var(--muted); }

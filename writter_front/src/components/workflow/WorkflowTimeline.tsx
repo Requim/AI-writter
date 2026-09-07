@@ -5,7 +5,7 @@ import { completedTimeline, nodeLabels, presentationNode } from './presentation'
 function emptyLabel(status: WorkflowViewState['status']): string {
   if (status === 'recoverable') return '草稿已保留，等待继续'
   if (status === 'error') return '当前步骤未完成'
-  if (status === 'completed') return '执行已完成，节点历史未保留'
+  if (status === 'completed') return '章节已生成，本页没有更早的步骤记录'
   return '尚未开始执行'
 }
 
@@ -21,7 +21,7 @@ export function WorkflowTimeline({ state }: { state: WorkflowViewState }) {
         const isActive = node === active && index === nodes.length - 1
         return <li key={`${node}-${index}`} data-active={isActive || undefined}>
           {isActive ? state.status === 'paused' ? <PauseCircleOutlined /> : <LoadingOutlined /> : <CheckCircleOutlined />}
-          <span>{nodeLabels[node] ?? node}</span>
+          <span>{nodeLabels[node] ?? '其他创作步骤'}</span>
         </li>
       })}
       {nodes.length === 0 && <li className="muted">{emptyLabel(state.status)}</li>}

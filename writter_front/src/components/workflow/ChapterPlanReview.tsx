@@ -43,10 +43,10 @@ function TacticalBeatSummary({ beat }: { beat: TacticalBeat }) {
 }
 
 function TacticalWindowReview({ window }: { window?: TacticalWindow }) {
-  if (!window) return <p className="chapter-plan-missing">战术窗口尚未装配</p>
-  return <section className="chapter-plan-window"><header><div><span>战术 V{window.version}</span>
+  if (!window) return <p className="chapter-plan-missing">近期推进方案尚未装配</p>
+  return <section className="chapter-plan-window"><header><div><span>推进方案 V{window.version}</span>
     <strong>第 {window.start_chapter} - {window.end_chapter} 章</strong></div>
-    <Tag>{window.beats.length} 章视野</Tag></header><p>{window.window_objective}</p>
+    <Tag>{window.beats.length} 章范围</Tag></header><p>{window.window_objective}</p>
     <ol>{window.beats.map((beat) => <TacticalBeatSummary key={beat.chapter_number} beat={beat} />)}</ol>
   </section>
 }
@@ -64,7 +64,7 @@ function HardSlotReview({ interrupt }: { interrupt: InterruptInfo }) {
   const payoffs = Array.isArray(slot.payoff_requirements)
     ? slot.payoff_requirements.map(asRecord).map((item) => item?.payoff_id)
       .filter((value): value is JsonValue => value !== undefined) : slot.payoff_ids
-  return <details open><summary>当前槽位硬约束</summary><ReviewRows rows={[
+  return <details open><summary>本章必须完成</summary><ReviewRows rows={[
     ['章节功能', slot.story_function], ['必发事件', obligations],
     ['状态变化', delta], ['设立伏笔', setups],
     ['回收伏笔', payoffs], ['目标字数', slot.target_words],
@@ -72,11 +72,11 @@ function HardSlotReview({ interrupt }: { interrupt: InterruptInfo }) {
 }
 
 function coverageLabel(value: JsonValue): string {
-  if (value === true) return '已覆盖'
-  if (value === false || value == null) return '未覆盖'
-  if (typeof value === 'number') return `场景 ${value}`
-  if (typeof value === 'string') return value
-  return '已映射'
+  if (typeof value === 'number' && Number.isInteger(value) && value > 0) return `场景 ${value}`
+  if (Array.isArray(value) && value.length && value.every((item) => typeof item === 'number' && Number.isInteger(item) && item > 0)) {
+    return `场景 ${value.join('、')}`
+  }
+  return '场景安排待核对'
 }
 
 function CoverageMatrix({ contract }: { contract?: ChapterExecutionContract }) {
@@ -86,9 +86,10 @@ function CoverageMatrix({ contract }: { contract?: ChapterExecutionContract }) {
     ...Object.entries(contract.state_delta_coverage || {}),
     ...Object.entries(contract.setup_payoff_coverage || {}),
   ]
-  return <details open><summary>执行覆盖矩阵</summary><div className="execution-coverage-matrix">
-    {rows.map(([id, value]) => <div key={id}><code>{id}</code>
-      <span>{coverageLabel(value)}</span></div>)}
+  return <details open><summary>场景安排核对</summary><div className="execution-coverage-matrix">
+    {rows.map(([id, value], index) => <div key={id}>
+      <span>要求 {index + 1}</span><span>{coverageLabel(value)}</span>
+      <details><summary>要求编号</summary><code>{id}</code></details></div>)}
   </div></details>
 }
 
@@ -97,9 +98,14 @@ export function ChapterPlanReview({ interrupt }: { interrupt: InterruptInfo }) {
   const contract = executionContractFrom(interrupt)
   return <>
     <div className="review-surface chapter-plan-review">
-      <ReviewHeading eyebrow="滚动战术与执行细纲"
+      <ReviewHeading eyebrow="近期推进与章节细纲"
         title={`第 ${interrupt.chapter_number ?? contract?.chapter_number ?? ''} 章联合审核`} />
       <TacticalWindowReview window={tacticalWindowFrom(interrupt)} />
+      <ol className="planning-lineage" aria-label="章节方案来源">
+        <li>整书规划{contract ? ' V' + contract.plan_version : ''}</li>
+        <li>近期推进方案{contract ? ' V' + contract.tactical_version : ''}</li>
+        <li>当前章节细纲</li><li>正文</li>
+      </ol>
       <HardSlotReview interrupt={interrupt} />
       <CoverageMatrix contract={contract} />
       {payload?.previous_window_diff !== undefined && <details><summary>相对上一窗口的变化</summary>

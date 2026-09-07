@@ -70,7 +70,7 @@ function primaryLabel(action: string): string {
   if (action === 'review_or_modify_character_design') return '确认角色设计'
   if (['review_or_modify_novel_plan', 'review_novel_plan'].includes(action)) return '确认整书规划'
   if (action === 'review_or_provide_chapter_outline') return '使用细纲，生成正文'
-  if (action === 'review_or_modify_chapter_plan') return '确认战术与细纲，生成正文'
+  if (action === 'review_or_modify_chapter_plan') return '确认推进方案与章节细纲，生成正文'
   if (action === 'review_reflection_issues') return '接受本章'
   if (action === 'ready_for_next_chapter') return '生成下一章'
   if (action === 'confirm_revision') return '接受修订'
@@ -151,7 +151,7 @@ function SummaryRepairActions({ interrupt, onResume }: Omit<Props, 'autoMode' | 
 interface InstructionProps { interrupt: InterruptInfo; onResume: (value: unknown) => void }
 
 const chapterPlanScopes = [
-  { label: '仅近期战术', value: 'tactical' },
+  { label: '仅近期推进方案', value: 'tactical' },
   { label: '仅当前章细纲', value: 'chapter_outline' },
   { label: '两者一起', value: 'both' },
 ] as const
@@ -169,7 +169,7 @@ function ChapterPlanInstructionEditor({ interrupt, onResume }: InstructionProps)
     <label>修改范围<Segmented block value={scope} options={[...chapterPlanScopes]}
       onChange={(value) => setScope(value as ChapterPlanRevisionScope)} /></label>
     <Input.TextArea aria-label="章节计划修改要求" value={instruction}
-      onChange={(event) => setInstruction(event.target.value)} placeholder="说明要调整的战术或细纲，不会直接修改原始 JSON"
+      onChange={(event) => setInstruction(event.target.value)} placeholder="输入本次调整要求"
       autoSize={{ minRows: 2, maxRows: 5 }} />
     <Button disabled={!instruction.trim()} onClick={submit}>按范围重新生成</Button>
   </div>
@@ -201,7 +201,7 @@ function StandardActions({ interrupt, onResume, acceptDisabled }: StandardAction
   const regenerate = () => onResume(decisionValue(interrupt, 'regenerate'))
   const canRegenerate = interrupt.action !== 'ready_for_next_chapter'
   const acceptLabel = interrupt.proposal?.kind === 'chapter_plan'
-    ? '确认战术与细纲，生成正文' : primaryLabel(interrupt.action)
+    ? '确认推进方案与章节细纲，生成正文' : primaryLabel(interrupt.action)
   return <div className="interrupt-actions">
     <Button type="primary" disabled={acceptDisabled} onClick={accept}>{acceptLabel}</Button>
     {canRegenerate && <Button onClick={regenerate}>重新生成</Button>}

@@ -132,7 +132,7 @@ export function AppShell({ children, onBeforeNavigate }: PropsWithChildren<{ onB
       <header className="app-header">
         <GuardedNavLink to="/" guard={onBeforeNavigate} className="brand" ariaLabel="返回书架">
           <span className="brand-mark"><BookOutlined /></span>
-          <span><strong>墨间</strong><small>Novel Desk</small></span>
+          <span><strong>墨间</strong><small>小说创作台</small></span>
         </GuardedNavLink>
         <TenantConsole tenants={tenants} currentTenantId={currentTenantId} onChange={changeTenant} />
         <HeaderNavigation

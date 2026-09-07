@@ -488,7 +488,7 @@ describe('WorkflowPanel recovery', () => {
       />,
     )
 
-    expect(screen.getByText('可继续')).toBeInTheDocument()
+    expect(screen.getByText('进度已保留')).toBeInTheDocument()
     expect(screen.getByText('第 3 章质量审读可继续')).toBeInTheDocument()
     expect(screen.getByText('草稿已保留，等待继续')).toBeInTheDocument()
     expect(screen.queryByText('尚未开始执行')).not.toBeInTheDocument()
@@ -509,7 +509,7 @@ describe('WorkflowPanel completed history', () => {
       />,
     )
 
-    expect(screen.getByText('执行已完成，节点历史未保留')).toBeInTheDocument()
+    expect(screen.getByText('章节已生成，本页没有更早的步骤记录')).toBeInTheDocument()
     expect(screen.queryByText('尚未开始执行')).not.toBeInTheDocument()
   })
 })

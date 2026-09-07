@@ -18,6 +18,10 @@ function WorkflowAction({ controller }: { controller: NovelStudioController }) {
   if (controller.isCompleted) return (
     <Button type="primary" icon={<FileDoneOutlined />} onClick={() => controller.setEditor({ workspaceMode: 'chapter', mobilePanel: 'editor' })}>查看完稿</Button>
   )
+  if (workflow.state.syncState === 'unknown') return (
+    <Button icon={<ReloadOutlined />} onClick={() => void workflow.sync(true).catch(() => undefined)}>重新核对进度</Button>
+  )
+  if (workflow.state.syncState === 'syncing') return <Button loading disabled>正在读取进度</Button>
   if (busy) return (
     <Button danger icon={<StopOutlined />} loading={status === 'cancelling'} onClick={controller.stopWriting}>停止</Button>
   )
@@ -75,7 +79,7 @@ const mobileTabs = [
   { value: 'chapters', label: '目录', icon: <UnorderedListOutlined /> },
   { value: 'plan', label: '规划', icon: <ProjectOutlined /> },
   { value: 'editor', label: '正文', icon: <FileTextOutlined /> },
-  { value: 'workflow', label: '执行', icon: <HistoryOutlined /> },
+  { value: 'workflow', label: '进度', icon: <HistoryOutlined /> },
 ] as const
 
 function StudioMobileTabs({ controller }: { controller: NovelStudioController }) {
@@ -156,7 +160,7 @@ function ChapterSidebar({ controller }: { controller: NovelStudioController }) {
   return (
     <aside className={`manuscript-panel studio-pane ${mobilePanel === 'chapters' ? 'mobile-active' : ''}`}>
       <div className="panel-heading">
-        <div><span className="eyebrow">Manuscript</span><h2>{showPlan ? '规划索引' : '章节目录'}</h2></div>
+        <div><span className="eyebrow">作品内容</span><h2>{showPlan ? '规划索引' : '章节目录'}</h2></div>
         <Tooltip title="刷新目录">
           <Button type="text" icon={<ReloadOutlined />} onClick={() => void controller.refresh()} />
         </Tooltip>
@@ -180,7 +184,7 @@ function PlanIndex({ controller }: { controller: NovelStudioController }) {
   if (!plan) return <div className="plan-index-empty">等待整书规划归档</div>
   const window = tacticalPlan?.window
   return <div className="plan-index"><div><strong>V{plan.version}</strong><span>{plan.scale.target_chapters} 章 · {plan.scale.target_volumes} 卷</span></div>
-    {window && <div className="plan-index-tactical"><strong>战术 V{window.version}</strong>
+    {window && <div className="plan-index-tactical"><strong>推进方案 V{window.version}</strong>
       <span>近期 {window.start_chapter} - {window.end_chapter} 章</span></div>}
     <ol>{plan.volumes.map((volume) => <li key={volume.volume_id}><span>{volume.title || volume.volume_id}</span>
       <small>{volume.start_chapter} - {volume.end_chapter} 章</small></li>)}</ol></div>
@@ -248,7 +252,7 @@ function EditorToolbar({ controller, live }: { controller: NovelStudioController
   return (
     <div className="editor-toolbar">
       <div>
-        <span className="eyebrow">{live ? 'Live Draft' : 'Chapter Editor'}</span>
+        <span className="eyebrow">{live ? '正在生成正文' : '章节正文'}</span>
         {live ? (
           <h2>AI 正在撰写第 {progress?.current_chapter ? progress.current_chapter + 1 : 1} 章</h2>
         ) : editorMode === 'edit' ? (

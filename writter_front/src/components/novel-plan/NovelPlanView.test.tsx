@@ -71,7 +71,7 @@ describe('NovelPlanView', () => {
       version: 6, novel_plan_version: 3, story_state_revision: 4, start_chapter: 5,
       end_chapter: 9, source: 'chapter_refresh', created_at: '2026-08-05T10:00:00Z',
     }]} />)
-    fireEvent.click(screen.getByRole('tab', { name: /近期战术/ }))
+    fireEvent.click(screen.getByRole('tab', { name: /近期推进方案/ }))
     expect(screen.getByText('逼近第一卷中点并验证关键证词')).toBeInTheDocument()
     expect(screen.getByText('查验证词矛盾')).toBeInTheDocument()
     expect(screen.getByText('版本历史')).toBeInTheDocument()
@@ -81,7 +81,7 @@ describe('NovelPlanView', () => {
   it('does not present a tactical history request failure as an empty history', () => {
     render(<NovelPlanView plan={largePlan()} tactical={tacticalPlan()}
       tacticalVersionsLoadFailed />)
-    fireEvent.click(screen.getByRole('tab', { name: /近期战术/ }))
+    fireEvent.click(screen.getByRole('tab', { name: /近期推进方案/ }))
     expect(screen.getByText(/版本历史暂时无法读取/)).toBeInTheDocument()
     expect(screen.queryByText('尚无历史版本')).not.toBeInTheDocument()
   })

@@ -3,6 +3,7 @@ import {
 } from '@ant-design/icons'
 import { Tag } from 'antd'
 import type { WorkflowViewState } from '@/hooks/useWorkflowStream'
+import { workflowStatusLabels } from './terminology'
 
 const statusMeta = {
   running: { label: '执行中', color: 'processing' as const, icon: <LoadingOutlined /> },
@@ -15,12 +16,13 @@ const statusMeta = {
   idle: { label: '空闲', color: 'default' as const, icon: <CheckCircleOutlined /> },
 }
 
-export function WorkflowHeader({ status }: Pick<WorkflowViewState, 'status'>) {
+export function WorkflowHeader({ status, syncState }: Pick<WorkflowViewState, 'status' | 'syncState'>) {
   const meta = statusMeta[status]
+  const label = syncState === 'unknown' ? '进度尚未确认' : syncState === 'syncing' ? '正在读取进度' : workflowStatusLabels[status]
   return (
     <div className="panel-heading">
-      <div><span className="eyebrow">AI 编辑台</span><h2>执行记录</h2></div>
-      <Tag color={meta.color} icon={meta.icon}>{meta.label}</Tag>
+      <div><span className="eyebrow">当前作品</span><h2>创作进度</h2></div>
+      <Tag color={syncState === 'unknown' ? 'warning' : meta.color} icon={meta.icon}>{label}</Tag>
     </div>
   )
 }

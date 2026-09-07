@@ -9,6 +9,8 @@ export const nodeLabels: Record<string, string> = {
   novel_plan_initialize_node: '初始化整书规划', novel_plan_volume_node: '生成分卷骨架',
   novel_plan_finalize_node: '校验整书规划', novel_plan_review_node: '审阅整书规划',
   plan_reconciliation_node: '核对计划兑现',
+  chapter_plan_review_node: '章节方案待审阅',
+  tactical_plan_node: '安排近期推进', chapter_quota_node: '确认本章额度',
   chapter_outline_node: '设计细纲', chapter_outline_review_node: '细纲待审阅',
   chapter_writer_node: '撰写正文', chapter_compaction_node: '压缩冗余', reflection_node: '质量审读',
   reflection_review_node: '审阅质量报告',
@@ -69,6 +71,7 @@ export function chapterNumberFromState(state: WorkflowViewState): number | undef
 }
 
 const reviewNodes: Record<string, string> = {
+  review_or_modify_chapter_plan: 'chapter_plan_review_node',
   review_or_modify_creative_brief: 'creative_brief_review_node',
   review_or_modify_character_design: 'character_design_review_node',
   confirm_or_provide_title: 'title_review_node', confirm_or_provide_summary: 'summary_review_node',
@@ -87,7 +90,7 @@ export function presentationNode(state: WorkflowViewState): string {
 
 export function stagePresentation(state: WorkflowViewState, chapterPrefix: string) {
   if (state.status === 'completed') return {
-    label: '全书创作完成', description: '计划章节已全部归档，可以查看、编辑或导出完整书稿。',
+    label: '计划章节已全部生成', description: '章节已归档，质量审阅和计划兑现以各章记录为准。',
   }
   const node = presentationNode(state)
   const label = nodeLabels[node] ?? '当前步骤'
@@ -100,7 +103,7 @@ export function stagePresentation(state: WorkflowViewState, chapterPrefix: strin
     label: `${contextualLabel}可继续`,
     description: state.hasCheckpointDraft ? '本章草稿和创作进度均已保留，继续后不会重写前文。' : '创作进度已保留，可以从当前步骤继续。',
   }
-  return { label: node ? contextualLabel : '等待开始创作', description: nodeDescriptions[node] ?? '尚未开始本轮创作。' }
+  return { label: node ? contextualLabel : '等待开始创作', description: nodeDescriptions[node] ?? (node ? '正在处理当前创作步骤。' : '尚未开始本轮创作。') }
 }
 
 export function completedTimeline(state: WorkflowViewState): string[] {

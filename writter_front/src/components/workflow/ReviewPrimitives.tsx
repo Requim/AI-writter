@@ -1,5 +1,6 @@
 import type { JsonValue } from '@/types/novel'
 import { asRecord, displayValue } from './valueHelpers'
+import { planningFieldLabel, reviewValueLabels } from './terminology'
 
 interface ReviewRowsProps { rows: Array<[string, JsonValue | undefined]> }
 
@@ -18,7 +19,7 @@ const fieldLabels: Record<string, string> = {
 }
 
 function fieldLabel(key: string): string {
-  return fieldLabels[key] || key.replaceAll('_', ' ')
+  return fieldLabels[key] || planningFieldLabel(key)
 }
 
 export function ReviewRows({ rows }: ReviewRowsProps) {
@@ -35,7 +36,7 @@ export function ReviewValue({ value }: { value: JsonValue | undefined }) {
   if (record) return <dl className="nested-review">{Object.entries(record).map(([key, item]) => (
     <div key={key}><dt>{fieldLabel(key)}</dt><dd><ReviewValue value={item} /></dd></div>
   ))}</dl>
-  return <span>{displayValue(value)}</span>
+  return <span>{typeof value === 'string' ? reviewValueLabels[value] || value : displayValue(value)}</span>
 }
 
 export function ReviewHeading({ eyebrow, title }: { eyebrow: string; title?: string }) {

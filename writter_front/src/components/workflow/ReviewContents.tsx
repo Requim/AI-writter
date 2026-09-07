@@ -134,6 +134,12 @@ export function QualityReview({ interrupt }: ReviewProps) {
   return <div className="review-surface quality-review">
     <ReviewHeading eyebrow="质量报告" title={interrupt.chapter_number ? `第 ${interrupt.chapter_number} 章` : undefined} />
     {asText(payload.reason) && <p>{asText(payload.reason)}</p>}
+    {gate.fulfillment_review_required === true && <div role="alert">
+      <strong>计划兑现尚未确认，章节未归档</strong>
+      <details open><summary>需要核对的结果</summary><ReviewRows rows={[
+        ['整书规划兑现', gate.plan_fulfillment], ['近期推进兑现', gate.tactical_fulfillment],
+      ]} /></details>
+    </div>}
     {rows.length > 0 && <ReviewRows rows={rows} />}
     {wordCount && <div className="quality-density"><span>有效内容密度</span><strong>{densityText(wordCount.effective_density)}</strong></div>}
     {issues.length > 0 && <details open><summary>问题、证据与处理建议</summary><ReviewValue value={issues as JsonValue} /></details>}

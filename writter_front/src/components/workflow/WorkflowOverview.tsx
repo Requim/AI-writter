@@ -43,6 +43,12 @@ export function WorkflowOverview({ state, chapterPrefix, onRefresh, onCancel }: 
   const description = state.status === 'paused' && state.interrupt
     ? state.interrupt.message || '当前结果已生成，请审阅后继续。' : stage.description
   const elapsed = formatElapsed(state.stageStartedAt || state.startedAt, now)
+  if (state.syncState === 'unknown' && state.status === 'idle') return (
+    <section className="execution-overview" role="alert">
+      <strong>当前进度尚未确认</strong><p>读取失败，草稿未被改动。</p>
+      <Button icon={<ReloadOutlined />} onClick={onRefresh}>重新核对进度</Button>
+    </section>
+  )
   return (
     <section className="execution-overview" data-state={state.status} aria-live="polite">
       <div className="execution-stage"><span className="stage-marker" aria-hidden="true" /><div><small>当前阶段</small><strong>{stage.label}</strong></div></div>
