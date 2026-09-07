@@ -6,12 +6,12 @@
 ## 当前恢复点
 
 - 状态：实施中
-- 当前阶段：用户要求继续完成 P4/P5/P6；P4 实施中，P5/P6 尚未完成，不得提前标记完成
+- 当前阶段：P4已完成并部署；P5实施中、P6尚未完成，不得提前标记完成
 - 当前分支：`codex/harness-usability-reliability`
 - 基准提交：`b310aee`
 - 最后更新时间：2026-09-07
 - 最后确认代码提交：前后端均为 `5f24064221968834bd4972ba09c6d23d1b48cbaa`（完整 P3）；已部署腾讯云，Git 未推送
-- 下一唯一动作：验证 P4 新增事实接口、签名两步纠错和前端台账，补充权限/版本冲突/证据测试；逐阶段提交部署后继续 P5/P6
+- 下一唯一动作：实施P5持久运行记录、共享租约与fencing、SSE重放和恢复治理；完成后实施P6
 - 当前验收：P4 后端全量496项通过、零跳过（742.78秒）；Ruff、mypy44源文件、前端lint和build通过。事实台账375/768/1280px浏览器边界检查及两步确认通过，前端事实台账2项单测通过，全量复跑中。P4待提交部署，P5/P6尚未实施。
 - 临时测试资源：腾讯云隔离库容器 `novel-writer-harness-p456-test`（ID前缀54958b93ece3，tmpfs，purpose=harness-isolated-test），SSH隧道PID2560，本地55444；只允许TEST_DATABASE_URL指向novel_writer_test，不得连接生产数据库执行pytest。全部阶段结束后核对身份并清理。
 - 回滚点：后端 `harness-2ddedb7`、前端 `harness-7b7b7ea`，使用 CP-011 配置；保留0007和新事实审核检查点，不降级数据库，注意 CP-010 的检查点兼容边界
@@ -385,7 +385,7 @@ sudo docker exec novel-writer-frontend nginx -s reload
 - 2026-09-07：完成 P0 本地验证及 P1 首批改造，记录测试、截图、阶段提交和后续验收边界。
 - 2026-09-07：按用户补充要求，将规范提交、腾讯云部署及上线验证纳入每阶段完成条件；完成腾讯云只读连通与后端健康检查，未执行部署。
 
-### CP-012 P4 事实台账与作者纠错（待发布）
+### CP-012 P4 事实台账与作者纠错（已发布）
 
 - 新增租户隔离台账、实体登记、版本历史、冲突回执接口；历史章节无回执时明确未验证。
 - 纠错采用15分钟HMAC签名预览，绑定作者/租户/小说/期望版本；确认时幂等追加，不覆盖旧证据，竞争版本返回409。
@@ -393,3 +393,7 @@ sudo docker exec novel-writer-frontend nginx -s reload
 - 新增8项签名/类型测试、4项真实隔离PostgreSQL接口测试、1项纠错后恢复测试、2项前端交互测试。后端完整496项通过。
 - 浏览器使用合成数据和本地API拦截，未调用真实Provider或写入生产小说。375/768/1280px边界及预览不写入、确认一次验证通过。
 - 无新增依赖、无数据库迁移；发布回滚目标为前后端harness-5f24064，保留0007事实表。
+
+- 2026-09-07 21:37上线：代码bba00e8bffbacc6b7113ab452b9bd534cbc9ca70；后端镜像sha256:90aec33aa7f9bffb4353b102c31cf43e1783ac98e022b3f035a3549644b8e279，前端sha256:9b7b583d1d472d51c56ff93c14a65e583fcafc9d92b7cf173f78a90cb5483051，revision标签一致。前端最终124项通过。
+- 四服务healthy，后端/health/ready=ready，首页200，未认证auth/me=401；迁移仍0007_story_facts，运行时签名与路由检查通过，provider_calls=0，business_writes=0。数据库/Redis容器ID与数据卷均未改变。
+- 发布层releases/bba00e8/compose.harness-p4.yml；回滚层compose.rollback-p4.yml指向harness-5f24064。源码制品SHA256=d5efd884cd13590aa61fa62a664f96d28a809e7487eb8cff9301f04d29e121b1，前端=8f3e0240fbf7cc22b009229f894fa0af9a85b89b2bb2033d9dd7402b6908b393，服务器一致。
