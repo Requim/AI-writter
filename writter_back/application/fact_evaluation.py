@@ -5,6 +5,7 @@ from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import Field
+from config import settings
 from application.fact_prompt_binding import FactBoundLLM
 
 from application.fact_deterministic import deterministic_assertions
@@ -72,6 +73,9 @@ async def evaluate_facts(snapshot: ChapterConstraintSet, content: str, kind: str
     if checked.status == "blocked":
         return FactGateReport(**_base(snapshot, content, kind), status="blocked", coverage="partial",
             assertions=tuple(literals), findings=checked.findings, reasons=("存在与已确认事实不符的明确陈述",))
+    if settings.FACT_REVIEW_MODE == "human_only":
+        return FactGateReport(**_base(snapshot, content, kind), status="unknown", coverage="partial",
+            assertions=tuple(literals), findings=checked.findings, reasons=("当前启用强制人工事实审核",))
     try:
         if isinstance(llm, FactBoundLLM):
             llm = llm.delegate

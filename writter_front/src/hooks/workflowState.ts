@@ -261,6 +261,7 @@ function reduceTerminalEvent(next: WorkflowViewState, event: WorkflowEvent): voi
 
 function reduceEvent(state: WorkflowViewState, event: WorkflowEvent): WorkflowViewState {
   if (!eventIsCurrent(state, event)) return state
+  if (event.type === 'status' && event.data.status === 'measurement') return state
   const next = {
     ...state,
     events: [...state.events.slice(-39), event],

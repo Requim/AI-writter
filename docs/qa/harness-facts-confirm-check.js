@@ -16,6 +16,7 @@ async (page) => {
   await page.getByRole('button', { name: '预览事实变更', exact: true }).click();
   await page.getByRole('dialog', { name: '确认事实变更', exact: true }).waitFor();
   if (confirmed) throw Error('预览不应写入');
+  await page.getByRole('button', { name: '确认追加版本', exact: true }).hover();
   await page.screenshot({ path: 'output/playwright/facts-confirm.png', fullPage: true });
   await page.getByRole('button', { name: '确认追加版本', exact: true }).click();
   await page.getByRole('dialog', { name: '确认事实变更', exact: true }).waitFor({ state: 'hidden' });

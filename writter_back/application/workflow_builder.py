@@ -82,8 +82,9 @@ ROUTER_ROUTES = {
 
 def _add_nodes(workflow: StateGraph) -> None:
     """注册工作流节点。"""
+    from application.runtime_observability import measured_node
     for name, node in WORKFLOW_NODES.items():
-        workflow.add_node(name, node)
+        workflow.add_node(name, measured_node(name, node))
 
 
 def _add_deterministic_edges(workflow: StateGraph) -> None:

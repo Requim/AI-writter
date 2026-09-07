@@ -17,7 +17,11 @@ router = APIRouter()
 
 async def authorized_journal(request: Request, context: TenantContext, novel_id: str) -> RuntimeJournal:
     repository = request.app.state.repository
-    if await repository.find_by_id(str(context.tenant_id), novel_id) is None:
+    try:
+        novel = await repository.find_by_id(str(context.tenant_id), novel_id)
+    except ValueError:
+        novel = None
+    if novel is None:
         raise HTTPException(status_code=404, detail='小说不存在')
     return RuntimeJournal(repository.async_session)
 

@@ -928,6 +928,8 @@ async def rewrite_chapter(
     repo: PostgresNovelRepository = Depends(get_repository),
     store: WorkflowCommandStore = Depends(get_workflow_command_store),
 ) -> ChapterDetailResponse:
+    from api.generation_policy import ensure_generation_enabled
+    ensure_generation_enabled()
     command = await claim_command(store, context, novel_id, idempotency_key)
     try:
         return await _execute_rewrite_command(

@@ -43,6 +43,8 @@ class Settings(BaseSettings):
     LLM_TIMEOUT_SECONDS: float = 180.0
     LLM_MAX_RETRIES: int = 0
     WORKFLOW_TIMEOUT_SECONDS: float = 600.0
+    WORKFLOW_GENERATION_PAUSED: bool = False
+    FACT_REVIEW_MODE: Literal["standard", "human_only"] = "standard"
     SSE_HEARTBEAT_SECONDS: float = 15.0
     WORKFLOW_IDEMPOTENCY_REQUIRED: bool = False
     WORKFLOW_AUTO_RETRY_ENABLED: bool = False

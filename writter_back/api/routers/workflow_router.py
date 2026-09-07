@@ -14,6 +14,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from api.dependencies import get_tenant_context
+from api.generation_policy import ensure_generation_enabled
 from api.workflow_commands import (
     ClaimedWorkflowCommand,
     claim_command as _claim_command,
@@ -627,6 +628,7 @@ async def _prepare_execution(
     command_store: WorkflowCommandStore,
 ) -> PreparedWorkflow:
     novel = await _authorize_thread(context, thread_id, repository)
+    ensure_generation_enabled()
     command = await _claim_command(command_store, context, thread_id, idempotency_key)
     acquired = False
     try:

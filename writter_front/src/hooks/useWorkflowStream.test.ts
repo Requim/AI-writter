@@ -14,6 +14,14 @@ function event(id: number, operation: 'append' | 'reset', text: string): Workflo
 }
 
 describe('workflowReducer command isolation', () => {
+  it('keeps technical measurements out of the author progress panel', () => {
+    const state = { ...initialWorkflowState, status: 'running' as const, activeCommandId: 'current' }
+    const next = workflowReducer(state, { type: 'event', event: {
+      id: 10, type: 'status', thread_id: 'thread-1', command_id: 'current', node: 'writer',
+      data: { status: 'measurement', duration_seconds: 1.2 }, timestamp: '2026-09-07T00:00:00Z',
+    } })
+    expect(next).toBe(state)
+  })
   it('locks a new command and clears the previous interrupt immediately', () => {
     const started = workflowReducer({
       ...initialWorkflowState,

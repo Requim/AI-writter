@@ -13,11 +13,14 @@ from application.fact_workflow import _repository
 from application.proposals import decide_proposal, proposal_update, require_proposal
 from application.story_facts import source_digest
 from service.value_objects.fact_gate import FactGateReport
+from config import settings
 
 
 def _cached(state: Any, snapshot: Any, content: str, kind: str) -> FactGateReport | None:
     try:
         report = FactGateReport.model_validate((state.get("fact_reports") or {}).get(kind))
+        if settings.FACT_REVIEW_MODE == "human_only" and report.status == "pass":
+            return None
         if (report.snapshot_digest, report.artifact_hash, report.tenant_id, report.novel_id,
             report.chapter_number, report.artifact_kind) == (snapshot.digest, source_digest(content),
             snapshot.tenant_id, snapshot.novel_id, snapshot.chapter_number, kind):
