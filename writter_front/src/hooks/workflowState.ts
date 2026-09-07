@@ -70,6 +70,7 @@ const interruptNodes: Record<string, string> = {
   review_or_provide_chapter_outline: 'chapter_outline_review_node',
   review_or_modify_chapter_plan: 'chapter_plan_review_node',
   review_reflection_issues: 'reflection_review_node',
+  fact_review_required: 'fact_review_node',
   quality_gate_exhausted: 'reflection_review_node',
   quality_gate_human_review: 'reflection_review_node',
   quality_review_unavailable: 'reflection_review_node',

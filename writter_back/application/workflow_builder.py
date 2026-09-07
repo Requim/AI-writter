@@ -2,6 +2,7 @@
 from langgraph.graph import END, StateGraph
 
 from application.schemas.agent_state import NovelAgentState
+from application.fact_gate_workflow import fact_review_node
 from application.agents import (
     type_confirmation_node,
     creative_brief_node,
@@ -38,6 +39,7 @@ from application.agents import (
 )
 
 WORKFLOW_NODES = {
+    "fact_review_node": fact_review_node,
     "type_confirmation": type_confirmation_node,
     "creative_brief_node": creative_brief_node,
     "creative_brief_review_node": creative_brief_review_node,
@@ -87,7 +89,6 @@ def _add_nodes(workflow: StateGraph) -> None:
 def _add_deterministic_edges(workflow: StateGraph) -> None:
     """注册不会由节点 Command 自行决定的固定边。"""
     workflow.add_edge("memory_retrieval_node", "router_agent")
-    workflow.add_edge("chapter_writer_node", "router_agent")
     workflow.add_edge("chapter_compaction_node", "router_agent")
 
 

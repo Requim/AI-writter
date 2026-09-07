@@ -176,7 +176,9 @@ async def test_patch_and_fallback_refactor_keep_same_constraints(valid_patch):
         "reflection_issues": [{"issue_id": "issue-1", "priority_action": "must_fix", "evidence_valid": True}],
         "user_decision": {"action": "revise"}}
     result = await revision_node(state, config)
-    assert value.digest in llm.structured_generate.call_args.args[0]
+    assert value.digest in llm.structured_generate.call_args_list[0].args[0]
+    assert llm.structured_generate.call_args.kwargs["temperature"] == 0.0
+    assert llm.structured_generate.call_args.kwargs["max_attempts"] == 1
     assert result.update["chapter_fact_input"]["snapshot_digest"] == value.digest
     if not valid_patch:
         assert llm.prompts and all(value.digest in prompt for prompt in llm.prompts)

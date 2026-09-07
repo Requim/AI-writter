@@ -25,7 +25,6 @@ FROZEN_FUNCTION_VIOLATIONS = {
     ("application/agents/memory_retrieval_node.py", "memory_retrieval_node"),
     ("infrastructure/database/identity_repository.py", "IdentityRepository.reserve_quota"),
     ("infrastructure/database/repository.py", "PostgresNovelRepository.find_by_id_with_chapters"),
-    ("infrastructure/database/repository.py", "PostgresNovelRepository.replace_chapter"),
     ("infrastructure/llm/openai_adapter.py", "OpenAIAdapter._stream_structured_response"),
     ("scripts/backfill_novel_metadata.py", "main"),
     ("tests/test_continuity.py", "test_persist_node_commits_all_continuity_artifacts_together"),

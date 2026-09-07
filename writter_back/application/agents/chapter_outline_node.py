@@ -12,6 +12,7 @@ from application.continuity import normalize_chapter_contract, validate_chapter_
 from application.errors import InvalidReviewDecisionError, RetryableWorkflowError
 from application.feature_policy import require_planning_v1
 from application.fact_workflow import attach_fact_input, bind_chapter_fact_input
+from application.fact_gate_workflow import check_fact_artifact
 from application.planning import select_plan_context
 from application.tactical_planning import (
     execution_contract_requirements,
@@ -252,11 +253,15 @@ def _accept_outline_update(
     return update
 
 
+async def _gate_outline(state: NovelAgentState, config: RunnableConfig, outline: dict, command: Command) -> Command:
+    return await check_fact_artifact(state, config, json.dumps(outline, ensure_ascii=False, sort_keys=True), "outline", command)
+
+
 async def chapter_outline_node(
     state: NovelAgentState,
     config: RunnableConfig,
 ) -> Command[Literal[
-    "router_agent", "chapter_outline_review_node", "chapter_plan_review_node"
+    "router_agent", "chapter_outline_review_node", "chapter_plan_review_node", "fact_review_node"
 ]]:
     """生成当前章节细纲并保存提案，不执行人工审核。"""
     if _schema5(state):
@@ -283,22 +288,24 @@ async def chapter_outline_node(
             ),
         )
         if not _schema5(state):
-            return Command(goto="router_agent", update={
+            return await _gate_outline(state, config, outline, Command(goto="router_agent", update={
                 **_accept_outline_update(state, outline),
                 "chapter_outlines_input": None,
-            })
-        return _chapter_plan_proposal(state, outline, chapter_number)
+            }))
+        return await _gate_outline(state, config, outline, _chapter_plan_proposal(state, outline, chapter_number))
     config, fact_update = await bind_chapter_fact_input(state, config)
     outline = await _generate_outline(state, config, chapter_number)
     if _schema5(state):
-        return attach_fact_input(_chapter_plan_proposal(state, outline, chapter_number), fact_update)
-    return attach_fact_input(Command(
+        command = attach_fact_input(_chapter_plan_proposal(state, outline, chapter_number), fact_update)
+        return await _gate_outline(state, config, outline, command)
+    command = attach_fact_input(Command(
         goto="chapter_outline_review_node",
         update={
             **proposal_update(state, "chapter_outline", outline, chapter_number),
             "chapter_outline_feedback": None,
         },
     ), fact_update)
+    return await _gate_outline(state, config, outline, command)
 
 
 def _assembled_slots(
@@ -410,7 +417,7 @@ def _regenerate_chapter_plan(scope: str, instruction: str) -> Command:
 
 async def chapter_plan_review_node(
     state: NovelAgentState, config: RunnableConfig
-) -> Command[Literal["router_agent", "chapter_outline_node", "tactical_plan_node"]]:
+) -> Command[Literal["router_agent", "chapter_outline_node", "tactical_plan_node", "fact_review_node"]]:
     """Review and atomically bind a tactical version to the chapter outline."""
     await require_planning_v1(config)
     chapter_number = int(state.get("current_chapter_index", 0) or 0) + 1
@@ -444,7 +451,7 @@ async def chapter_plan_review_node(
         config,
     )
     outline = _accepted_outline(state, payload, accepted, chapter_number)
-    return Command(goto="router_agent", update={
+    return await _gate_outline(state, config, outline, Command(goto="router_agent", update={
         **_accept_outline_update(state, outline, clear_proposal=True),
         "tactical_window": accepted.to_dict(),
         "tactical_window_expected_version": accepted.version,
@@ -452,14 +459,14 @@ async def chapter_plan_review_node(
         "tactical_plan_feedback": None,
         "chapter_outline_feedback": None,
         "chapter_plan_revision_scope": None,
-    })
+    }))
 
 
 async def chapter_outline_review_node(
     state: NovelAgentState,
     config: RunnableConfig,
-) -> Command[Literal["router_agent", "chapter_outline_node"]]:
-    """审核已保存的章节细纲，本节点不得调用 LLM。"""
+) -> Command[Literal["router_agent", "chapter_outline_node", "fact_review_node"]]:
+    """审核已保存的章节细纲，替换或事实变化后重新校验。"""
     chapter_number = int(state.get("current_chapter_index", 0) or 0) + 1
     proposal = require_proposal(state, "chapter_outline", chapter_number)
     decision = decide_proposal(
@@ -481,13 +488,13 @@ async def chapter_outline_review_node(
     outline = _validated_outline(
         selected, chapter_number, _total_outline(state.get("total_outline")),
     )
-    return Command(
+    return await _gate_outline(state, config, outline, Command(
         goto="router_agent",
         update={
             **_accept_outline_update(state, outline, clear_proposal=True),
             "chapter_outline_feedback": None,
         },
-    )
+    ))
 
 
 def _regenerate_chapter_outline(feedback: str) -> Command:

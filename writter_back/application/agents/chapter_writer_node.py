@@ -10,6 +10,7 @@ from langgraph.types import Command
 from application.continuity import build_story_bible
 from application.feature_policy import require_planning_v1
 from application.fact_workflow import attach_fact_input, bind_chapter_fact_input
+from application.fact_gate_workflow import check_fact_artifact
 from application.prompts.chapter_writer_prompts import (
     CHAPTER_WRITER_TEMPERATURE,
     build_chapter_continue_prompt,
@@ -168,7 +169,7 @@ def _draft_command(content: str, ledger: list[dict]) -> Command:
 
 async def chapter_writer_node(
     state: NovelAgentState, config: RunnableConfig
-) -> Command[Literal["router_agent"]]:
+) -> Command[Literal["router_agent", "fact_review_node"]]:
     """Generate one chapter and leave review decisions to downstream nodes."""
     await require_planning_v1(
         config,
@@ -195,4 +196,5 @@ async def chapter_writer_node(
     system_prompt = build_chapter_system_prompt(context.novel_type)
     content = await _final_word_check(content, llm, system_prompt, index)
     logger.info("【章节写作节点】完成 | 第%s章, %s字", index + 1, len(content))
-    return attach_fact_input(_draft_command(content, ledger), fact_update)
+    command = attach_fact_input(_draft_command(content, ledger), fact_update)
+    return await check_fact_artifact(state, config, content, "body", command)

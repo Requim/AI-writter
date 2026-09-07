@@ -447,6 +447,7 @@ export type ReviewDecision =
   | { proposal_id: string; decision: 'replace'; value: JsonValue }
 
 export type ReviewInterruptAction =
+  | 'fact_review_required'
   | 'review_or_modify_creative_brief'
   | 'review_or_modify_character_design'
   | 'confirm_or_provide_title'

@@ -12,6 +12,11 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
 
 from application.continuity import extract_story_state
+from application.fact_gate_workflow import check_fact_artifact
+from application.fact_archive_guard import archive_fact_guard
+from service.ports.story_fact_repository import FactVersionConflictError
+from service.value_objects.fact_gate import FactGateReport
+from service.value_objects.chapter_constraints import ChapterConstraintSet
 from application.feature_policy import require_planning_v1
 from application.prompts.memory_prompts import (
     CHAPTER_SUMMARY_SCHEMA,
@@ -111,6 +116,9 @@ def _chapter_review_metadata(state: NovelAgentState) -> dict[str, Any]:
     issues = state.get("reflection_issues") or []
     if state.get("chapter_fact_input"):
         decision["fact_input"] = dict(state["chapter_fact_input"])
+    if (state.get("fact_reports") or {}).get("body"):
+        decision["fact_gate"] = state["fact_reports"]["body"]
+        decision["fact_review"] = (state.get("fact_acknowledgements") or {}).get("body")
     history = state.get("revision_history") or []
     return {
         "reflection_issues": [dict(item) for item in issues if isinstance(item, dict)],
@@ -265,7 +273,17 @@ async def _persist_chapter(
         story_state=json.dumps(story_state, ensure_ascii=False),
         rolling_plan=json.dumps(rolling_plan, ensure_ascii=False) if rolling_plan else None,
         discard_following=bool(values.get("discard_following_chapters", False)),
+        **_fact_guard_arguments(state, values),
     )
+
+
+def _fact_guard_arguments(state: NovelAgentState, values: dict[str, Any]) -> dict[str, Any]:
+    if "story_fact_repository" not in values:
+        return {}
+    snapshot = ChapterConstraintSet.model_validate(state.get("fact_gate_snapshot"))
+    report = FactGateReport.model_validate((state.get("fact_reports") or {}).get("body"))
+    ack = (state.get("fact_acknowledgements") or {}).get("body")
+    return {"fact_guard": archive_fact_guard(values["story_fact_repository"], values["tenant_id"], values["novel_id"], snapshot, report, ack)}
 
 
 async def _chapter_progress(
@@ -344,13 +362,14 @@ def _writing_command(
             "current_chapter_content": "", "reflection_issues": [], "user_decision": {},
             "memory_context": "", "scene_ledger": [], "revision_history": [],
             "chapter_constraints": None, "chapter_fact_input": None,
+            "fact_gate_snapshot": None, "fact_reports": {}, "fact_acknowledgements": {},
         },
     )
 
 
 async def persist_node(
     state: NovelAgentState, config: RunnableConfig,
-) -> Command[Literal["progress_check_node", "plan_reconciliation_node"]]:
+) -> Command[Literal["progress_check_node", "plan_reconciliation_node", "fact_review_node"]]:
     """按当前是否存在章节正文选择设定或章节持久化路径。"""
     await require_planning_v1(
         config,
@@ -364,12 +383,19 @@ async def persist_node(
             values.get("novel_id", ""),
         )
         return Command(goto="progress_check_node")
+    checked = await check_fact_artifact(state, config, content, "body", Command(goto="persist_node"))
+    if checked.goto == "fact_review_node":
+        return checked
+    state = {**state, **(checked.update or {})}
     index = int(state.get("current_chapter_index", 0) or 0)
     chapter = _completed_chapter(state, content, index)
     completed, percentage, is_completed = _progress(
         index, _total_chapters(state.get("total_outline")),
     )
-    await _persist_chapter(state, config, chapter, completed, percentage, is_completed)
+    try:
+        await _persist_chapter(state, config, chapter, completed, percentage, is_completed)
+    except FactVersionConflictError:
+        return await check_fact_artifact(state, config, content, "body", Command(goto="persist_node"))
     emit_workflow_event(
         "chapter_persisted",
         {

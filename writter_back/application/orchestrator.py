@@ -35,6 +35,7 @@ from service.ports.agent_service import AgentOrchestrator
 logger = logging.getLogger("uvicorn")
 
 LARGE_STATE_FIELDS = {
+    "fact_continuation", "fact_artifact", "fact_gate_snapshot", "fact_reports",
     "chapter_constraints",
     "current_chapter_content",
     "memory_context",

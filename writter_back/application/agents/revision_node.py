@@ -10,6 +10,7 @@ from application.continuity import build_story_bible
 from application.errors import RetryableWorkflowError
 from application.feature_policy import require_planning_v1
 from application.fact_workflow import attach_fact_input, bind_chapter_fact_input
+from application.fact_gate_workflow import check_fact_artifact
 from application.prompts.revision_prompts import (
     PATCH_SCHEMA,
     PATCH_TEMPERATURE,
@@ -278,11 +279,10 @@ async def revision_node(
     state: NovelAgentState, config: RunnableConfig
 ) -> Command[
     Literal[
-        "chapter_writer_node",
-        "persist_node",
-        "reflection_node",
+        "chapter_writer_node", "persist_node", "reflection_node",
         "revision_node",
         "revision_review_node",
+        "fact_review_node",
     ]
 ]:
     """根据服务端质量决策执行局部 Patch 或全文重构。"""
@@ -323,4 +323,5 @@ async def revision_node(
             revised = await _generate_refactor(llm, state, content, outline, context, bible)
     else:
         revised = await _generate_refactor(llm, state, content, outline, context, bible)
-    return attach_fact_input(_next_after_revision(state, revised), fact_update)
+    command = _accept_revision(state, revised, auto_mode=True) if config["configurable"].get("direct_rewrite") else _next_after_revision(state, revised)
+    return await check_fact_artifact(state, config, revised, "body", attach_fact_input(command, fact_update))

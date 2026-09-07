@@ -12,6 +12,7 @@ from application.prompts.version import PROMPT_VERSION
 from application.schemas.agent_state import NovelAgentState, PendingProposal
 
 PROPOSAL_KINDS = {
+    "fact_review",
     "creative_brief",
     "character_design",
     "title",
@@ -40,6 +41,7 @@ class ReviewDecision:
 
 
 _REPLACEMENT_TYPES: dict[str, tuple[type, ...]] = {
+    "fact_review": (str,),
     "creative_brief": (Mapping,),
     "character_design": (Mapping,),
     "title": (str, Mapping),

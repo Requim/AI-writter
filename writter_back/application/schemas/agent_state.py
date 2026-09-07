@@ -9,6 +9,7 @@ class PendingProposal(TypedDict):
 
     proposal_id: str
     kind: Literal[
+        "fact_review",
         "creative_brief",
         "character_design",
         "title",
@@ -43,6 +44,11 @@ class NovelAgentState(TypedDict):
     character_fact_source: Optional[Dict]      # 真正人工确认的事实入账回执
     chapter_constraints: Optional[Dict]        # 本次模型输入使用的服务端事实快照
     chapter_fact_input: Optional[Dict]         # 输入摘要，不代表正文通过事实校验
+    fact_reports: Optional[Dict]               # 绑定稿件与快照的审校报告
+    fact_gate_snapshot: Optional[Dict]         # 归档事务复验的可信快照
+    fact_acknowledgements: Optional[Dict]      # 独立人工确认，不能由质量接受替代
+    fact_continuation: Optional[Dict]          # 事实审核结束后恢复的节点结果
+    fact_artifact: Optional[Dict]              # 当前待审核完整稿件，禁止公开状态透出
     character_design_feedback: Optional[str]  # 用户对角色设计的重生成要求
     character_design_return_to: Optional[str] # 旧 checkpoint 补做角色设计后的返回节点
     title_feedback: Optional[str]              # 用户对书名提案的修改要求

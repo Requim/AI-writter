@@ -12,6 +12,7 @@ from typing import Any, Optional, List
 
 from service.entities.novel import Novel
 from service.entities.chapter import Chapter
+from service.value_objects.fact_gate import FactGateBlockedError
 from service.ports.novel_repository import NovelRepository
 from service.ports.novel_plan_repository import (
     NovelPlanRepository,
@@ -742,6 +743,14 @@ def _record_execution_progress(
     novel.progress = progress
 
 
+def _edited_fact_metadata(chapter: Chapter) -> dict[str, Any]:
+    metadata = dict(chapter.user_decision or {})
+    for key in ("fact_gate", "fact_review", "fact_input"):
+        metadata.pop(key, None)
+    metadata["fact_validation_status"] = "manual_edit_unverified"
+    return metadata
+
+
 async def _update_chapter_row(
     session: AsyncSession,
     tenant_id: uuid.UUID,
@@ -762,6 +771,7 @@ async def _update_chapter_row(
             content=chapter.content,
             word_count=chapter.word_count,
             version=expected_version + 1,
+            user_decision=_edited_fact_metadata(chapter),
             updated_at=chapter.updated_at,
         )
     )
@@ -1105,30 +1115,28 @@ class PostgresNovelRepository(
             return chapter
 
     async def replace_chapter(
-        self,
-        tenant_id: str,
-        novel_id: str,
-        chapter: Chapter,
-        memory_content: str,
-        memory_metadata: dict,
-        progress: Progress,
+        self, tenant_id: str, novel_id: str, chapter: Chapter,
+        memory_content: str, memory_metadata: dict, progress: Progress,
         *,
         chapter_summary: str | None = None,
         story_state: str | None = None,
         rolling_plan: str | None = None,
         discard_following: bool = False,
+        fact_guard: Any = None,
     ) -> Chapter:
-        """Atomically replace a chapter and every continuity artifact derived from it."""
+        """在同一小说锁和事务内复验事实，再替换章节及连续性数据。"""
         tenant_uuid = uuid.UUID(tenant_id)
         novel_uuid = uuid.UUID(novel_id)
         async with self.async_session() as session, session.begin():
             if await _lock_novel(session, tenant_uuid, novel_uuid) is None:
                 raise RuntimeError("章节保存失败：目标小说不存在")
+            if fact_guard is not None:
+                await fact_guard(session, chapter)
+            elif (chapter.user_decision or {}).get("fact_gate"):
+                raise FactGateBlockedError("带事实回执的章节必须执行事务内复验")
             if discard_following:
                 progress.checkpoint_sync = _checkpoint_sync_request(
-                    chapter.chapter_index + 1,
-                    chapter.chapter_index,
-                    progress.is_complete(),
+                    chapter.chapter_index + 1, chapter.chapter_index, progress.is_complete(),
                 )
             invalidated_types = [
                 memory_type
@@ -1139,24 +1147,13 @@ class PostgresNovelRepository(
                 if should_invalidate
             ]
             await _delete_replaced_data(
-                session,
-                tenant_uuid,
-                novel_uuid,
-                chapter.chapter_index,
-                discard_following=discard_following,
-                invalidated_types=invalidated_types,
+                session, tenant_uuid, novel_uuid, chapter.chapter_index,
+                discard_following=discard_following, invalidated_types=invalidated_types,
             )
             session.add(_chapter_model(tenant_uuid, novel_uuid, chapter))
             _add_continuity_memories(
-                session,
-                tenant_uuid,
-                novel_uuid,
-                chapter,
-                memory_content,
-                memory_metadata,
-                chapter_summary,
-                story_state,
-                rolling_plan,
+                session, tenant_uuid, novel_uuid, chapter, memory_content,
+                memory_metadata, chapter_summary, story_state, rolling_plan,
             )
             await _set_novel_progress(
                 session, tenant_uuid, novel_uuid, progress, chapter.updated_at

@@ -10,6 +10,7 @@ import {
   RevisionReview, SummaryReview, TitleReview,
 } from './ReviewContents'
 import { CharacterDesignReview } from './CharacterDesignReview'
+import { FactReview } from './FactReview'
 import { ChapterPlanReview } from './ChapterPlanReview'
 import { NovelPlanProposalReview } from './NovelPlanProposalReview'
 import {
@@ -214,6 +215,9 @@ function StandardActions({ interrupt, onResume, acceptDisabled }: StandardAction
 
 export function WorkflowReview({ interrupt, autoMode, onResume }: Props) {
   if (!interrupt) return null
+  if (interrupt.action === 'fact_review_required' || interrupt.proposal?.kind === 'fact_review') {
+    return <FactReview key={proposalIdentity(interrupt)} interrupt={interrupt} onResume={onResume} />
+  }
   const novelPlanReview = ['review_or_modify_novel_plan', 'review_novel_plan'].includes(interrupt.action)
     || interrupt.proposal?.kind === 'novel_plan'
   const chapterPlanReview = interrupt.action === 'review_or_modify_chapter_plan'

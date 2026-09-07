@@ -1,4 +1,5 @@
 export const HUMAN_REQUIRED_ACTIONS = new Set([
+  'fact_review_required',
   'quality_gate_exhausted',
   'quality_gate_human_review',
   'quality_review_unavailable',
@@ -8,5 +9,5 @@ export const HUMAN_REQUIRED_ACTIONS = new Set([
 ])
 
 export function requiresHumanReview(action: string, proposalKind?: string): boolean {
-  return HUMAN_REQUIRED_ACTIONS.has(action) || proposalKind === 'novel_plan'
+  return HUMAN_REQUIRED_ACTIONS.has(action) || proposalKind === 'novel_plan' || proposalKind === 'fact_review'
 }

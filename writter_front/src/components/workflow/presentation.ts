@@ -14,6 +14,7 @@ export const nodeLabels: Record<string, string> = {
   chapter_outline_node: '设计细纲', chapter_outline_review_node: '细纲待审阅',
   chapter_writer_node: '撰写正文', chapter_compaction_node: '压缩冗余', reflection_node: '质量审读',
   reflection_review_node: '审阅质量报告',
+  fact_review_node: '核对事实证据',
   revision_node: '修订章节', revision_review_node: '确认修订', persist_node: '归档稿件',
   chapter_summary: '生成章节摘要', story_state: '更新故事状态',
   metadata_persist_node: '保存作品设定', progress_check_node: '核对进度', router_agent: '规划下一步',
@@ -71,6 +72,7 @@ export function chapterNumberFromState(state: WorkflowViewState): number | undef
 }
 
 const reviewNodes: Record<string, string> = {
+  fact_review_required: 'fact_review_node',
   review_or_modify_chapter_plan: 'chapter_plan_review_node',
   review_or_modify_creative_brief: 'creative_brief_review_node',
   review_or_modify_character_design: 'character_design_review_node',
@@ -95,7 +97,7 @@ export function stagePresentation(state: WorkflowViewState, chapterPrefix: strin
   const node = presentationNode(state)
   const label = nodeLabels[node] ?? '当前步骤'
   const chapterNodes = ['chapter_outline_node', 'chapter_outline_review_node', 'chapter_writer_node',
-    'reflection_node', 'reflection_review_node', 'revision_node', 'revision_review_node',
+    'reflection_node', 'reflection_review_node', 'revision_node', 'revision_review_node', 'fact_review_node',
     'chapter_compaction_node', 'chapter_summary', 'story_state', 'persist_node']
   const contextualLabel = chapterNodes.includes(node) ? `${chapterPrefix}${label}` : label
   if (state.status === 'error') return { label: `${contextualLabel}失败`, description: state.error || '当前步骤未能完成。' }
