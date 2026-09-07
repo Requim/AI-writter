@@ -26,6 +26,7 @@ from application.schemas.agent_state import NovelAgentState, PendingProposal
 from application.workflow_builder import WORKFLOW_NODES, create_novel_workflow
 from config import settings
 from infrastructure.database.repository import PostgresNovelRepository
+from infrastructure.database.story_fact_repository import PostgresStoryFactRepository
 from infrastructure.llm import AnthropicAdapter, DeepSeekAdapter, OpenAIAdapter
 from infrastructure.memory.postgres_memory import PostgresMemoryAdapter
 from service.entities.identity import TenantContext
@@ -34,6 +35,7 @@ from service.ports.agent_service import AgentOrchestrator
 logger = logging.getLogger("uvicorn")
 
 LARGE_STATE_FIELDS = {
+    "chapter_constraints",
     "current_chapter_content",
     "memory_context",
     "completed_chapters",
@@ -281,6 +283,8 @@ class NovelOrchestrator(AgentOrchestrator):
                 "adaptive_compaction_enabled": settings.ADAPTIVE_COMPACTION_ENABLED,
                 "memory_service": self.memory_service,
                 "novel_repository": self.repository,
+                "story_fact_repository": PostgresStoryFactRepository(self.repository.async_session)
+                if isinstance(self.repository, PostgresNovelRepository) else None,
                 "quota_service": self.quota_service,
                 "llm_config": {**self.llm_config, "llm_instance": llm},
             }

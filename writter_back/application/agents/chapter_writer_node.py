@@ -9,6 +9,7 @@ from langgraph.types import Command
 
 from application.continuity import build_story_bible
 from application.feature_policy import require_planning_v1
+from application.fact_workflow import attach_fact_input, bind_chapter_fact_input
 from application.prompts.chapter_writer_prompts import (
     CHAPTER_WRITER_TEMPERATURE,
     build_chapter_continue_prompt,
@@ -173,6 +174,7 @@ async def chapter_writer_node(
         config,
         workflow_schema_version=int(state.get("workflow_schema_version") or 2),
     )
+    config, fact_update = await bind_chapter_fact_input(state, config)
     llm = config["configurable"].get("llm_config", {}).get("llm_instance")
     if not llm:
         raise RuntimeError("章节正文生成失败：LLM 不可用")
@@ -193,4 +195,4 @@ async def chapter_writer_node(
     system_prompt = build_chapter_system_prompt(context.novel_type)
     content = await _final_word_check(content, llm, system_prompt, index)
     logger.info("【章节写作节点】完成 | 第%s章, %s字", index + 1, len(content))
-    return _draft_command(content, ledger)
+    return attach_fact_input(_draft_command(content, ledger), fact_update)

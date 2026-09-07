@@ -109,6 +109,8 @@ def _chapter_review_metadata(state: NovelAgentState) -> dict[str, Any]:
         "prompt_version": gate.get("prompt_version") or state.get("prompt_version"),
     })
     issues = state.get("reflection_issues") or []
+    if state.get("chapter_fact_input"):
+        decision["fact_input"] = dict(state["chapter_fact_input"])
     history = state.get("revision_history") or []
     return {
         "reflection_issues": [dict(item) for item in issues if isinstance(item, dict)],
@@ -341,6 +343,7 @@ def _writing_command(
             "last_persisted_chapter": chapter,
             "current_chapter_content": "", "reflection_issues": [], "user_decision": {},
             "memory_context": "", "scene_ledger": [], "revision_history": [],
+            "chapter_constraints": None, "chapter_fact_input": None,
         },
     )
 

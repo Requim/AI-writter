@@ -59,6 +59,55 @@ class PostgresStoryFactRepository:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self.async_session = session_factory
 
+    async def ingest_confirmed_facts(self, tenant_id: str, novel_id: str, entities: list[StoryEntity],
+                                     facts: list[CanonicalFact], *, source_key: str) -> list[StoryFactVersion]:
+        """原子导入可信服务确认的事实；重试复用，任何定义冲突均整批回滚。"""
+        if not isinstance(source_key, str) or not source_key.strip() or len(source_key) > 64:
+            raise ValueError("确认来源键必须非空且不超过64字符")
+        entities = [StoryEntity.model_validate(item.model_dump()) for item in entities]
+        facts = [CanonicalFact.model_validate(item.model_dump()) for item in facts]
+        if len({item.id for item in entities}) != len(entities) or len({item.entity_key for item in entities}) != len(entities):
+            raise ValueError("确认来源包含重复实体")
+        if len({(item.subject_id, item.predicate) for item in facts}) != len(facts):
+            raise ValueError("确认来源包含重复事实")
+        async with self.async_session() as session, session.begin():
+            await _authorize(session, tenant_id, novel_id, lock=True)
+            for entity in entities:
+                await self._ingest_entity(session, tenant_id, novel_id, entity)
+            return [await self._ingest_fact(session, tenant_id, novel_id, fact, source_key) for fact in facts]
+
+    async def _ingest_entity(self, session: AsyncSession, tenant_id: str, novel_id: str, entity: StoryEntity) -> None:
+        row = await session.scalar(_scoped(StoryEntityModel, tenant_id, novel_id).where(StoryEntityModel.entity_key == entity.entity_key))
+        if row is not None:
+            if _contract(StoryEntity, row) != entity:
+                raise FactVersionConflictError("已确认人物身份已变化，须先完成事实纠错")
+            return
+        session.add(StoryEntityModel(tenant_id=UUID(tenant_id), novel_id=UUID(novel_id), **_values(entity)))
+        await session.flush()
+
+    async def _ingest_fact(self, session: AsyncSession, tenant_id: str, novel_id: str,
+                           fact: CanonicalFact, source_key: str) -> StoryFactVersion:
+        await _check_entities(session, tenant_id, novel_id, fact)
+        if fact.status != "confirmed":
+            raise ValueError("确认入账不能撤回事实，须使用版本修正流程")
+        model = StoryFactVersionModel
+        key = f"{source_key}:{fact.subject_id}:{fact.predicate}"
+        query = _scoped(model, tenant_id, novel_id)
+        prior = await session.scalar(query.where(model.idempotency_key == key))
+        if prior is not None and _contract(CanonicalFact, prior) != fact:
+            raise FactVersionConflictError("确认来源已用于不同内容")
+        current = await session.scalar(query.where(model.subject_id == fact.subject_id,
+            model.predicate == fact.predicate).order_by(model.version.desc()).limit(1))
+        if current is not None:
+            if _contract(CanonicalFact, current).model_dump(exclude={"evidence"}) != fact.model_dump(exclude={"evidence"}):
+                raise FactVersionConflictError("已确认事实存在冲突，须先完成事实纠错")
+            return _contract(StoryFactVersion, current)
+        row = StoryFactVersionModel(tenant_id=UUID(tenant_id), novel_id=UUID(novel_id),
+            version=1, idempotency_key=key, **_values(fact))
+        session.add(row)
+        await session.flush()
+        return _contract(StoryFactVersion, row)
+
     async def _capture_constraints(self, session: AsyncSession, tenant_id: str,
                                    novel_id: str, chapter_number: int) -> ChapterConstraintSet:
         if await session.scalar(text("SHOW transaction_isolation")) != "read committed":

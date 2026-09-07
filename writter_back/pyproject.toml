@@ -81,6 +81,8 @@ files = [
     "application/quota_service.py",
     "application/streaming.py",
     "application/story_facts.py",
+    "application/fact_workflow.py",
+    "application/fact_prompt_binding.py",
     "service/value_objects/story_fact.py",
     "service/value_objects/chapter_constraints.py",
     "service/ports/story_fact_repository.py",

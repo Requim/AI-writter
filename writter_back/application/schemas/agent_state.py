@@ -40,6 +40,9 @@ class NovelAgentState(TypedDict):
     creative_brief: Optional[Dict]            # 创作简报（母题、冲突、读者承诺与内容边界）
     creative_brief_feedback: Optional[str]    # 用户对创作简报的修改要求
     character_design: Optional[Dict]           # 已确认角色表、命名策略与关系轴
+    character_fact_source: Optional[Dict]      # 真正人工确认的事实入账回执
+    chapter_constraints: Optional[Dict]        # 本次模型输入使用的服务端事实快照
+    chapter_fact_input: Optional[Dict]         # 输入摘要，不代表正文通过事实校验
     character_design_feedback: Optional[str]  # 用户对角色设计的重生成要求
     character_design_return_to: Optional[str] # 旧 checkpoint 补做角色设计后的返回节点
     title_feedback: Optional[str]              # 用户对书名提案的修改要求

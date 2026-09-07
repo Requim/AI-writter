@@ -11,6 +11,11 @@ class FactVersionConflictError(ValueError):
 
 
 class StoryFactRepository(Protocol):
+    async def ingest_confirmed_facts(self, tenant_id: str, novel_id: str, entities: list[StoryEntity],
+                                     facts: list[CanonicalFact], *, source_key: str) -> list[StoryFactVersion]:
+        """可信确认来源原子入账，不覆盖已经存在的权威定义。"""
+        ...
+
     async def capture_constraints(self, tenant_id: str, novel_id: str, chapter_number: int) -> ChapterConstraintSet:
         """以一致性读取编译章节约束；空快照不表示章节已通过校验。"""
         ...

@@ -47,7 +47,7 @@ def compile_character_surnames(novel_id: UUID, design: dict, *, source_ref: str,
                              kind="character", name=character["name"])
         fact = compile_confirmed_fact({"subject_id": entity.id, "predicate": "surname", "value_text": character["surname"]},
             source_kind="character_design", source_ref=source_ref, source_version=source_version,
-            source_content=content, quote=json.dumps(character, ensure_ascii=False, sort_keys=True), confirmed=True)
+            source_content=content, quote=json.dumps({"surname": character["surname"]}, ensure_ascii=False)[1:-1], confirmed=True)
         entities.append(entity)
         facts.append(fact)
     return entities, facts

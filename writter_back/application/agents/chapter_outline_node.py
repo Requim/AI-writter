@@ -11,6 +11,7 @@ from langgraph.types import Command
 from application.continuity import normalize_chapter_contract, validate_chapter_contract
 from application.errors import InvalidReviewDecisionError, RetryableWorkflowError
 from application.feature_policy import require_planning_v1
+from application.fact_workflow import attach_fact_input, bind_chapter_fact_input
 from application.planning import select_plan_context
 from application.tactical_planning import (
     execution_contract_requirements,
@@ -287,16 +288,17 @@ async def chapter_outline_node(
                 "chapter_outlines_input": None,
             })
         return _chapter_plan_proposal(state, outline, chapter_number)
+    config, fact_update = await bind_chapter_fact_input(state, config)
     outline = await _generate_outline(state, config, chapter_number)
     if _schema5(state):
-        return _chapter_plan_proposal(state, outline, chapter_number)
-    return Command(
+        return attach_fact_input(_chapter_plan_proposal(state, outline, chapter_number), fact_update)
+    return attach_fact_input(Command(
         goto="chapter_outline_review_node",
         update={
             **proposal_update(state, "chapter_outline", outline, chapter_number),
             "chapter_outline_feedback": None,
         },
-    )
+    ), fact_update)
 
 
 def _assembled_slots(

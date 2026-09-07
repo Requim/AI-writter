@@ -31,6 +31,7 @@ from infrastructure.database.identity_repository import (
     QuotaExceededError,
 )
 from infrastructure.database.repository import PostgresNovelRepository
+from infrastructure.database.story_fact_repository import PostgresStoryFactRepository
 from service.entities.identity import TenantContext
 from service.entities.novel import Novel
 from service.ports.workflow_command_store import WorkflowCommandStore
@@ -479,6 +480,8 @@ def _rewrite_config(
             "tenant_id": _tenant_id(context),
             "tenant_context": context,
             "novel_repository": repo,
+            "story_fact_repository": PostgresStoryFactRepository(repo.async_session)
+            if isinstance(repo, PostgresNovelRepository) else None,
             "memory_service": request.app.state.memory_service,
             "quota_service": quota,
             "quota_operation_pre_reserved": True,

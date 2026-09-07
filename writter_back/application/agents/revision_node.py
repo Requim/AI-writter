@@ -9,6 +9,7 @@ from langgraph.types import Command
 from application.continuity import build_story_bible
 from application.errors import RetryableWorkflowError
 from application.feature_policy import require_planning_v1
+from application.fact_workflow import attach_fact_input, bind_chapter_fact_input
 from application.prompts.revision_prompts import (
     PATCH_SCHEMA,
     PATCH_TEMPERATURE,
@@ -297,6 +298,7 @@ async def revision_node(
         return Command(goto="persist_node")
     if decision.get("action") == "regenerate":
         return Command(goto="chapter_writer_node")
+    config, fact_update = await bind_chapter_fact_input(state, config)
     llm = config["configurable"].get("llm_config", {}).get("llm_instance")
     if not llm:
         raise RetryableWorkflowError("章节修订失败：LLM 不可用")
@@ -321,4 +323,4 @@ async def revision_node(
             revised = await _generate_refactor(llm, state, content, outline, context, bible)
     else:
         revised = await _generate_refactor(llm, state, content, outline, context, bible)
-    return _next_after_revision(state, revised)
+    return attach_fact_input(_next_after_revision(state, revised), fact_update)

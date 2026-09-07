@@ -13,6 +13,7 @@ from application.character_design import (
     resolve_character_design,
 )
 from application.errors import RetryableWorkflowError
+from application.fact_workflow import attach_fact_input, record_character_confirmation
 from application.naming import NamingValidationError, build_candidate_pool
 from application.prompts.character_design_prompts import (
     CHARACTER_DESIGN_SCHEMA,
@@ -186,7 +187,8 @@ async def character_design_review_node(
         return _regenerate_design(str(selection or "请生成不同角色方案"))
     recent_names = await _recent_character_names(config)
     design = resolve_character_design(proposal["payload"], selection, recent_names=recent_names)
-    return _accept_design(state, design)
+    fact_update = await record_character_confirmation(state, config, proposal, design)
+    return attach_fact_input(_accept_design(state, design), fact_update)
 
 
 def _regenerate_design(feedback: str) -> Command:

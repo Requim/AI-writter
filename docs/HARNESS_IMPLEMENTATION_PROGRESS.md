@@ -6,13 +6,13 @@
 ## 当前恢复点
 
 - 状态：实施中
-- 当前阶段：P3.1 已提交、已部署腾讯云并验收；P3 总阶段尚未完成，下一步 P3.2
+- 当前阶段：P3.2 验收通过，待提交部署；P3 总阶段尚未完成
 - 当前分支：`codex/harness-usability-reliability`
 - 基准提交：`b310aee`
 - 最后更新时间：2026-09-07
 - 最后确认代码提交：后端 `8bce179fef6a6284bb5c20e1c271dc3fdc5e496c`（P3.1），前端保持 `7b7b7ea`（P1）；均已部署，Git 未推送
-- 下一唯一动作：开始 P3.2，从真正已确认的设定入账并将章节快照接入章纲、正文与修订输入；参考 CP-006 的确认入口边界
-- 当前阻塞：无；P3.1 后端全量434项通过、零跳过，Ruff和mypy通过
+- 下一唯一动作：完成 P3.2 全量回归、规范提交、腾讯云部署与运行时验收，再进入 P3.3 正文断言和归档门禁
+- 当前阻塞：无；P3.2 后端全量454项通过、零跳过，最新定向24项通过，Ruff和mypy37源文件通过
 - 回滚点：P3.1 应用可回退 `harness-61d65b6`，使用 CP-007 的回滚配置；保留0007事实表，不执行数据库降级
 
 ### 既有未提交改动
@@ -71,7 +71,7 @@
 | P0 | 完成（阶段上线验收通过） | 建立恢复文档，清理基线失败，修复 fail-open，统一错误分类 | 后端 pytest、Ruff、mypy；前端 test、lint、build |
 | P1 | 完成（阶段上线验收通过） | 重构“创作进度”、中文术语、用户状态与技术状态 | 组件测试、状态矩阵、三视口截图 |
 | P2 | 完成（阶段上线验收通过） | 建立规范化实体、事实版本和事实校验最小闭环 | Alembic、仓储集成测试、事实规则单测 |
-| P3 | 实施中（P3.1 已上线，下一步 P3.2） | 在章纲、正文、修订和归档前接入确定性门禁 | 工作流测试、辛/陆祠堂回归用例 |
+| P3 | 实施中（P3.1 已上线，P3.2 验收中） | 在章纲、正文、修订和归档前接入确定性门禁 | 工作流测试、辛/陆祠堂回归用例 |
 | P4 | 待开始 | 建立冲突中心、证据审阅和版本化纠错 | 前后端契约、审阅 E2E、版本冲突测试 |
 | P5 | 待开始 | 持久运行事件、SSE 重放、共享租约和恢复机制 | Redis/PostgreSQL 集成、断线与重启测试 |
 | P6 | 待开始 | 建立评估集、CI 门禁、可观测性和默认开启策略 | 指标报告、视觉回归、部署前检查 |
@@ -308,6 +308,20 @@ P3.1 应用回滚命令（仅在确认需要回滚后执行）：
 sudo docker compose --project-directory /opt/novel-writer -p novel-writer --env-file /opt/novel-writer/.env -f /opt/novel-writer/docker-compose.yml -f /opt/novel-writer/docker-compose.prod.yml -f /opt/novel-writer/releases/7b7b7ea/compose.harness-release.yml -f /opt/novel-writer/releases/61d65b6/compose.harness-p2.yml -f /opt/novel-writer/releases/8bce179/compose.harness-p31-rollback.yml up -d --no-deps --no-build --wait --wait-timeout 120 backend
 sudo docker exec novel-writer-frontend nginx -s reload
 ~~~
+
+### CP-008：P3.2 实现与验收通过
+
+- 仅 character_design_review_node 的真实人工确认路径入账：自动模式跳过、schema<3旧协议跳过、旧设定恢复不入账。确认来源关联当前提案ID和版本，不采信模型自报 confirmed。
+- 原子导入实体与显式姓氏事实；晚发生的冲突会回滚整批，已有高权威事实不被覆盖，相同事实保留最早来源。新增历史版本纠错仍由 P4 承担，本轮不从自由文本推断家族或祠堂归属。
+- 字段证据引用明确 surname 原文并保留完整设定 SHA-256，避免整份人物档案超出证据上限。
+- 常规工作流和独立重写均注入事实仓储；细纲、正文和修订在新生成前重新捕获服务端快照，忽略 checkpoint 中的旧副本。待审核提案恢复不重复调用模型。
+- 节点级模型代理统一覆盖结构化细纲、分场景正文、续写、补写、局部 Patch、失败回退和全文修订；不修改共享模型对象。约束在提示词组装完成后追加，避免旧上下文裁剪丢失。
+- 仅渲染生效事实与被引用实体，固定上限24000字符，超限失败而不静默截断。空/撤回事实明确为 no_confirmed_facts；不会产生“通过”结果。
+- 新 checkpoint 字段 chapter_constraints、chapter_fact_input、character_fact_source；快照原文不在公开state中返回，输入摘要和 not_checked 状态写入章节审核元数据，完成章节后清理临时快照。
+- 此阶段只约束模型输入，尚不拦截输出冲突或用户接受后的归档；P3.3 必须补充正文证据断言、覆盖范围、语义未知分流及同一归档事务内版本复验。
+- 定向32项通过；后续新增 Patch/回退、流失败及生产入口测试时修正了一处测试参数断言（代理使用位置参数）。最终全量454 passed、零跳过（644.55秒），1条既有 LangGraph 依赖未来默认值变更警告；最终导入位置归位后定向24项再次通过。
+- Ruff 通过，mypy37源文件通过。无新增依赖、无数据库迁移、无前端源码改动。
+- 临时测试资源：novel-writer-harness-p32-test（tmpfs，回环55442），SSH隧道PID30744；验收后按身份核对清理，不动生产卷。生产仍为 P3.1 镜像，尚未发布本轮代码。
 
 ## 变更历史
 
