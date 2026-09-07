@@ -444,3 +444,74 @@ class AuditEventModel(Base):
     target_id = Column(String(255), nullable=True)
     details = Column(JSONB, nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)
+
+
+class StoryEntityModel(Base):
+    __tablename__ = "story_entities"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "novel_id", "id", name="uq_story_entity_scope"),
+        UniqueConstraint("tenant_id", "novel_id", "entity_key", name="uq_story_entity_key"),
+        ForeignKeyConstraint(["tenant_id", "novel_id"], ["novels.tenant_id", "novels.id"], ondelete="CASCADE"),
+        CheckConstraint("kind IN ('character','family','place','item')", name="ck_story_entity_kind"),
+    )
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    tenant_id = Column(UUID(as_uuid=True), nullable=False)
+    novel_id = Column(UUID(as_uuid=True), nullable=False)
+    entity_key = Column(String(128), nullable=False)
+    kind = Column(String(20), nullable=False)
+    name = Column(String(200), nullable=False)
+    aliases = Column(JSONB, nullable=False, default=list)
+
+
+class StoryFactVersionModel(Base):
+    __tablename__ = "story_fact_versions"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "novel_id", "subject_id", "predicate", "version", name="uq_story_fact_version"),
+        UniqueConstraint("tenant_id", "novel_id", "idempotency_key", name="uq_story_fact_request"),
+        ForeignKeyConstraint(["tenant_id", "novel_id"], ["novels.tenant_id", "novels.id"], ondelete="CASCADE"),
+        ForeignKeyConstraint(["tenant_id", "novel_id", "subject_id"],
+                             ["story_entities.tenant_id", "story_entities.novel_id", "story_entities.id"], ondelete="CASCADE"),
+        ForeignKeyConstraint(["tenant_id", "novel_id", "object_entity_id"],
+                             ["story_entities.tenant_id", "story_entities.novel_id", "story_entities.id"]),
+        CheckConstraint("version > 0 AND valid_from_chapter > 0", name="ck_story_fact_positive"),
+        CheckConstraint("valid_to_chapter IS NULL OR valid_to_chapter >= valid_from_chapter", name="ck_story_fact_range"),
+        CheckConstraint("status IN ('confirmed','retracted')", name="ck_story_fact_status"),
+        CheckConstraint("(object_entity_id IS NULL) <> (value_text IS NULL)", name="ck_story_fact_value"),
+    )
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    tenant_id = Column(UUID(as_uuid=True), nullable=False)
+    novel_id = Column(UUID(as_uuid=True), nullable=False)
+    subject_id = Column(UUID(as_uuid=True), nullable=False)
+    predicate = Column(String(40), nullable=False)
+    object_entity_id = Column(UUID(as_uuid=True), nullable=True)
+    value_text = Column(Text, nullable=True)
+    evidence = Column(JSONB, nullable=False)
+    version = Column(Integer, nullable=False)
+    valid_from_chapter = Column(Integer, nullable=False)
+    valid_to_chapter = Column(Integer, nullable=True)
+    status = Column(String(20), nullable=False)
+    idempotency_key = Column(String(128), nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)
+
+
+class StoryFactAssertionModel(Base):
+    __tablename__ = "story_fact_assertions"
+    __table_args__ = (
+        ForeignKeyConstraint(["tenant_id", "novel_id"], ["novels.tenant_id", "novels.id"], ondelete="CASCADE"),
+        ForeignKeyConstraint(["tenant_id", "novel_id", "subject_id"],
+                             ["story_entities.tenant_id", "story_entities.novel_id", "story_entities.id"], ondelete="CASCADE"),
+        ForeignKeyConstraint(["tenant_id", "novel_id", "object_entity_id"],
+                             ["story_entities.tenant_id", "story_entities.novel_id", "story_entities.id"]),
+        CheckConstraint("chapter_number > 0", name="ck_story_assertion_chapter"),
+        CheckConstraint("(object_entity_id IS NULL) <> (value_text IS NULL)", name="ck_story_assertion_value"),
+        Index("ix_story_assertion_scope", "tenant_id", "novel_id", "chapter_number"),
+    )
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    tenant_id = Column(UUID(as_uuid=True), nullable=False)
+    novel_id = Column(UUID(as_uuid=True), nullable=False)
+    subject_id = Column(UUID(as_uuid=True), nullable=False)
+    predicate = Column(String(40), nullable=False)
+    object_entity_id = Column(UUID(as_uuid=True), nullable=True)
+    value_text = Column(Text, nullable=True)
+    evidence = Column(JSONB, nullable=False)
+    chapter_number = Column(Integer, nullable=False)

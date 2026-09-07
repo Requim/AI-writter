@@ -6,12 +6,12 @@
 ## 当前恢复点
 
 - 状态：实施中
-- 当前阶段：P0/P1 已提交、已部署腾讯云并通过阶段冒烟验收；下一阶段 P2
+- 当前阶段：P2 验收通过，准备提交并部署后端与0007迁移
 - 当前分支：`codex/harness-usability-reliability`
 - 基准提交：`b310aee`
 - 最后更新时间：2026-09-07
 - 最后确认代码提交：`7b7b7eab58f14bdbf513560b3d78d92d1fc99f07`，含 P0/P1，已部署腾讯云；Git 未推送
-- 下一唯一动作：开始 P2，审查事实模型、迁移与租户仓储，建立规范化实体/事实版本及辛家祠堂回归样本
+- 下一唯一动作：提交 P2，发布腾讯云后端并验证0007及新表；备份已恢复演练通过
 - 当前阻塞：无；已通过独立临时数据库完成 372 项后端测试，零跳过
 - 回滚点：`b310aee`；不得回退下方列出的既有未提交改动
 
@@ -70,7 +70,7 @@
 | --- | --- | --- | --- |
 | P0 | 完成（阶段上线验收通过） | 建立恢复文档，清理基线失败，修复 fail-open，统一错误分类 | 后端 pytest、Ruff、mypy；前端 test、lint、build |
 | P1 | 完成（阶段上线验收通过） | 重构“创作进度”、中文术语、用户状态与技术状态 | 组件测试、状态矩阵、三视口截图 |
-| P2 | 待开始 | 建立规范化实体、事实版本和事实校验最小闭环 | Alembic、仓储集成测试、事实规则单测 |
+| P2 | 已验收待提交部署 | 建立规范化实体、事实版本和事实校验最小闭环 | Alembic、仓储集成测试、事实规则单测 |
 | P3 | 待开始 | 在章纲、正文、修订和归档前接入确定性门禁 | 工作流测试、辛/陆祠堂回归用例 |
 | P4 | 待开始 | 建立冲突中心、证据审阅和版本化纠错 | 前后端契约、审阅 E2E、版本冲突测试 |
 | P5 | 待开始 | 持久运行事件、SSE 重放、共享租约和恢复机制 | Redis/PostgreSQL 集成、断线与重启测试 |
@@ -105,10 +105,10 @@
 
 ## P2-P4 事实一致性任务清单
 
-- [ ] 定义 `StoryEntity`、`StoryFactVersion`、`StoryFactAssertion`
+- [x] 定义 `StoryEntity`、`StoryFactVersion`、`StoryFactAssertion`
 - [ ] 定义 `ValidationFinding`、`ValidationReport`、`FactCorrectionProposal`
-- [ ] 新增事实相关数据库表和 Alembic 迁移
-- [ ] 实现事实仓储和租户隔离
+- [x] 新增事实相关数据库表和 Alembic 迁移
+- [x] 实现事实仓储和租户隔离
 - [ ] 从已确认人物设定和整书规划编译规范事实
 - [ ] 实现姓氏、家族、祠堂、亲属、地点、时间、知识和状态规则
 - [ ] 编译每章 `ChapterConstraintSet`
@@ -116,7 +116,7 @@
 - [ ] 缺失、异常或不可解析结果进入 `unknown`，禁止静默通过
 - [ ] 新增“事实台账”和“冲突中心”接口
 - [ ] 新增原文证据定位、修订复验和版本化事实修正
-- [ ] 新增“辛姓人物却出现陆氏祠堂”等回归样本
+- [x] 新增“辛姓人物却出现陆氏祠堂”等回归样本
 
 ## P5-P6 运行与评估任务清单
 
@@ -230,6 +230,21 @@
 ~~~bash
 sudo docker compose --project-directory /opt/novel-writer -p novel-writer --env-file /opt/novel-writer/.env -f /opt/novel-writer/docker-compose.yml -f /opt/novel-writer/docker-compose.prod.yml -f /opt/novel-writer/releases/7b7b7ea/compose.harness-rollback.yml up -d --no-deps --no-build --wait --wait-timeout 120 backend frontend
 ~~~
+
+### CP-004：P2 实现与迁移验收
+
+- 新增 StoryEntity、CanonicalFact、StoryFactVersion、StoryFactAssertion、FactEvidence、ValidationFinding/Report；实体和事实保留明确来源及版本，草稿不能直接提升为规范事实。
+- 新增 story_entities、story_fact_versions、story_fact_assertions；租户与小说复合外键、每属性版本唯一性和幂等请求唯一性。仓储复用现有会话工厂，锁小说行防止并发覆盖。
+- 编译器支持已确认角色的显式姓氏及已确认来源的显式结构化陈述；不从首字猜姓、不推断祠堂归属、不自动处理历史章节。
+- 最小规则区分明确归属冲突与拜访/收养，校验原文摘要、证据存在、版本唯一性及生效区间。尚未接入生成、修订和归档，也未新增 HTTP 接口；后续 P3/P4 接入。
+- 后端全量 399 passed、零跳过（419.99 秒）；最后增加的持久化冲突/修正闭环和类型标注正在定向复验。Ruff 通过，默认 mypy 扩展为 34 个源文件通过。前端源码未改动，本轮不重建前端。
+- 0006 → 0007 → 0006 → 0007 真实隔离 schema 测试已通过，原有小说保留。生产逻辑备份已恢复到临时隔离库，再执行真实 Alembic upgrade head 到 0007，小说和章节数量不变。
+- 备份位于腾讯云 /opt/novel-writer/backups/p2-20260907-before-0007.dump，权限 600，SHA-256 为 ffd398f3acea58090625341f9a57ac457d20a1f602622a0e3c47156d75665f2b；未下载到本地。发布时仅应用回滚，不自动降级删除事实表。
+- 本轮确认空库初始化仍存在历史迁移依赖实时 ORM 元数据的风险，列入后续发布工程整改；本次验收明确针对现有 0006 数据升级。
+- 详细数据契约和边界：docs/STORY_FACT_CONTRACT.md。
+- 当前状态：代码待提交；生产仍为 P1 版本，0007 仅在隔离测试/恢复库执行。
+
+P2 提交前补验：最新事实/迁移/静态门禁 32 passed；另补充并通过 1 项持久化冲突、版本修正及删除小说级联清理复验；mypy 34 个源文件、Ruff 通过。全量 399 项结果与定向复验分别记录，不合并宣称一次全量结果。
 
 ## 变更历史
 
