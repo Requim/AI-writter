@@ -9,8 +9,8 @@
 - 当前阶段：P4/P5/P6均已完成阶段提交、腾讯云部署与上线验收
 - 当前分支：`codex/harness-usability-reliability`
 - 基准提交：`b310aee`
-- 最后更新时间：2026-09-07
-- 最后确认代码提交：前后端均为9d3fe4bdbbc91e4517166e27c8bb27828c2d3d4e（P6）；已部署腾讯云，Git未推送，远端CI未运行。部署证据见CP-014。
+- 最后更新时间：2026-09-08
+- 最后确认代码提交：前后端均为9d3fe4bdbbc91e4517166e27c8bb27828c2d3d4e（P6）；已部署腾讯云。分支已推送，ac123f5的远端CI通过；后续纯文档提交以Git与Actions实际状态为准。部署证据见CP-014，推送证据见CP-015。
 - 下一唯一动作：后续真实Provider长篇验收或新问题从本文档继续；本轮无未完成发布操作。
 - 当前验收：P6后端完整517项通过（916.11秒），增补运行/评估/流程62项和最后指标接口1项定向通过；前端127项、lint/build通过；Ruff和mypy57源文件通过；13案例评估符合预期。
 - 临时测试资源：隔离PostgreSQL测试容器54958b93ece3及SSH隧道PID19924已核对身份后清理；恢复演练容器、Redis测试容器、对应隧道和专用Playwright浏览器均已清理。保留原有开发服务器与生产受限备份。禁止连接生产数据库执行pytest。
@@ -159,6 +159,15 @@
 - [x] 冻结0001/0002历史迁移元数据并完成独立空库到0008验收（作为P5发布前置完成）
 
 ## 已验证证据
+
+### CP-015 Git推送与远端CI（2026-09-08）
+
+- 已将codex/harness-usability-reliability推送至origin并建立跟踪；未合并master，未强推。
+- 首轮推送核对本地与远端完整SHA一致：ac123f57cefc5f4f2e308d99d17a75277044aa71。
+- GitHub Actions运行34174846435，Harness Quality结论success；后端服务预检、空库迁移、Ruff、mypy、pytest、离线评估及制品上传通过，前端lint、测试、构建通过。
+- 运行地址：https://github.com/Requim/AI-writter/actions/runs/34174846435 。该结果针对ac123f5；本次记录更新不改变应用代码。
+- 保留原域名https://myunlimatedlife.top/，HTTPS首页实测HTTP 200；本次未修改DNS、证书或反向代理，不将首页200视为登录后生成验收。
+- 本次没有应用重部署；线上应用版本仍为9d3fe4b。本节之后的文档推送可自动触发新CI，以Actions记录为准。
 
 ### CP-014 P6验收与腾讯云发布完成
 
