@@ -499,6 +499,7 @@ export interface LegacyInterruptInfo extends InterruptBase {
 export type InterruptInfo = ReviewInterruptInfo | SystemInterruptInfo | LegacyInterruptInfo
 
 export interface WorkflowExecutionSnapshot {
+  cancel_requested?: boolean
   status?: 'running' | 'cancelling' | 'completed' | 'cancelled' | 'idle' | string
   active_node?: string
   command_id?: string

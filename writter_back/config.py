@@ -42,6 +42,7 @@ class Settings(BaseSettings):
     DEEPSEEK_MODEL: str = "deepseek-chat"
     LLM_TIMEOUT_SECONDS: float = 180.0
     LLM_MAX_RETRIES: int = 0
+    WORKFLOW_NODE_TIMEOUT_SECONDS: float = 240.0
     WORKFLOW_TIMEOUT_SECONDS: float = 600.0
     WORKFLOW_GENERATION_PAUSED: bool = False
     FACT_REVIEW_MODE: Literal["standard", "human_only"] = "standard"
@@ -59,6 +60,8 @@ class Settings(BaseSettings):
     MIN_CHAPTER_WORDS: int = 3000
     MAX_CHAPTER_WORDS: int = 7000
     LANGGRAPH_CHECKPOINTER_URI: str | None = None
+    PROMPT_ROOT: str | None = None
+    GENRE_PROFILE_ROOT: str | None = None
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -81,7 +84,11 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_limits(self) -> "Settings":
-        if self.LLM_TIMEOUT_SECONDS <= 0 or self.WORKFLOW_TIMEOUT_SECONDS <= 0:
+        if any(value <= 0 for value in (
+            self.LLM_TIMEOUT_SECONDS,
+            self.WORKFLOW_NODE_TIMEOUT_SECONDS,
+            self.WORKFLOW_TIMEOUT_SECONDS,
+        )):
             raise ValueError("Timeout values must be positive")
         if not 0 <= self.LLM_MAX_RETRIES <= 5:
             raise ValueError("LLM_MAX_RETRIES must be between 0 and 5")

@@ -2,6 +2,19 @@ class RetryableWorkflowError(RuntimeError):
     """A transient workflow failure that can resume from the latest checkpoint."""
 
 
+class WorkflowNodeTimeoutError(RetryableWorkflowError):
+    """单个工作流节点超过截止时间，可从 checkpoint 重试。"""
+
+    code = "workflow_node_timeout"
+
+    def __init__(self, node: str, timeout_seconds: float) -> None:
+        self.node = node
+        self.timeout_seconds = timeout_seconds
+        super().__init__(
+            f"工作流节点 {node} 超过 {timeout_seconds:g} 秒未完成，请重试当前步骤"
+        )
+
+
 class StructuredOutputInvalidError(RetryableWorkflowError):
     """The model returned data that could not satisfy a structured contract."""
 

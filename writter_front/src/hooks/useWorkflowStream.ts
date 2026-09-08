@@ -56,7 +56,8 @@ function useSnapshotSync(threadId: string | undefined, dispatch: WorkflowDispatc
     try {
       const snapshot = await workflowApi.state(threadId)
       dispatch({ type: 'snapshot', snapshot, force })
-      dispatch({ type: 'sync_succeeded', at: new Date().toISOString() })
+      dispatch(snapshot.status === 'unknown'
+        ? { type: 'sync_failed' } : { type: 'sync_succeeded', at: new Date().toISOString() })
       return snapshot
     } catch (error) {
       dispatch({ type: 'sync_failed' })
@@ -103,18 +104,20 @@ function useCancelCommand(
   threadId: string | undefined,
   dispatch: WorkflowDispatch,
   controllerRef: React.MutableRefObject<AbortController | null>,
+  sync: WorkflowSync,
 ) {
   return useCallback(async () => {
     controllerRef.current?.abort()
     if (!threadId) return
     dispatch({ type: 'cancelling' })
     try {
-      await workflowApi.cancel(threadId)
-      dispatch({ type: 'cancelled' })
+      const result = await workflowApi.cancel(threadId)
+      if (['cancelled', 'idle'].includes(result.status)) dispatch({ type: 'cancelled' })
+      await sync(true).catch(() => undefined)
     } catch (error) {
       dispatch({ type: 'failure', ...failureDetails(error) })
     }
-  }, [controllerRef, dispatch, threadId])
+  }, [controllerRef, dispatch, sync, threadId])
 }
 
 export function useWorkflowStream(threadId?: string) {
@@ -122,7 +125,7 @@ export function useWorkflowStream(threadId?: string) {
   const controllerRef = useRef<AbortController | null>(null)
   const sync = useSnapshotSync(threadId, dispatch)
   const run = useRunCommand(threadId, dispatch, controllerRef, sync)
-  const cancel = useCancelCommand(threadId, dispatch, controllerRef)
+  const cancel = useCancelCommand(threadId, dispatch, controllerRef, sync)
 
   const resume = useCallback((value: unknown, autoMode: boolean) => run({
     command: { resume: value, _auto_mode: autoMode },

@@ -389,7 +389,7 @@ function useDetachedSync(
   sync: ReturnType<typeof useWorkflowStream>['sync'],
 ): void {
   useEffect(() => {
-    if (connection !== 'detached' || !['running', 'stalled'].includes(status)) return
+    if (connection !== 'detached' || !['running', 'stalled', 'cancelling'].includes(status)) return
     const poll = () => void sync(true).catch(() => undefined)
     let timer = window.setInterval(poll, detachedPollDelay())
     const restart = () => {

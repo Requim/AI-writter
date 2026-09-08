@@ -2,12 +2,13 @@ import { act, renderHook, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { WorkflowEvent, WorkflowSnapshot } from '@/types/novel'
 
-const { stateMock, streamMock } = vi.hoisted(() => ({
+const { stateMock, streamMock, cancelMock } = vi.hoisted(() => ({
   stateMock: vi.fn(),
   streamMock: vi.fn(),
+  cancelMock: vi.fn(),
 }))
 
-vi.mock('@/api/novel', () => ({ workflowApi: { state: stateMock } }))
+vi.mock('@/api/novel', () => ({ workflowApi: { state: stateMock, cancel: cancelMock } }))
 vi.mock('@/api/workflow', () => {
   class WorkflowRequestError extends Error {
     readonly status: number
@@ -49,6 +50,7 @@ describe('useWorkflowStream command reconciliation', () => {
   beforeEach(() => {
     stateMock.mockReset().mockResolvedValue(pausedSnapshot)
     streamMock.mockReset()
+    cancelMock.mockReset()
   })
 
   it('synchronizes the checkpoint after an idempotency conflict', async () => {
@@ -126,5 +128,50 @@ describe('useWorkflowStream command reconciliation', () => {
     expect(result.current.state).toMatchObject({
       connectionRecovering: false, consecutiveSyncFailures: 0,
     })
+  })
+
+  it('keeps stopping until the server confirms cancellation', async () => {
+    cancelMock.mockResolvedValue({ status: 'cancelling' })
+    stateMock.mockResolvedValue({
+      thread_id: 'thread-1', status: 'running', interrupts: [], state: {},
+      execution: { status: 'cancelling' },
+    })
+    const { result } = renderHook(() => useWorkflowStream('thread-1'))
+    await act(async () => result.current.cancel())
+    expect(result.current.state.status).toBe('cancelling')
+    expect(stateMock).toHaveBeenCalledOnce()
+  })
+
+  it('preserves stopping when cancellation status cannot be synchronized', async () => {
+    cancelMock.mockResolvedValue({ status: 'cancelling' })
+    stateMock.mockRejectedValue(new Error('offline'))
+    const { result } = renderHook(() => useWorkflowStream('thread-1'))
+    await act(async () => result.current.cancel())
+    expect(result.current.state.status).toBe('cancelling')
+    expect(result.current.state.syncState).toBe('unknown')
+  })
+
+  it('does not treat an unknown server snapshot as confirmation of a stop', async () => {
+    cancelMock.mockResolvedValue({ status: 'cancelling' })
+    stateMock.mockResolvedValue({
+      thread_id: 'thread-1', status: 'unknown', interrupts: [], state: {},
+    })
+    const { result } = renderHook(() => useWorkflowStream('thread-1'))
+    await act(async () => result.current.cancel())
+    expect(result.current.state.status).toBe('cancelling')
+    expect(result.current.state.syncState).toBe('unknown')
+  })
+
+  it('recovers the checkpoint after confirmed cancellation without old reasoning', async () => {
+    cancelMock.mockResolvedValue({ status: 'cancelled' })
+    stateMock.mockResolvedValue({
+      thread_id: 'thread-1', status: 'idle', interrupts: [], state: {},
+      next_nodes: ['character_design_node'],
+      execution: { status: 'cancelled', message: '正在生成角色' },
+    })
+    const { result } = renderHook(() => useWorkflowStream('thread-1'))
+    await act(async () => result.current.cancel())
+    expect(result.current.state.status).toBe('recoverable')
+    expect(result.current.state.reasoning).not.toContain('正在生成')
   })
 })

@@ -66,6 +66,18 @@ function studioPlan(): NovelPlan {
 }
 
 describe('NovelStudioView completed state', () => {
+  it.each([
+    ['running', '正在准备创作内容'], ['paused', '等待你的确认'],
+    ['cancelling', '正在停止任务'], ['error', '当前步骤未完成'],
+    ['recoverable', '创作进度已保留'],
+  ] as const)('shows the appropriate empty manuscript for %s', (status, title) => {
+    const controller = completedController()
+    controller.isCompleted = false
+    controller.workflow.state = { ...initialWorkflowState, status }
+    render(<NovelStudioView controller={controller} />)
+    expect(screen.getByRole('heading', { name: title })).toBeInTheDocument()
+    expect(screen.queryByText(/点击“继续创作”/)).not.toBeInTheDocument()
+  })
   it('shows the finished-manuscript action without continue or stop commands at 3/3', () => {
     render(<NovelStudioView controller={completedController()} />)
     expect(screen.getByText('第 3 / 3 章')).toBeInTheDocument()

@@ -31,6 +31,7 @@ from application.errors import (
     InvalidReviewDecisionError,
     PlanningTemporarilyDisabledError,
     RetryableWorkflowError,
+    WorkflowNodeTimeoutError,
     StaleWorkflowDecisionError,
     StructuredOutputInvalidError,
     WorkflowCheckpointUnavailableError,
@@ -40,6 +41,7 @@ from application.execution_fence import execution_fence, ExecutionLeaseLost
 from infrastructure.database.runtime_journal import RuntimeJournal
 from application.feature_policy import feature_policy
 from application.orchestrator import NovelOrchestrator
+from application.prompts.template_loader import prompt_manifest
 from application.proposals import (
     CURRENT_WORKFLOW_SCHEMA_VERSION,
 )
@@ -160,6 +162,7 @@ def _seed_initial_input(input_data: dict[str, Any], novel: Novel) -> None:
 
     outline = novel.total_outline
     if outline is None:
+        input_data.setdefault("prompt_version", prompt_manifest()["version"])
         return
     if outline.scale:
         input_data.setdefault("scale_contract", dict(outline.scale))
@@ -190,6 +193,7 @@ def _seed_initial_input(input_data: dict[str, Any], novel: Novel) -> None:
         input_data.setdefault("target_total_chapters", outline.total_chapters)
     if outline.writing_style:
         input_data.setdefault("requested_writing_style", outline.writing_style)
+    input_data.setdefault("prompt_version", prompt_manifest()["version"])
 
 
 def _plan_replan_command(raw: Any) -> dict[str, Any] | None:
@@ -248,6 +252,7 @@ async def _prepare_fresh_input(
     input_data["workflow_schema_version"] = _new_workflow_schema_version(context)
     if novel is not None:
         _seed_initial_input(input_data, novel)
+    input_data.setdefault("prompt_version", prompt_manifest()["version"])
     latest_plan = await _seed_plan_input(input_data, orchestrator, context, thread_id)
     if replan is not None:
         if latest_plan is None or latest_plan.version != replan["expected_version"]:
@@ -433,6 +438,14 @@ def _known_workflow_error(exc: Exception) -> dict[str, Any] | None:
             "code": "structured_output_invalid",
             "message": "模型返回的审读结果格式不符合要求，请重试当前步骤",
             "retryable": True,
+        }
+    if isinstance(exc, WorkflowNodeTimeoutError):
+        return {
+            "code": exc.code,
+            "message": str(exc),
+            "retryable": True,
+            "node": exc.node,
+            "timeout_seconds": exc.timeout_seconds,
         }
     if isinstance(exc, WorkflowCheckpointUnavailableError):
         return {

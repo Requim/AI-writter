@@ -115,6 +115,8 @@ function snapshotStatus(
   retainError: boolean,
 ) {
   if (snapshot.is_completed || snapshot.state?.is_completed === true) return 'completed' as const
+  if (snapshot.status === 'running' && (snapshot.execution?.status === 'cancelling'
+    || snapshot.execution?.cancel_requested === true)) return 'cancelling' as const
   if (snapshot.interrupts?.[0]) return 'paused' as const
   if (snapshot.status === 'running' && snapshot.execution?.is_stale) return 'stalled' as const
   if (snapshot.status === 'running') return 'running' as const
@@ -136,6 +138,7 @@ export function readPlanResult(value: unknown): WorkflowViewState['planResult'] 
 }
 
 function reduceSnapshot(state: WorkflowViewState, snapshot: WorkflowSnapshot): WorkflowViewState {
+  if (snapshot.status === 'unknown') return { ...state, syncState: 'unknown' }
   const execution = snapshot.execution
   const interrupt = snapshot.interrupts?.[0]
   const hasDraft = snapshot.state?.has_current_chapter_content === true
@@ -145,17 +148,18 @@ function reduceSnapshot(state: WorkflowViewState, snapshot: WorkflowSnapshot): W
   const progress = snapshot.state?.progress_percentage
   const checkpointReason = snapshot.state?.router_reasoning
   const completed = status === 'completed'
+  const stopped = execution?.status === 'cancelled'
   return {
     ...state, status, syncState: 'confirmed',
     planResult: readPlanResult(snapshot.state?.last_plan_execution),
     connection: snapshot.status === 'running' && !completed ? 'detached' : 'idle',
     activeNode: completed ? undefined : nodeForInterrupt(interrupt) || execution?.active_node || snapshot.next_nodes?.[0],
     activeCommandId: completed ? undefined : execution?.command_id || state.activeCommandId,
-    stageStartedAt: execution?.stage_started_at || execution?.started_at,
+    stageStartedAt: stopped ? undefined : execution?.stage_started_at || execution?.started_at,
     interrupt,
-    reasoning: interrupt?.message || execution?.message
+    reasoning: stopped ? '任务已停止，已确认的进度保留。' : interrupt?.message || execution?.message
       || (typeof checkpointReason === 'string' ? checkpointReason : state.reasoning),
-    startedAt: execution?.started_at || state.startedAt,
+    startedAt: stopped ? undefined : execution?.started_at || state.startedAt,
     lastActivityAt: execution?.last_activity_at || state.lastActivityAt,
     isStale: status === 'stalled',
     error: status === 'stalled'
@@ -295,10 +299,12 @@ export function workflowReducer(state: WorkflowViewState, action: WorkflowAction
     errorCode: action.code, errorNode: action.node, retryable: action.retryable,
     retryAfter: action.retryAfter, retryCount: action.retryCount,
   }
-  if (action.type === 'cancelling') return { ...state, status: 'cancelling' }
+  if (action.type === 'cancelling') return { ...state, status: 'cancelling', connection: 'detached' }
   if (action.type === 'cancelled') return {
     ...state, status: 'idle', connection: 'idle', activeNode: undefined,
     activeCommandId: undefined, error: undefined, isStale: false,
+    reasoning: undefined, stageStartedAt: undefined, startedAt: undefined,
+    errorCode: undefined, errorNode: undefined, retryCount: undefined, retryAfter: undefined,
   }
   if (action.type === 'detached') return { ...state, connection: 'detached' }
   return {

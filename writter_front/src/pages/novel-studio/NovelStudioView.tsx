@@ -266,12 +266,24 @@ function EditorToolbar({ controller, live }: { controller: NovelStudioController
   )
 }
 
-function EmptyEditor() {
+function EmptyEditor({ controller }: { controller: NovelStudioController }) {
+  const status = controller.workflow.state.status
+  const messages = {
+    running: ['正在准备创作内容', '任务正在后台执行，章节生成后会显示在这里；可切换到进度查看当前阶段。'],
+    paused: ['等待你的确认', '请在进度面板审阅当前提案，确认后继续创作。'],
+    cancelling: ['正在停止任务', '请等待服务端确认停止，暂勿重复启动任务。'],
+    recoverable: ['创作进度已保留', '可从已保存的检查点继续，或在目录中选择已有章节。'],
+    error: ['当前步骤未完成', '请在进度面板查看失败原因，再决定是否重试。'],
+    stalled: ['需要核对任务进度', '请先刷新状态，不要重复启动正在执行的任务。'],
+    completed: ['章节已生成', '请从目录选择章节阅读。'],
+    idle: ['稿纸已经铺好', '点击“继续创作”，或在目录中选择已经完成的章节。'],
+  }
+  const [title, description] = messages[status]
   return (
     <div className="blank-page">
       <EditOutlined />
-      <h2>稿纸已经铺好</h2>
-      <p>点击“继续创作”，或从左侧选择已经完成的章节。</p>
+      <h2>{title}</h2>
+      <p>{description}</p>
     </div>
   )
 }
@@ -279,7 +291,7 @@ function EmptyEditor() {
 function EditorBody({ controller, live }: { controller: NovelStudioController; live: boolean }) {
   const { editorContent, editorMode } = controller.document
   const content = controller.workflow.state.draft || editorContent
-  if (!content) return <EmptyEditor />
+  if (!content) return <EmptyEditor controller={controller} />
   if (!live && editorMode === 'edit') return (
     <Input.TextArea
       className="manuscript-editor" value={editorContent} autoSize={false}

@@ -372,7 +372,7 @@ class NovelOrchestrator(AgentOrchestrator):
         key = self.execution_key(context, thread_id)
         snapshot = self._execution_snapshots.setdefault(key, {})
         now = datetime.now(timezone.utc).isoformat()
-        snapshot["status"] = status
+        snapshot["status"] = "cancelling" if snapshot.get("status") == "cancelling" else status
         snapshot["last_activity_at"] = now
         if active_node is not None:
             if active_node != snapshot.get("active_node"):
@@ -418,8 +418,14 @@ class NovelOrchestrator(AgentOrchestrator):
             lock.release()
         snapshot = self._execution_snapshots.get(key)
         if snapshot is not None:
+            if snapshot.get("status") == "cancelling":
+                status = "cancelled"
             snapshot["status"] = status
             snapshot["last_activity_at"] = datetime.now(timezone.utc).isoformat()
+            if status == "cancelled":
+                snapshot["message"] = "任务已停止，已确认的进度保留。"
+                snapshot["active_node"] = None
+                snapshot.pop("stage_started_at", None)
 
     async def cancel(self, context: TenantContext, thread_id: str) -> bool:
         key = self.execution_key(context, thread_id)
@@ -441,15 +447,17 @@ class NovelOrchestrator(AgentOrchestrator):
             message="正在结束当前任务",
             status="cancelling",
         )
-        task.cancel()
+        if not task.cancelling():
+            task.cancel()
         try:
             await asyncio.wait_for(asyncio.shield(task), timeout=5.0)
         except (asyncio.CancelledError, asyncio.TimeoutError):
             pass
         except Exception:
             logger.exception("Workflow task failed while cancelling %s", thread_id)
-        finally:
-            self.finish(context, thread_id, task=task, status="cancelled")
+        if not task.done():
+            return False
+        self.finish(context, thread_id, task=task, status="cancelled")
         return True
 
     async def invoke(

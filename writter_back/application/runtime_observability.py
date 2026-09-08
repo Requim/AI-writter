@@ -2,10 +2,13 @@
 import inspect
 import logging
 import time
+import asyncio
 from functools import wraps
 from typing import Any
 from langgraph.errors import GraphInterrupt
 from application.streaming import emit_workflow_event
+from application.errors import WorkflowNodeTimeoutError
+from config import settings
 
 
 def measured_node(name: str, node: Any) -> Any:
@@ -17,7 +20,16 @@ def measured_node(name: str, node: Any) -> Any:
         outcome = 'completed'
         try:
             result = node(state, config=config) if accepts_config else node(state)
-            return await result if inspect.isawaitable(result) else result
+            if not inspect.isawaitable(result):
+                return result
+            try:
+                async with asyncio.timeout(settings.WORKFLOW_NODE_TIMEOUT_SECONDS):
+                    return await result
+            except TimeoutError as error:
+                outcome = 'timeout'
+                raise WorkflowNodeTimeoutError(
+                    name, settings.WORKFLOW_NODE_TIMEOUT_SECONDS
+                ) from error
         except BaseException as error:
             outcome = 'interrupted' if isinstance(error, GraphInterrupt) else 'failed'
             raise

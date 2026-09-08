@@ -36,6 +36,15 @@ function ConnectionNote({ state, now }: { state: WorkflowViewState; now: number 
   )
 }
 
+function SlowStageNote({ state, now }: { state: WorkflowViewState; now: number }) {
+  const started = Date.parse(state.stageStartedAt || state.startedAt || '')
+  if (state.status !== 'running' || !Number.isFinite(started) || now - started < 60_000) return null
+  return <div className="stalled-note" role="status">
+    <strong>当前阶段耗时较长</strong>
+    <span>连接或状态同步正常不代表模型已有新结果。可以刷新状态；如需停止，请等待服务端确认后再继续。</span>
+  </div>
+}
+
 export function WorkflowOverview({ state, chapterPrefix, onRefresh, onCancel }: Props) {
   const busy = ['running', 'stalled', 'cancelling'].includes(state.status)
   const now = useClock(busy)
@@ -58,6 +67,7 @@ export function WorkflowOverview({ state, chapterPrefix, onRefresh, onCancel }: 
         <div><dt>本阶段已用时</dt><dd>{elapsed || '正在记录'}</dd></div>
       </dl>}
       <ConnectionNote state={state} now={now} />
+      <SlowStageNote state={state} now={now} />
       {state.status === 'stalled' && <div className="stalled-note"><strong>任务长时间没有新进展</strong><span>刷新状态后仍无变化时，可以结束任务并从已保留进度继续。</span></div>}
       {(busy || state.connection === 'detached') && <div className="execution-actions">
         <Tooltip title="从服务器读取当前节点"><Button size="small" icon={<ReloadOutlined />} onClick={onRefresh}>刷新状态</Button></Tooltip>

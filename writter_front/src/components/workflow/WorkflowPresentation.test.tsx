@@ -33,6 +33,19 @@ describe('创作进度的用户视图', () => {
 
 })
 
+describe('阶段耗时提示', () => {
+  it('warns about a slow stage without claiming that a connected model made progress', () => {
+    show({ status: 'running', connection: 'streaming', stageStartedAt: new Date(Date.now() - 70_000).toISOString() })
+    expect(screen.getByText('当前阶段耗时较长')).toBeInTheDocument()
+    expect(screen.getByText(/同步正常不代表模型已有新结果/)).toBeInTheDocument()
+  })
+
+  it('does not warn about long elapsed time while waiting for a decision', () => {
+    show({ status: 'paused', stageStartedAt: '2020-01-01T00:00:00Z' })
+    expect(screen.queryByText('当前阶段耗时较长')).not.toBeInTheDocument()
+  })
+})
+
 describe('创作进度的展示边界', () => {
   it('folds internal nodes and reasoning away from the current task', () => {
     show({ status: 'running', activeNode: 'chapter_writer_node', reasoning: 'router_debug_only' })
