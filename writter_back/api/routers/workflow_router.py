@@ -28,6 +28,7 @@ from api.workflow_commands import (
 )
 from application.checkpoint_reconciliation import reconcile_pending_checkpoint
 from application.errors import (
+    AutomaticRecoveryExhausted,
     InvalidReviewDecisionError,
     PlanningTemporarilyDisabledError,
     RetryableWorkflowError,
@@ -371,6 +372,7 @@ async def _prepare_request(
             input_data, replan, context, thread_id, orchestrator,
             quota, novel, command_id,
         )
+        input_data["auto_mode"] = bool(auto_mode)
     return (
         input_data if not is_resume and not is_retry else None,
         command.get("resume"),
@@ -424,6 +426,8 @@ def _known_workflow_error(exc: Exception) -> dict[str, Any] | None:
         return {"code": "workflow_dependency_timeout",
                 "message": "当前步骤等待依赖服务超时，创作现场已保留，请重试当前步骤",
                 "retryable": True}
+    if isinstance(exc, AutomaticRecoveryExhausted):
+        return {"code": exc.code, "message": str(exc), "retryable": False}
     contract_error = _workflow_contract_error(exc)
     if contract_error:
         return contract_error
@@ -750,6 +754,8 @@ def _raise_invoke_error(exc: BaseException, thread_id: str) -> NoReturn:
         raise _command_error(503, exc.code, str(exc)) from exc
     if isinstance(exc, (QuotaExceededError, AIUnavailableError)):
         raise _command_error(429, "quota_exceeded", str(exc), False) from exc
+    if isinstance(exc, AutomaticRecoveryExhausted):
+        raise _command_error(409, exc.code, str(exc), False) from exc
     if isinstance(exc, InvalidReviewDecisionError):
         raise _command_error(
             422, "invalid_workflow_decision", str(exc), False

@@ -76,7 +76,7 @@ def test_complete_reports_can_pass_and_legacy_remains_compatible():
 
 
 @pytest.mark.asyncio
-async def test_schema_five_routes_missing_fulfillment_to_review(monkeypatch):
+async def test_schema_five_auto_repairs_missing_fulfillment(monkeypatch):
     module = reflection_node.__globals__
     monkeypatch.setitem(module, "require_planning_v1", AsyncMock())
     monkeypatch.setitem(module, "emit_workflow_event", lambda *_args: None)
@@ -87,5 +87,6 @@ async def test_schema_five_routes_missing_fulfillment_to_review(monkeypatch):
         {"workflow_schema_version": 5, "current_chapter_content": "正文", "current_chapter_index": 0},
         {"configurable": {"auto_mode": True, "llm_config": {"llm_instance": llm}}},
     )
-    assert command.goto == "reflection_review_node"
-    assert command.update["pending_proposal"]["payload"]["gate"]["decision"] == "human_review"
+    assert command.goto == "revision_node"
+    assert command.update["quality_gate"]["source_decision"] == "human_review"
+    assert command.update["quality_gate"]["fulfillment_review_required"] is True

@@ -13,8 +13,9 @@ import type { ChapterSummary } from '@/types/novel'
 import type { NovelStudioController } from './useNovelStudioController'
 
 function WorkflowAction({ controller }: { controller: NovelStudioController }) {
-  const { workflow, autoMode, autoRunActive } = controller
+  const { workflow, autoMode } = controller
   const status = workflow.state.status
+  const interrupt = workflow.state.interrupt
   const busy = ['running', 'stalled', 'cancelling'].includes(status)
   if (controller.isCompleted) return (
     <Button type="primary" icon={<FileDoneOutlined />} onClick={() => controller.setEditor({ workspaceMode: 'chapter', mobilePanel: 'editor' })}>查看完稿</Button>
@@ -26,7 +27,7 @@ function WorkflowAction({ controller }: { controller: NovelStudioController }) {
   if (busy) return (
     <Button danger icon={<StopOutlined />} loading={status === 'cancelling'} onClick={controller.stopWriting}>停止</Button>
   )
-  if (status === 'paused' && autoMode && !autoRunActive) return (
+  if (status === 'paused' && autoMode && interrupt?.action !== 'creative_paused') return (
     <Button type="primary" icon={<PlayCircleOutlined />} onClick={controller.continueAutoWriting}>继续自动创作</Button>
   )
   if (status === 'paused') return (

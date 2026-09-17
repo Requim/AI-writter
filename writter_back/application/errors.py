@@ -2,6 +2,12 @@ class RetryableWorkflowError(RuntimeError):
     """A transient workflow failure that can resume from the latest checkpoint."""
 
 
+class AutomaticRecoveryExhausted(RuntimeError):
+    """自动修复预算耗尽，保留现场而不转入常规人工审核。"""
+
+    code = "automatic_recovery_exhausted"
+
+
 class WorkflowNodeTimeoutError(RetryableWorkflowError):
     """单个工作流节点超过截止时间，可从 checkpoint 重试。"""
 

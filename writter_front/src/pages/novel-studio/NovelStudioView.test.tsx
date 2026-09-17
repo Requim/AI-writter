@@ -66,6 +66,19 @@ function studioPlan(): NovelPlan {
 }
 
 describe('NovelStudioView completed state', () => {
+  it('offers server-side automatic recovery for restored fact review', () => {
+    const controller = completedController()
+    controller.isCompleted = false
+    controller.autoMode = true
+    controller.workflow.state = {
+      ...initialWorkflowState, status: 'paused', syncState: 'confirmed',
+      interrupt: { action: 'fact_review_required' },
+    }
+    render(<NovelStudioView controller={controller} />)
+    fireEvent.click(screen.getByRole('button', { name: /继续自动创作/ }))
+    expect(controller.continueAutoWriting).toHaveBeenCalled()
+  })
+
   it.each([
     ['running', '正在准备创作内容'], ['paused', '等待你的确认'],
     ['cancelling', '正在停止任务'], ['error', '当前步骤未完成'],

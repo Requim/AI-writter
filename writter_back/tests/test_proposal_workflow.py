@@ -231,7 +231,7 @@ async def test_summary_retries_once_then_auto_accepts_valid_dual_view() -> None:
 
 
 @pytest.mark.asyncio
-async def test_invalid_dual_summary_forces_human_review_in_auto_mode(monkeypatch) -> None:
+async def test_invalid_dual_summary_regenerates_without_human_review_in_auto_mode(monkeypatch) -> None:
     llm = _SummarySequenceLLM([
         {"reader_blurb": "", "editorial_brief": ""},
         {"reader_blurb": "仍然相同", "editorial_brief": "仍然相同"},
@@ -249,7 +249,8 @@ async def test_invalid_dual_summary_forces_human_review_in_auto_mode(monkeypatch
     reviewed = await summary_review_node({**state, **generated.update}, _auto_config(llm))
     assert proposal["payload"]["human_review_required"] is True
     assert proposal["payload"]["validation_errors"]
-    assert captured["action"] == "summary_review_required"
+    assert captured == {}
+    assert reviewed.update["automatic_recovery"]["attempts"]["简介"] == 1
     assert reviewed.goto == "summary_node" and len(llm.prompts) == 2
 
 

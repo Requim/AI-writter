@@ -6,7 +6,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
 from application.fact_gate_workflow import check_fact_artifact, fact_review_node
-from application.errors import InvalidReviewDecisionError, StaleWorkflowDecisionError
+from application.errors import AutomaticRecoveryExhausted, InvalidReviewDecisionError, StaleWorkflowDecisionError
 from application.schemas.agent_state import NovelAgentState
 from tests.test_fact_gate import setup_gate, config
 
@@ -26,9 +26,9 @@ def graph():
 
 
 @pytest.mark.asyncio
-async def test_automatic_mode_interrupts_and_bound_ack_resumes_checkpoint():
+async def test_manual_mode_interrupts_and_bound_ack_resumes_checkpoint():
     cfg = config(setup_gate())
-    cfg["configurable"].update(thread_id="fact-recovery", auto_mode=True)
+    cfg["configurable"].update(thread_id="fact-recovery", auto_mode=False)
     app = graph()
     result = await app.ainvoke({"current_chapter_content": "他推开门。", "current_chapter_index": 0}, cfg)
     interrupt = result["__interrupt__"][0].value
@@ -84,27 +84,20 @@ async def test_wrong_proposal_and_edited_body_cannot_resume_old_confirmation():
 
 
 @pytest.mark.asyncio
-async def test_complete_legacy_workflow_keeps_fact_reviews_separate_from_auto_quality_accept():
+async def test_complete_auto_workflow_does_not_accept_unknown_facts_or_wait_for_human():
     from application.workflow_builder import create_novel_workflow
     from tests.test_workflow_flow import FakeWorkflowLLM, _manual_workflow_input
     cfg = config(setup_gate(), FakeWorkflowLLM())
     cfg["recursion_limit"] = 120
     cfg["configurable"].update(thread_id="complete-fact-workflow", auto_mode=True)
     app = create_novel_workflow(InMemorySaver())
-    result = await app.ainvoke(_manual_workflow_input(), cfg)
-    kinds = []
-    for _ in range(8):
-        if result.get("is_completed"):
-            break
-        interrupt = result["__interrupt__"][0].value
-        assert interrupt["action"] == "fact_review_required"
-        kinds.append(interrupt["fact_report"]["artifact_kind"])
-        result = await app.ainvoke(Command(resume={"proposal_id": interrupt["proposal_id"], "decision": "accept"}), cfg)
-    assert result["is_completed"]
-    assert "outline" in kinds and "body" in kinds
-    decision = result["last_persisted_chapter"]["user_decision"]
-    assert decision["fact_gate"]["status"] == "unknown"
-    assert decision["fact_review"]["reviewed_by"]
+    with pytest.raises(AutomaticRecoveryExhausted):
+        await app.ainvoke(_manual_workflow_input(), cfg)
+    snapshot = await app.aget_state(cfg)
+    assert not any(task.interrupts for task in snapshot.tasks)
+    assert not snapshot.values.get("fact_acknowledgements")
+    assert not snapshot.values.get("last_persisted_chapter")
+    assert snapshot.values["automatic_recovery"]["attempts"]["事实审校:outline"] == 2
 
 
 @pytest.mark.asyncio

@@ -14,7 +14,7 @@ import type {
   TacticalPlanResponse, TacticalPlanVersionSummary,
 } from '@/types/novel'
 import {
-  autoResumeValue, hasChapterChanges, interruptKey, rewindImpactText, shouldAutoResume,
+  autoResumeValue, hasChapterChanges, interruptKey, rewindImpactText,
 } from '../novelStudioUtils'
 import { useAutoRunNotifications } from './useAutoRunNotifications'
 
@@ -360,9 +360,14 @@ function useAutoResume(
 ): void {
   useEffect(() => {
     const interrupt = workflow.state.interrupt
-    if (!interrupt || !shouldAutoResume(autoMode, active, interrupt, lastInterruptRef.current)) return
+    if (!interrupt || !autoMode || !active || interrupt.action === 'creative_paused') return
+    if (interruptKey(interrupt) === lastInterruptRef.current) return
     lastInterruptRef.current = interruptKey(interrupt)
-    void workflow.resume(autoResumeValue(interrupt, novelType), true)
+    if (interrupt.action === 'require_novel_type') {
+      void workflow.resume(autoResumeValue(interrupt, novelType), true)
+    } else {
+      void workflow.retry(true)
+    }
   }, [active, autoMode, lastInterruptRef, novelType, workflow])
 }
 
@@ -537,7 +542,7 @@ function useWorkflowCommands(params: WorkflowCommandParams) {
     if (!interrupt) return start()
     setInterruptRef(params.lastInterruptRef, interruptKey(interrupt))
     params.setActive(true)
-    await params.workflow.resume(autoResumeValue(interrupt, params.novelType), true)
+    await params.workflow.retry(true)
     await params.refresh()
   }, [params, start])
   const stop = useCallback(async () => {

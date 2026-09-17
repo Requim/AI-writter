@@ -105,6 +105,8 @@ class NovelAgentState(TypedDict):
     user_decision: Optional[Dict]             # 用户决策
     revision_instructions: Optional[str]       # 用户提供的修正指令（优先），否则AI自动修正
     revision_attempts: int                    # 自动模式修正重试次数，用于循环修正防死循环
+    automatic_recovery: Optional[Dict]         # 当前章节各审核节点的自动修复预算
+    auto_mode: Optional[bool]                  # 最近一次服务端执行选择的推进模式
     revision_history: Optional[List[Dict]]    # 自动修订的审读问题历史
     quality_gate: Optional[Dict]              # 服务端计算的质量判定与分项评分
     quality_results: Annotated[List[Dict], add]  # 跨章节保留的审读审计结果

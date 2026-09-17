@@ -6,6 +6,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
 
 from application.errors import InvalidReviewDecisionError
+from application.automatic_recovery import recovery_update
 from application.prompts.summary_prompts import (
     SUMMARY_SCHEMA,
     SUMMARY_TEMPERATURE,
@@ -152,6 +153,10 @@ async def summary_review_node(
     proposal = require_proposal(state, "summary")
     summary = _normalize_summary(proposal["payload"])
     force_human = bool(summary.get("human_review_required"))
+    if force_human and config["configurable"].get("auto_mode", False):
+        budget = recovery_update(state, "简介")
+        command = _regenerate_summary("；".join(summary.get("validation_errors") or _summary_errors(summary)))
+        return Command(goto=command.goto, update={**command.update, **budget})
     action = "summary_review_required" if force_human else "confirm_or_provide_summary"
     decision = decide_proposal(
         state,

@@ -504,15 +504,13 @@ def _mirrored_outline(state: NovelAgentState, plan: NovelPlan) -> dict[str, Any]
 async def novel_plan_review_node(
     state: NovelAgentState, config: RunnableConfig
 ) -> Command[Literal["novel_plan_initialize_node", "persist_node", "progress_check_node"]]:
-    """审核计划提案；旧书升级、用户重规划与重大漂移强制人工确认。"""
+    """审核已验证计划；自动推进由服务端接受，人工模式保留确认。"""
     await require_planning_v1(config)
     proposal = require_proposal(state, "novel_plan")
     generation = dict(state.get("plan_generation") or {})
     decision = decide_proposal(
-        state,
-        proposal,
-        config,
-        force_human=bool(generation.get("review_force_human")),
+        state, proposal, config,
+        force_human=False,
         action="review_novel_plan",
         message="整书规划已完成，请审核规模、分卷、剧情弧和章节骨架",
         novel_plan=proposal["payload"],

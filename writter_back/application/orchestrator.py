@@ -257,7 +257,9 @@ class NovelOrchestrator(AgentOrchestrator):
     def set_auto_mode(
         self, context: TenantContext, thread_id: str, enabled: bool
     ) -> None:
-        self._auto_mode[self.execution_key(context, thread_id)] = enabled
+        key = self.execution_key(context, thread_id)
+        self._auto_mode[key] = enabled
+        self._execution_snapshots.setdefault(key, {})["auto_mode"] = enabled
 
     def _make_config(
         self,
@@ -493,7 +495,7 @@ class NovelOrchestrator(AgentOrchestrator):
                 resume_value,
                 cast(PendingProposal, proposal),
             )
-            return Command(resume=resume_value)
+            return Command(resume=resume_value, update={"auto_mode": config["configurable"]["auto_mode"]})
         interrupts: list[Any] = []
         for task in getattr(snapshot, "tasks", []) or []:
             interrupts.extend(self._interrupt_values(getattr(task, "interrupts", [])))
@@ -565,7 +567,8 @@ class NovelOrchestrator(AgentOrchestrator):
         reasoning: str,
         extra_update: dict[str, Any] | None = None,
     ) -> None:
-        update = {"next_tool": next_node, "router_reasoning": reasoning}
+        update = {"next_tool": next_node, "router_reasoning": reasoning,
+                  "auto_mode": config["configurable"]["auto_mode"]}
         update.update(extra_update or {})
         await self._workflow.aupdate_state(
             config,
@@ -583,6 +586,10 @@ class NovelOrchestrator(AgentOrchestrator):
         values = getattr(state, "values", {}) or {}
         next_nodes = tuple(getattr(state, "next", ()) or ())
         failed_node = self._failed_task_node(state)
+        automatic_review = self._automatic_review_node(state, config)
+        if automatic_review:
+            await self._route_retry_node(config, automatic_review, f"由服务端自动处理当前阶段 {automatic_review}")
+            return automatic_review
         if failed_node:
             next_node = failed_node
             reasoning = f"从原失败节点重试 {next_node}"
@@ -605,6 +612,14 @@ class NovelOrchestrator(AgentOrchestrator):
             message=reasoning,
         )
         return next_node
+
+    @staticmethod
+    def _automatic_review_node(state: Any, config: dict) -> str | None:
+        interrupted = any(getattr(task, "interrupts", ()) for task in getattr(state, "tasks", ()) or ())
+        next_nodes = tuple(getattr(state, "next", ()) or ())
+        if interrupted and config["configurable"].get("auto_mode") and next_nodes:
+            return str(next_nodes[0])
+        return None
 
     async def rewind_checkpoint(
         self,

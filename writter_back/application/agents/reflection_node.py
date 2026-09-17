@@ -582,14 +582,30 @@ async def reflection_node(
     return _route_quality_result(state, config, gate, issues)
 
 
+def _automatic_quality_revision(state: NovelAgentState, config: RunnableConfig, gate: dict, issues: list[dict]) -> Command:
+    from application.automatic_recovery import recovery_update
+    from application.errors import AutomaticRecoveryExhausted
+
+    maximum = config["configurable"].get("max_reflection_loops", 5)
+    if state.get("revision_attempts", 0) >= maximum:
+        raise AutomaticRecoveryExhausted("章节自动修订已达上限，未通过验收，草稿已保留")
+    budget = recovery_update(state, "质量审读", maximum)
+    command = _direct_rewrite_revision(gate, issues) if gate["decision"] == "human_review" else _choice_command(
+        ReviewDecision("revise"), issues, gate
+    )
+    return Command(goto=command.goto, update={
+        **command.update, **budget, "pending_proposal": None, "pending_proposal_decision": None,
+    })
+
+
 def _route_quality_result(
     state: NovelAgentState, config: RunnableConfig, gate: dict, issues: list[dict]
 ) -> Command:
     values = config["configurable"]
     attempts = state.get("revision_attempts", 0)
     maximum = values.get("max_reflection_loops", 5)
-    if values.get("auto_mode", False) and gate["decision"] in {"patch", "refactor"} and attempts < maximum:
-        return _choice_command(ReviewDecision("revise"), issues, gate)
+    if values.get("auto_mode", False) and not values.get("direct_rewrite", False):
+        return _automatic_quality_revision(state, config, gate, issues)
     if values.get("direct_rewrite", False):
         if gate.get("fulfillment_review_required"):
             raise QualityGateReviewRequired("计划兑现尚未确认，章节未归档，请重新审阅")
@@ -658,6 +674,15 @@ async def reflection_review_node(
     chapter = state.get("current_chapter_index", 0) + 1
     proposal = require_proposal(state, "reflection", chapter)
     payload = proposal["payload"] if isinstance(proposal["payload"], dict) else {}
+    if config["configurable"].get("auto_mode", False):
+        if payload.get("status") == "unavailable":
+            from application.automatic_recovery import recovery_update
+
+            return Command(goto="reflection_node", update={
+                **recovery_update(state, "审读重试"),
+                "pending_proposal": None, "pending_proposal_decision": None,
+            })
+        return _automatic_quality_revision(state, config, payload["gate"], payload["issues"])
     if payload.get("status") == "unavailable":
         fields = {
             "action": "quality_review_unavailable",

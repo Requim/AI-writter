@@ -7,10 +7,11 @@ from langgraph.types import Command
 from langchain_core.runnables import RunnableConfig
 
 from application.errors import InvalidReviewDecisionError, QualityGateReviewRequired, StaleWorkflowDecisionError
+from application.automatic_recovery import recovery_update
 from application.fact_archive_guard import verify_fact_receipt
 from application.fact_evaluation import evaluate_facts
 from application.fact_workflow import _repository
-from application.proposals import decide_proposal, proposal_update, require_proposal
+from application.proposals import ReviewDecision, decide_proposal, proposal_update, require_proposal
 from application.story_facts import source_digest
 from service.value_objects.fact_gate import FactGateReport
 from config import settings
@@ -88,7 +89,7 @@ async def _recheck_fact(state: Any, config: RunnableConfig, artifact: dict, cont
 
 
 async def fact_review_node(state: Any, config: RunnableConfig) -> Command:
-    """人工必须对当前事实提案确认，自动模式和质量接受不能替代。"""
+    """自动模式修复或重新取证，绝不伪造人工事实确认。"""
     proposal = require_proposal(state, "fact_review", state.get("current_chapter_index", 0) + 1)
     report = FactGateReport.model_validate(proposal["payload"]["report"])
     artifact, continuation = state.get("fact_artifact"), state.get("fact_continuation")
@@ -98,6 +99,8 @@ async def fact_review_node(state: Any, config: RunnableConfig) -> Command:
         raise StaleWorkflowDecisionError("稿件已变化，旧确认不能复用")
     if artifact["kind"] == "body" and state.get("current_chapter_content") != artifact["content"]:
         raise StaleWorkflowDecisionError("稿件已变化，旧确认不能复用")
+    if config["configurable"].get("auto_mode", False):
+        return await _automatic_fact_review(state, config, report, artifact, continuation)
     decision = decide_proposal({**state, "workflow_schema_version": max(3, int(state.get("workflow_schema_version") or 2))},
         proposal, config, force_human=True, action="fact_review_required",
         message="发现明确事实冲突，必须修订后才能继续" if report.status == "blocked" else "事实证据尚未完整确认，请核对后决定",
@@ -116,3 +119,13 @@ async def fact_review_node(state: Any, config: RunnableConfig) -> Command:
     command = Command(goto=continuation["goto"], update={"pending_proposal": None, "pending_proposal_decision": None,
         "fact_continuation": None, "fact_artifact": None, **continuation["update"]})
     return await check_fact_artifact(next_state, config, artifact["content"], artifact["kind"], command)
+
+
+async def _automatic_fact_review(state, config, report, artifact, continuation) -> Command:
+    budget = recovery_update(state, f"事实审校:{artifact['kind']}")
+    if report.status == "blocked" or report.findings:
+        instruction = "依据已确认事实修复以下问题，不得改写事实台账：" + report.model_dump_json()
+        command = _fact_retry(state, ReviewDecision("revise", instruction=instruction))
+    else:
+        command = await _recheck_fact(state, config, artifact, continuation)
+    return Command(goto=command.goto, update={**command.update, **budget})
