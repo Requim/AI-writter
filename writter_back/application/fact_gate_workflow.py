@@ -13,13 +13,15 @@ from application.fact_evaluation import evaluate_facts
 from application.fact_workflow import _repository, capture_fact_constraints
 from application.proposals import ReviewDecision, decide_proposal, proposal_update, require_proposal
 from application.story_facts import source_digest
-from service.value_objects.fact_gate import FactGateReport
+from service.value_objects.fact_gate import FACT_EXTRACTION_VERSION, FactGateReport
 from config import settings
 
 
 def _cached(state: Any, snapshot: Any, content: str, kind: str) -> FactGateReport | None:
     try:
         report = FactGateReport.model_validate((state.get("fact_reports") or {}).get(kind))
+        if _outdated_extraction_failure(report):
+            return None
         if settings.FACT_REVIEW_MODE == "human_only" and report.status == "pass":
             return None
         if (report.snapshot_digest, report.artifact_hash, report.tenant_id, report.novel_id,
@@ -123,7 +125,7 @@ async def fact_review_node(state: Any, config: RunnableConfig) -> Command:
 
 async def _automatic_fact_review(state, config, report, artifact, continuation) -> Command:
     snapshot = await capture_fact_constraints(state, config)
-    if snapshot.digest != report.snapshot_digest:
+    if snapshot.digest != report.snapshot_digest or _outdated_extraction_failure(report):
         return await _recheck_changed_snapshot(state, config, artifact, continuation)
     budget = recovery_update(state, f"事实审校:{artifact['kind']}")
     if report.status == "blocked" or report.findings:
@@ -132,6 +134,12 @@ async def _automatic_fact_review(state, config, report, artifact, continuation) 
     else:
         command = await _recheck_fact(state, config, artifact, continuation)
     return Command(goto=command.goto, update={**command.update, **budget})
+
+
+def _outdated_extraction_failure(report: FactGateReport) -> bool:
+    return (report.extraction_version != FACT_EXTRACTION_VERSION
+            and report.status == "unknown" and report.coverage == "unknown"
+            and not report.findings)
 
 
 async def _recheck_changed_snapshot(state, config, artifact, continuation) -> Command:

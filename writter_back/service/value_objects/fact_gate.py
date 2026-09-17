@@ -10,10 +10,12 @@ from pydantic import Field, StrictInt
 from service.value_objects.story_fact import FactContract, StoryFactAssertion, ValidationFinding
 
 FACT_GATE_VERSION = "fact-gate-v1"
+FACT_EXTRACTION_VERSION = "fact-extraction-v2"
 
 
 class FactGateReport(FactContract):
     rule_version: Literal["fact-gate-v1"] = "fact-gate-v1"
+    extraction_version: Literal["fact-extraction-v1", "fact-extraction-v2"] = "fact-extraction-v1"
     tenant_id: UUID
     novel_id: UUID
     chapter_number: StrictInt = Field(ge=1)
@@ -29,7 +31,10 @@ class FactGateReport(FactContract):
     @property
     def digest(self) -> str:
         """人工确认只对本份回执生效，内容或版本变化后必须重新审核。"""
-        raw = json.dumps(self.model_dump(mode="json"), sort_keys=True, ensure_ascii=False)
+        payload = self.model_dump(mode="json")
+        if self.extraction_version == "fact-extraction-v1":
+            payload.pop("extraction_version")
+        raw = json.dumps(payload, sort_keys=True, ensure_ascii=False)
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
