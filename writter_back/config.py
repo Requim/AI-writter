@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     LLM_MAX_RETRIES: int = 0
     WORKFLOW_NODE_TIMEOUT_SECONDS: float = 240.0
     WORKFLOW_TIMEOUT_SECONDS: float = 600.0
+    WORKFLOW_BACKGROUND_TIMEOUT_SECONDS: float = 86400.0
     WORKFLOW_GENERATION_PAUSED: bool = False
     FACT_REVIEW_MODE: Literal["standard", "human_only"] = "standard"
     SSE_HEARTBEAT_SECONDS: float = 15.0
@@ -88,6 +89,7 @@ class Settings(BaseSettings):
             self.LLM_TIMEOUT_SECONDS,
             self.WORKFLOW_NODE_TIMEOUT_SECONDS,
             self.WORKFLOW_TIMEOUT_SECONDS,
+            self.WORKFLOW_BACKGROUND_TIMEOUT_SECONDS,
         )):
             raise ValueError("Timeout values must be positive")
         if not 0 <= self.LLM_MAX_RETRIES <= 5:

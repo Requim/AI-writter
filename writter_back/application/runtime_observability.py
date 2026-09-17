@@ -22,10 +22,13 @@ def measured_node(name: str, node: Any) -> Any:
             result = node(state, config=config) if accepts_config else node(state)
             if not inspect.isawaitable(result):
                 return result
+            deadline = asyncio.timeout(settings.WORKFLOW_NODE_TIMEOUT_SECONDS)
             try:
-                async with asyncio.timeout(settings.WORKFLOW_NODE_TIMEOUT_SECONDS):
+                async with deadline:
                     return await result
             except TimeoutError as error:
+                if not deadline.expired():
+                    raise
                 outcome = 'timeout'
                 raise WorkflowNodeTimeoutError(
                     name, settings.WORKFLOW_NODE_TIMEOUT_SECONDS

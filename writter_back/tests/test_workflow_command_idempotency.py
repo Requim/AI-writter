@@ -736,7 +736,7 @@ async def test_stream_disconnect_does_not_cancel_background_workflow():
 
 
 @pytest.mark.asyncio
-async def test_stream_timeout_releases_command_for_replay(monkeypatch):
+async def test_stream_background_execution_ignores_request_timeout(monkeypatch):
     monkeypatch.setattr(workflow_router.settings, "WORKFLOW_TIMEOUT_SECONDS", 0.02)
     context = tenant_context()
     thread_id = str(uuid4())
@@ -750,16 +750,21 @@ async def test_stream_timeout_releases_command_for_replay(monkeypatch):
         channel, orchestrator, context, thread_id, prepared.command.command_id
     )
 
+    first = await anext(body)
+    assert '"status":"started"' in first
+    await asyncio.sleep(0.03)
+    assert producer.done() is False
+    orchestrator.gate.set()
     frames = [frame async for frame in body]
     await asyncio.wait_for(producer, timeout=1)
+
     replay = await store.claim(
         str(context.tenant_id), thread_id, "stream-command", 720
     )
-
-    assert any("workflow_timeout" in frame for frame in frames)
+    assert any('"status":"idle"' in frame for frame in frames)
     assert producer.cancelled() is False
     assert orchestrator.finished is True
-    assert replay.status is WorkflowCommandClaimStatus.ACQUIRED
+    assert replay.status is WorkflowCommandClaimStatus.ALREADY_APPLIED
 
 
 @pytest.mark.asyncio

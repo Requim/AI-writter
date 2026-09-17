@@ -1,6 +1,7 @@
 """Strict loader for packaged UTF-8 prompt templates."""
 
 from functools import lru_cache
+import hashlib
 from importlib.resources import files
 from pathlib import PurePosixPath
 from string import Template
@@ -45,3 +46,25 @@ def render_prompt(name: str, /, **values: Any) -> str:
     except KeyError as exc:
         missing = exc.args[0]
         raise ValueError(f"模板 {name} 缺少变量: {missing}") from exc
+
+
+def prompt_manifest(
+    names: list[str] | None = None, *, include_content: bool = False
+) -> dict[str, Any]:
+    """为工作流入口生成内置模板清单，保持版本与内容摘要绑定。"""
+    root = files(_TEMPLATE_PACKAGE)
+    selected = names if names is not None else [
+        item.relative_to(root).as_posix() for item in root.rglob("*.txt")
+    ]
+    content = {name: load_prompt_template(name) for name in sorted(set(selected))}
+    entries = {
+        name: hashlib.sha256(text.encode("utf-8")).hexdigest()
+        for name, text in content.items()
+    }
+    digest = hashlib.sha256(
+        "".join(f"{name}:{value}\n" for name, value in entries.items()).encode("utf-8")
+    ).hexdigest()
+    result = {"version": f"{PROMPT_VERSION}:{digest[:12]}", "templates": entries}
+    if include_content:
+        result["snapshot"] = content
+    return result

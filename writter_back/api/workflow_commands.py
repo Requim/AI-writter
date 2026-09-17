@@ -55,6 +55,7 @@ async def claim_command(
     context: TenantContext,
     novel_id: str,
     idempotency_key: str | None,
+    ttl_seconds: float | None = None,
 ) -> ClaimedWorkflowCommand:
     command_id = resolve_command_id(idempotency_key)
     try:
@@ -63,7 +64,8 @@ async def claim_command(
                 str(context.tenant_id),
                 novel_id,
                 command_id,
-                settings.WORKFLOW_TIMEOUT_SECONDS + RUNNING_TTL_BUFFER_SECONDS,
+                (settings.WORKFLOW_TIMEOUT_SECONDS if ttl_seconds is None else ttl_seconds)
+                + RUNNING_TTL_BUFFER_SECONDS,
             ),
             timeout=COMMAND_STORE_TIMEOUT_SECONDS,
         )

@@ -420,6 +420,10 @@ def _workflow_contract_error(exc: Exception) -> dict[str, Any] | None:
 
 
 def _known_workflow_error(exc: Exception) -> dict[str, Any] | None:
+    if isinstance(exc, TimeoutError):
+        return {"code": "workflow_dependency_timeout",
+                "message": "当前步骤等待依赖服务超时，创作现场已保留，请重试当前步骤",
+                "retryable": True}
     contract_error = _workflow_contract_error(exc)
     if contract_error:
         return contract_error
@@ -639,10 +643,14 @@ async def _prepare_execution(
     repository: PostgresNovelRepository,
     quota: QuotaService,
     command_store: WorkflowCommandStore,
+    background: bool = False,
 ) -> PreparedWorkflow:
     novel = await _authorize_thread(context, thread_id, repository)
     ensure_generation_enabled()
-    command = await _claim_command(command_store, context, thread_id, idempotency_key)
+    timeout = settings.WORKFLOW_BACKGROUND_TIMEOUT_SECONDS if background else settings.WORKFLOW_TIMEOUT_SECONDS
+    command = await _claim_command(
+        command_store, context, thread_id, idempotency_key, ttl_seconds=timeout,
+    )
     acquired = False
     try:
         await _acquire(orchestrator, context, thread_id)
@@ -935,8 +943,9 @@ def _stream_timeout_error(thread_id: str, command_id: str) -> WorkflowEvent:
         command_id=command_id,
         data={
             "code": "workflow_timeout",
-            "message": "工作流执行超时，请重试当前步骤",
+            "message": "后台任务达到执行时限，创作现场已保留，请继续当前步骤",
             "retryable": True,
+            "timeout_seconds": settings.WORKFLOW_BACKGROUND_TIMEOUT_SECONDS,
         },
     )
 
@@ -1025,14 +1034,18 @@ async def _run_stream_execution(
     prepared: PreparedWorkflow,
 ) -> None:
     applied = False
+    deadline = asyncio.timeout(settings.WORKFLOW_BACKGROUND_TIMEOUT_SECONDS)
     try:
-        async with asyncio.timeout(settings.WORKFLOW_TIMEOUT_SECONDS):
+        async with deadline:
             await _produce_stream_events(
                 channel, orchestrator, context, thread_id, prepared
             )
         applied = True
-    except asyncio.TimeoutError:
-        await channel.emit(_stream_timeout_error(thread_id, prepared.command.command_id))
+    except asyncio.TimeoutError as exc:
+        event = _stream_timeout_error(thread_id, prepared.command.command_id) if deadline.expired() else WorkflowEvent(
+            id=0, type="error", thread_id=thread_id,
+            command_id=prepared.command.command_id, data=_public_error_data(exc))
+        await channel.emit(event)
     except asyncio.CancelledError:
         raise
     except Exception as exc:
@@ -1107,6 +1120,7 @@ async def _stream_response(
         repository,
         quota,
         command_store,
+        background=True,
     )
     channel, _producer = _start_stream_execution(
         orchestrator, command_store, context, thread_id, prepared
