@@ -1,6 +1,7 @@
 """Generate and select premise-grounded title candidates."""
 
 import logging
+import math
 from typing import Any, Literal
 
 from langchain_core.runnables import RunnableConfig
@@ -23,25 +24,43 @@ from application.schemas.agent_state import NovelAgentState
 from application.streaming import emit_workflow_event
 
 logger = logging.getLogger("uvicorn")
+TITLE_SCORE_WEIGHTS = {
+    "literary_quality": 4, "specificity": 2.5,
+    "audience_fit": 2, "memorability": 1.5,
+}
 
 
 def _score(candidate: dict[str, Any]) -> float:
     try:
-        return float(candidate.get("total_score", 0) or 0)
-    except (TypeError, ValueError):
+        if any(key in candidate for key in ("literary_quality", "memorability")):
+            scores = {key: float(candidate[key]) for key in TITLE_SCORE_WEIGHTS}
+            if not all(math.isfinite(value) and 0 <= value <= 10 for value in scores.values()):
+                return 0.0
+            return round(sum(scores[key] * weight for key, weight in TITLE_SCORE_WEIGHTS.items()), 2)
+        # 兼容已绑定旧提示词快照的执行，不改变已有提案的审核协议。
+        value = float(candidate.get("total_score", 0) or 0)
+        return min(100.0, max(0.0, value)) if math.isfinite(value) else 0.0
+    except (KeyError, TypeError, ValueError, OverflowError):
         return 0.0
 
 
 def _normalize_candidates(value: Any) -> list[dict[str, Any]]:
     raw = value.get("candidates", []) if isinstance(value, dict) else []
     candidates = []
+    seen = set()
     for item in raw if isinstance(raw, list) else []:
         if not isinstance(item, dict):
             continue
-        title = str(item.get("title", "") or "").strip()
-        if len(title) < 4:
+        title = item.get("title")
+        if not isinstance(title, str):
             continue
-        candidates.append({**item, "title": title, "hint": str(item.get("hint", "") or "").strip()})
+        title = title.strip().removeprefix("《").removesuffix("》").strip()
+        identity = "".join(title.split()).casefold()
+        if not 2 <= len(title) <= 16 or "\n" in title or "\r" in title or identity in seen:
+            continue
+        seen.add(identity)
+        candidates.append({**item, "title": title, "hint": str(item.get("hint", "") or "").strip(),
+                           "total_score": _score(item)})
     return sorted(candidates, key=_score, reverse=True)[:8]
 
 
