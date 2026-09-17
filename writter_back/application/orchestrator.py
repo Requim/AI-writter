@@ -576,6 +576,27 @@ class NovelOrchestrator(AgentOrchestrator):
             as_node="router_agent",
         )
 
+    @staticmethod
+    def _reset_fact_retry_budget(
+        values: dict[str, Any], next_node: str,
+    ) -> dict[str, Any]:
+        if next_node != "fact_review_node":
+            return {}
+        artifact = values.get("fact_artifact")
+        if not isinstance(artifact, dict) or not artifact.get("kind"):
+            return {}
+        recovery = values.get("automatic_recovery")
+        if not isinstance(recovery, dict):
+            return {}
+        attempts = dict(recovery.get("attempts") or {})
+        kind = artifact["kind"]
+        attempts.pop(f"事实审校:{kind}", None)
+        attempts.pop(f"事实提取:{kind}", None)
+        return {"automatic_recovery": {
+            "chapter": int(values.get("current_chapter_index") or 0),
+            "attempts": attempts,
+        }}
+
     async def prepare_retry_checkpoint(
         self, context: TenantContext, thread_id: str
     ) -> str:
@@ -588,12 +609,17 @@ class NovelOrchestrator(AgentOrchestrator):
         failed_node = self._failed_task_node(state)
         automatic_review = self._automatic_review_node(state, config)
         if automatic_review:
-            await self._route_retry_node(config, automatic_review, f"由服务端自动处理当前阶段 {automatic_review}")
+            extra = self._reset_fact_retry_budget(values, automatic_review)
+            await self._route_retry_node(
+                config, automatic_review,
+                f"由服务端自动处理当前阶段 {automatic_review}", extra,
+            )
             return automatic_review
         if failed_node:
             next_node = failed_node
             reasoning = f"从原失败节点重试 {next_node}"
-            await self._route_retry_node(config, next_node, reasoning)
+            extra = self._reset_fact_retry_budget(values, next_node)
+            await self._route_retry_node(config, next_node, reasoning, extra)
         elif values.get("current_chapter_content"):
             next_node, reasoning = _route(values)
             await self._route_retry_node(config, next_node, reasoning)

@@ -735,6 +735,38 @@ async def test_retry_checkpoint_prioritizes_original_failed_node():
 
 
 @pytest.mark.asyncio
+async def test_retry_fact_review_clears_exhausted_fact_budgets():
+    service = orchestrator()
+    service._workflow = SimpleNamespace(
+        aget_state=AsyncMock(return_value=SimpleNamespace(
+            values={
+                "current_chapter_index": 0,
+                "fact_artifact": {"kind": "body", "content": "正文"},
+                "automatic_recovery": {
+                    "chapter": 0,
+                    "attempts": {"事实审校:body": 2, "事实提取:body": 3, "质量审读": 1},
+                },
+            },
+            next=("fact_review_node",),
+            tasks=[SimpleNamespace(
+                name="fact_review_node", error=RuntimeError("事实审核失败")
+            )],
+        )),
+        aupdate_state=AsyncMock(),
+    )
+
+    next_node = await service.prepare_retry_checkpoint(
+        tenant_context(), str(uuid4())
+    )
+
+    assert next_node == "fact_review_node"
+    update = service._workflow.aupdate_state.await_args.args[1]
+    assert update["automatic_recovery"] == {
+        "chapter": 0, "attempts": {"质量审读": 1},
+    }
+
+
+@pytest.mark.asyncio
 async def test_retry_checkpoint_reports_when_no_checkpoint_is_available():
     service = orchestrator()
     service._workflow = SimpleNamespace(

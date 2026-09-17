@@ -69,7 +69,15 @@ async def test_auto_retry_preserves_pending_review_instead_of_rerouting_draft():
     service.set_auto_mode(context, thread_id, True)
     service._workflow = SimpleNamespace(
         aget_state=AsyncMock(return_value=SimpleNamespace(
-            values={"current_chapter_content": "已有正文"},
+            values={
+                "current_chapter_content": "已有正文",
+                "current_chapter_index": 0,
+                "fact_artifact": {"kind": "outline", "content": "已有提纲"},
+                "automatic_recovery": {
+                    "chapter": 0,
+                    "attempts": {"事实审校:outline": 2, "事实提取:outline": 3, "质量审读": 1},
+                },
+            },
             next=("fact_review_node",),
             tasks=[SimpleNamespace(interrupts=[object()])],
         )),
@@ -79,6 +87,9 @@ async def test_auto_retry_preserves_pending_review_instead_of_rerouting_draft():
     update = service._workflow.aupdate_state.await_args.args[1]
     assert update["next_tool"] == "fact_review_node"
     assert update["auto_mode"] is True
+    assert update["automatic_recovery"] == {
+        "chapter": 0, "attempts": {"质量审读": 1},
+    }
 
 
 @pytest.mark.asyncio
