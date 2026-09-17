@@ -58,6 +58,26 @@ async def test_background_deadline_releases_task_and_reports_own_limit(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_auto_mode_invocation_uses_background_timeout(monkeypatch):
+    monkeypatch.setattr(workflow_router.settings, "WORKFLOW_TIMEOUT_SECONDS", 0.001)
+    monkeypatch.setattr(workflow_router.settings, "WORKFLOW_BACKGROUND_TIMEOUT_SECONDS", 0.05)
+    prepared = workflow_router.PreparedWorkflow(
+        None, None, False, False,
+        workflow_router.ClaimedWorkflowCommand("auto-command", "lease"), True,
+    )
+
+    async def slow_invoke(*_args):
+        await asyncio.sleep(0.01)
+        return {"status": "ok"}
+
+    monkeypatch.setattr(workflow_router, "_invoke_once", slow_invoke)
+    result = await workflow_router._invoke_prepared(
+        prepared, SimpleNamespace(), tenant_context(), str(uuid4())
+    )
+    assert result == {"status": "ok"}
+
+
+@pytest.mark.asyncio
 async def test_dependency_timeout_is_not_mislabeled_as_node_timeout():
     async def node(state):
         raise TimeoutError("dependency")

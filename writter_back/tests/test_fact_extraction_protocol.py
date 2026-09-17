@@ -6,7 +6,6 @@ from unittest.mock import AsyncMock
 import pytest
 from langgraph.types import Command
 
-from application.errors import AutomaticRecoveryExhausted
 from application.fact_evaluation import FactExtraction, evaluate_facts
 from application.fact_gate_workflow import check_fact_artifact, fact_review_node
 from application.fact_archive_guard import verify_fact_receipt
@@ -79,10 +78,12 @@ async def test_legacy_exhausted_failure_rechecks_once_then_keeps_new_budget():
     result = await fact_review_node(state, cfg)
     assert result.goto == "fact_review_node"
     assert result.update["fact_reports"]["outline"]["extraction_version"] == FACT_EXTRACTION_VERSION
-    assert result.update["automatic_recovery"]["attempts"] == {"质量审读": 1}
-    next_state = {**state, **result.update, "automatic_recovery": state["automatic_recovery"]}
-    with pytest.raises(AutomaticRecoveryExhausted):
-        await fact_review_node(next_state, cfg)
+    assert result.update["automatic_recovery"]["attempts"] == {
+        "事实审校:outline": 2, "事实提取:outline": 1, "质量审读": 1,
+    }
+    next_state = {**state, **result.update}
+    second = await fact_review_node(next_state, cfg)
+    assert second.update["automatic_recovery"]["attempts"]["事实提取:outline"] == 2
 
 
 @pytest.mark.asyncio

@@ -150,7 +150,9 @@ async def test_exhausted_fact_review_rechecks_only_when_snapshot_really_changes(
     cfg["configurable"]["auto_mode"] = True
     pending = await check_fact_artifact({}, cfg, content, "outline", Command(goto="chapter_writer_node"))
     state = {**pending.update, "automatic_recovery": {
-        "chapter": 0, "attempts": {"事实审校:outline": 2, "质量审读": 1},
+        "chapter": 0, "attempts": {
+            "事实审校:outline": 2, "事实提取:outline": 3, "质量审读": 1,
+        },
     }}
     with pytest.raises(AutomaticRecoveryExhausted):
         await fact_review_node(state, cfg)
@@ -161,3 +163,32 @@ async def test_exhausted_fact_review_rechecks_only_when_snapshot_really_changes(
     assert result.update["fact_reports"]["outline"]["status"] == "pass"
     assert not result.update.get("fact_acknowledgements")
     assert result.update["automatic_recovery"]["attempts"] == {"质量审读": 1}
+
+
+@pytest.mark.asyncio
+async def test_protocol_failure_uses_separate_budget_and_recovers_after_review_budget_exhaustion():
+    from application.fact_gate_workflow import _retryable_extraction_failure
+    from service.value_objects.fact_gate import FactGateReport
+
+    value = setup_gate()
+    cfg = config(value)
+    cfg["configurable"]["auto_mode"] = True
+    pending = await check_fact_artifact({}, cfg, "他推开门。", "outline", Command(goto="chapter_writer_node"))
+    report = FactGateReport.model_validate(pending.update["fact_reports"]["outline"])
+    assert _retryable_extraction_failure(report) is True
+    failed = report.model_copy(update={
+        "extraction_version": "fact-extraction-v2",
+        "reasons": ("事实审校未获得有效的完整证据，请人工复核",),
+    })
+    assert _retryable_extraction_failure(failed) is True
+    state = {**pending.update, "fact_reports": {"outline": failed.model_dump(mode="json")},
+             "pending_proposal": {**pending.update["pending_proposal"],
+                                  "payload": {"report": failed.model_dump(mode="json")}},
+             "automatic_recovery": {"chapter": 0, "attempts": {"事实审校:outline": 2}}}
+    cfg["configurable"]["llm_config"]["llm_instance"] = None
+    for expected in (1, 2, 3):
+        result = await fact_review_node(state, cfg)
+        assert result.update["automatic_recovery"]["attempts"]["事实提取:outline"] == expected
+        state = {**state, **result.update}
+    with pytest.raises(AutomaticRecoveryExhausted, match="事实提取"):
+        await fact_review_node(state, cfg)

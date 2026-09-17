@@ -123,10 +123,17 @@ async def fact_review_node(state: Any, config: RunnableConfig) -> Command:
     return await check_fact_artifact(next_state, config, artifact["content"], artifact["kind"], command)
 
 
-async def _automatic_fact_review(state, config, report, artifact, continuation) -> Command:
+async def _automatic_fact_review(
+    state: Any, config: RunnableConfig, report: FactGateReport,
+    artifact: dict, continuation: dict,
+) -> Command:
     snapshot = await capture_fact_constraints(state, config)
-    if snapshot.digest != report.snapshot_digest or _outdated_extraction_failure(report):
+    if snapshot.digest != report.snapshot_digest:
         return await _recheck_changed_snapshot(state, config, artifact, continuation)
+    if _retryable_extraction_failure(report):
+        budget = recovery_update(state, f"事实提取:{artifact['kind']}", maximum=3)
+        command = await _recheck_fact(state, config, artifact, continuation)
+        return Command(goto=command.goto, update={**command.update, **budget})
     budget = recovery_update(state, f"事实审校:{artifact['kind']}")
     if report.status == "blocked" or report.findings:
         instruction = "依据已确认事实修复以下问题，不得改写事实台账：" + report.model_dump_json()
@@ -142,11 +149,22 @@ def _outdated_extraction_failure(report: FactGateReport) -> bool:
             and not report.findings)
 
 
-async def _recheck_changed_snapshot(state, config, artifact, continuation) -> Command:
+def _retryable_extraction_failure(report: FactGateReport) -> bool:
+    if report.status != "unknown" or report.findings:
+        return False
+    if _outdated_extraction_failure(report):
+        return True
+    return any("事实审校未获得有效的完整证据" in reason for reason in report.reasons)
+
+
+async def _recheck_changed_snapshot(
+    state: Any, config: RunnableConfig, artifact: dict, continuation: dict,
+) -> Command:
     previous = state.get("automatic_recovery") or {}
     chapter = int(state.get("current_chapter_index") or 0)
     attempts = dict(previous.get("attempts") or {}) if previous.get("chapter") == chapter else {}
     attempts.pop(f"事实审校:{artifact['kind']}", None)
+    attempts.pop(f"事实提取:{artifact['kind']}", None)
     recovery = {"automatic_recovery": {"chapter": chapter, "attempts": attempts}}
     command = await _recheck_fact({**state, **recovery}, config, artifact, continuation)
     return Command(goto=command.goto, update={**command.update, **recovery})

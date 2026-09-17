@@ -171,6 +171,7 @@ def _seed_initial_input(input_data: dict[str, Any], novel: Novel) -> None:
         input_data.setdefault("target_total_words", outline.scale.get("target_total_words"))
     if outline.creative_brief:
         input_data.setdefault("creative_brief", outline.creative_brief)
+        _seed_genre_strategy(input_data, outline.creative_brief)
     if outline.main_characters:
         input_data.setdefault(
             "character_design",
@@ -195,6 +196,15 @@ def _seed_initial_input(input_data: dict[str, Any], novel: Novel) -> None:
     if outline.writing_style:
         input_data.setdefault("requested_writing_style", outline.writing_style)
     input_data.setdefault("prompt_version", prompt_manifest()["version"])
+
+
+def _seed_genre_strategy(
+    input_data: dict[str, Any], brief: Mapping[str, Any],
+) -> None:
+    strategy = brief.get("genre_strategy")
+    if isinstance(strategy, dict) and strategy:
+        input_data.setdefault("genre_strategy", dict(strategy))
+        input_data.setdefault("genre_strategy_version", (brief.get("genre_strategy_meta") or {}).get("version", 1))
 
 
 def _plan_replan_command(raw: Any) -> dict[str, Any] | None:
@@ -231,6 +241,31 @@ async def _seed_plan_input(
     return plan
 
 
+async def _seed_creative_input(
+    input_data: dict[str, Any], novel: Novel | None,
+    orchestrator: NovelOrchestrator, context: TenantContext, thread_id: str,
+) -> None:
+    """创作身份只从已持久化会话注入，拒绝客户端伪造模式或成果引用。"""
+    for key in list(input_data):
+        if key.startswith("creative_") or key in {"author_mode", "author_config"}:
+            input_data.pop(key)
+    outline = getattr(novel, "total_outline", None)
+    if not outline or not getattr(outline, "author_config", None):
+        return
+    from infrastructure.database.creative_repository import PostgresCreativeRepository
+    repository = PostgresCreativeRepository(orchestrator.repository.async_session)
+    session = await repository.get_session(str(context.tenant_id), thread_id)
+    if session is None:
+        raise HTTPException(status_code=409, detail="自主创作会话缺失")
+    input_data.update(
+        author_mode="autonomous_v1", creative_session_id=session["id"],
+        creative_schema_version=1, author_config={"author_mode": "autonomous_v1"},
+    )
+    if session["stage"].startswith("postprocess:"):
+        input_data.update(creative_stage=session["stage"], is_completed=False,
+                          current_chapter_index=int(session["stage"].split(":")[1]))
+
+
 def _planning_run_id(
     context: TenantContext, thread_id: str, command_id: str
 ) -> str:
@@ -243,7 +278,9 @@ async def _prepare_fresh_input(
     context: TenantContext, thread_id: str, orchestrator: NovelOrchestrator,
     quota: QuotaService, novel: Novel | None, command_id: str,
 ) -> None:
-    if novel is not None and novel.progress.is_complete() and replan is None:
+    await _seed_creative_input(input_data, novel, orchestrator, context, thread_id)
+    pending = str(input_data.get("creative_stage") or "").startswith("postprocess:")
+    if novel is not None and novel.progress.is_complete() and replan is None and not pending:
         raise _command_error(
             409,
             "novel_completed",
@@ -251,9 +288,11 @@ async def _prepare_fresh_input(
             False,
         )
     input_data["workflow_schema_version"] = _new_workflow_schema_version(context)
+    input_data.setdefault("genre_strategy_enabled", True)
     if novel is not None:
         _seed_initial_input(input_data, novel)
     input_data.setdefault("prompt_version", prompt_manifest()["version"])
+    input_data.setdefault("prompt_snapshot", prompt_manifest(include_content=True)["snapshot"])
     latest_plan = await _seed_plan_input(input_data, orchestrator, context, thread_id)
     if replan is not None:
         if latest_plan is None or latest_plan.version != replan["expected_version"]:
@@ -695,7 +734,11 @@ async def _invoke_prepared(
     context: TenantContext,
     thread_id: str,
 ) -> Any:
-    async with asyncio.timeout(settings.WORKFLOW_TIMEOUT_SECONDS):
+    timeout = (
+        settings.WORKFLOW_BACKGROUND_TIMEOUT_SECONDS
+        if prepared.auto_mode else settings.WORKFLOW_TIMEOUT_SECONDS
+    )
+    async with asyncio.timeout(timeout):
         try:
             return await _invoke_once(prepared, orchestrator, context, thread_id)
         except Exception as exc:

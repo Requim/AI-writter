@@ -97,7 +97,7 @@ async def test_complete_auto_workflow_does_not_accept_unknown_facts_or_wait_for_
     assert not any(task.interrupts for task in snapshot.tasks)
     assert not snapshot.values.get("fact_acknowledgements")
     assert not snapshot.values.get("last_persisted_chapter")
-    assert snapshot.values["automatic_recovery"]["attempts"]["事实审校:outline"] == 2
+    assert snapshot.values["automatic_recovery"]["attempts"]["事实提取:outline"] == 3
 
 
 @pytest.mark.asyncio
