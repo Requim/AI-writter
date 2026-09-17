@@ -137,3 +137,27 @@ async def test_auto_background_run_outlives_disconnect_and_manual_deadline(monke
         await asyncio.wait_for(producer, 1)
     assert service.finished
     assert not producer.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_exhausted_fact_review_rechecks_only_when_snapshot_really_changes():
+    from tests.test_fact_gate import judge
+
+    value = setup_gate()
+    empty = value.model_copy(update={"fact_heads": (), "entities": ()})
+    content = "辛家祖祠归辛家所有。"
+    cfg = config(empty)
+    cfg["configurable"]["auto_mode"] = True
+    pending = await check_fact_artifact({}, cfg, content, "outline", Command(goto="chapter_writer_node"))
+    state = {**pending.update, "automatic_recovery": {
+        "chapter": 0, "attempts": {"事实审校:outline": 2, "质量审读": 1},
+    }}
+    with pytest.raises(AutomaticRecoveryExhausted):
+        await fact_review_node(state, cfg)
+    cfg["configurable"]["story_fact_repository"].capture_constraints.return_value = value
+    cfg["configurable"]["llm_config"]["llm_instance"] = judge(value)
+    result = await fact_review_node(state, cfg)
+    assert result.goto == "chapter_writer_node"
+    assert result.update["fact_reports"]["outline"]["status"] == "pass"
+    assert not result.update.get("fact_acknowledgements")
+    assert result.update["automatic_recovery"]["attempts"] == {"质量审读": 1}

@@ -10,7 +10,7 @@ from application.errors import InvalidReviewDecisionError, QualityGateReviewRequ
 from application.automatic_recovery import recovery_update
 from application.fact_archive_guard import verify_fact_receipt
 from application.fact_evaluation import evaluate_facts
-from application.fact_workflow import _repository
+from application.fact_workflow import _repository, capture_fact_constraints
 from application.proposals import ReviewDecision, decide_proposal, proposal_update, require_proposal
 from application.story_facts import source_digest
 from service.value_objects.fact_gate import FactGateReport
@@ -37,7 +37,7 @@ async def check_fact_artifact(state: Any, config: Any, content: str, kind: str, 
     if store is None:
         return continuation
     values = config["configurable"]
-    snapshot = await store.capture_constraints(values["tenant_id"], values["novel_id"], state.get("current_chapter_index", 0) + 1)
+    snapshot = await capture_fact_constraints(state, config)
     if (snapshot.tenant_id, snapshot.novel_id, snapshot.chapter_number) != (
         UUID(values["tenant_id"]), UUID(values["novel_id"]), state.get("current_chapter_index", 0) + 1,
     ):
@@ -122,6 +122,9 @@ async def fact_review_node(state: Any, config: RunnableConfig) -> Command:
 
 
 async def _automatic_fact_review(state, config, report, artifact, continuation) -> Command:
+    snapshot = await capture_fact_constraints(state, config)
+    if snapshot.digest != report.snapshot_digest:
+        return await _recheck_changed_snapshot(state, config, artifact, continuation)
     budget = recovery_update(state, f"事实审校:{artifact['kind']}")
     if report.status == "blocked" or report.findings:
         instruction = "依据已确认事实修复以下问题，不得改写事实台账：" + report.model_dump_json()
@@ -129,3 +132,13 @@ async def _automatic_fact_review(state, config, report, artifact, continuation) 
     else:
         command = await _recheck_fact(state, config, artifact, continuation)
     return Command(goto=command.goto, update={**command.update, **budget})
+
+
+async def _recheck_changed_snapshot(state, config, artifact, continuation) -> Command:
+    previous = state.get("automatic_recovery") or {}
+    chapter = int(state.get("current_chapter_index") or 0)
+    attempts = dict(previous.get("attempts") or {}) if previous.get("chapter") == chapter else {}
+    attempts.pop(f"事实审校:{artifact['kind']}", None)
+    recovery = {"automatic_recovery": {"chapter": chapter, "attempts": attempts}}
+    command = await _recheck_fact({**state, **recovery}, config, artifact, continuation)
+    return Command(goto=command.goto, update={**command.update, **recovery})

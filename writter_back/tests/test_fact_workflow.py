@@ -1,6 +1,8 @@
 """确认来源边界与各类模型调用的快照输入契约。"""
 
+from datetime import datetime
 from types import SimpleNamespace
+from uuid import uuid4
 from unittest.mock import AsyncMock
 
 import pytest
@@ -12,7 +14,10 @@ from application.agents.revision_node import revision_node
 from application.errors import InvalidReviewDecisionError, RetryableWorkflowError
 from application.fact_prompt_binding import FactBoundLLM, render_fact_constraints
 from application.fact_workflow import bind_chapter_fact_input
+from application.fact_workflow import capture_fact_constraints
 from application.story_facts import compile_character_surnames
+from service.value_objects.chapter_constraints import ChapterConstraintSet
+from service.value_objects.story_fact import StoryFactVersion
 from service.ports.story_fact_repository import FactVersionConflictError
 from tests.test_chapter_constraints import snapshot
 from tests.test_character_design_workflow import _CharacterLLM, _state
@@ -41,7 +46,68 @@ def bound_config(llm=None, value=None):
 
 
 @pytest.mark.asyncio
-async def test_human_confirmation_records_current_proposal_and_auto_does_not():
+async def test_automatic_capture_bootstraps_empty_facts_from_saved_explicit_characters():
+    value = snapshot(chapter_number=1).model_copy(update={"fact_heads": (), "entities": ()})
+    novel = SimpleNamespace(
+        id=value.novel_id, tenant_id=value.tenant_id,
+        total_outline=SimpleNamespace(main_characters=[{
+            "character_id": "hero", "name": "辛远", "surname": "辛",
+        }]),
+    )
+    entities, facts = compile_character_surnames(value.novel_id, {
+        "characters": novel.total_outline.main_characters
+    }, source_ref="auto-saved:test", source_version=1, confirmed=True)
+    restored = ChapterConstraintSet(
+        tenant_id=value.tenant_id, novel_id=value.novel_id, chapter_number=1,
+        entities=tuple(entities), fact_heads=tuple(StoryFactVersion(
+            **fact.model_dump(), id=uuid4(), version=1, created_at=datetime.now()
+        ) for fact in facts),
+    )
+    store = SimpleNamespace(
+        capture_constraints=AsyncMock(side_effect=[value, restored]),
+        ingest_confirmed_facts=AsyncMock(return_value=[]),
+    )
+    repository = SimpleNamespace(find_by_id=AsyncMock(return_value=novel))
+    config = {"configurable": {
+        "story_fact_repository": store, "novel_repository": repository,
+        "tenant_id": str(value.tenant_id), "novel_id": str(value.novel_id), "auto_mode": True,
+    }}
+    result = await capture_fact_constraints({"current_chapter_index": 0}, config)
+    assert result.fact_heads
+    store.ingest_confirmed_facts.assert_awaited_once()
+    assert store.ingest_confirmed_facts.call_args.kwargs["source_key"].startswith("auto-saved:")
+    assert store.ingest_confirmed_facts.call_args.args[3][0].evidence.source_kind == "character_design"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("automatic,existing", [(False, False), (True, True)])
+async def test_baseline_restore_never_promotes_manual_or_overwrites_existing_facts(automatic, existing):
+    value = snapshot(chapter_number=1)
+    if not existing:
+        value = value.model_copy(update={"fact_heads": ()})
+    config, _ = bound_config(value=value)
+    repository = SimpleNamespace(find_by_id=AsyncMock())
+    config["configurable"].update(auto_mode=automatic, novel_repository=repository)
+    await capture_fact_constraints({}, config)
+    repository.find_by_id.assert_not_awaited()
+    config["configurable"]["story_fact_repository"].ingest_confirmed_facts.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_baseline_restore_rejects_wrong_tenant_and_ignores_checkpoint_characters():
+    value = snapshot(chapter_number=1).model_copy(update={"fact_heads": ()})
+    config, _ = bound_config(value=value)
+    repository = SimpleNamespace(find_by_id=AsyncMock(return_value=SimpleNamespace(
+        id=value.novel_id, tenant_id=uuid4(),
+    )))
+    config["configurable"].update(auto_mode=True, novel_repository=repository)
+    with pytest.raises(RetryableWorkflowError, match="归属"):
+        await capture_fact_constraints({"character_design": {"characters": [{"name": "伪造"}]}}, config)
+    config["configurable"]["story_fact_repository"].ingest_confirmed_facts.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_accepted_character_design_records_human_and_automatic_sources_separately():
     config, _ = bound_config(_CharacterLLM())
     state = _state()
     generated = await character_design_node(state, config)
@@ -58,8 +124,11 @@ async def test_human_confirmation_records_current_proposal_and_auto_does_not():
     store.ingest_confirmed_facts.reset_mock()
     config["configurable"]["auto_mode"] = True
     automatic = await character_design_review_node(checkpoint, config)
-    store.ingest_confirmed_facts.assert_not_awaited()
-    assert "character_fact_source" not in automatic.update
+    store.ingest_confirmed_facts.assert_awaited_once()
+    assert automatic.update["character_fact_source"]["accepted_by"] == "automatic_policy"
+    assert all(fact.evidence.source_ref == "auto:" + proposal["proposal_id"]
+               for fact in store.ingest_confirmed_facts.call_args.args[3])
+    assert "fact_acknowledgements" not in automatic.update
 
 
 @pytest.mark.asyncio
