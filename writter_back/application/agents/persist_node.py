@@ -28,6 +28,7 @@ from application.prompts.memory_prompts import (
 )
 from application.schemas.agent_state import NovelAgentState
 from application.streaming import emit_workflow_event
+from config import settings
 from service.entities.chapter import Chapter
 from service.value_objects.outline import Outline
 from service.value_objects.novel_plan import NovelPlan
@@ -283,7 +284,11 @@ def _fact_guard_arguments(state: NovelAgentState, values: dict[str, Any]) -> dic
     snapshot = ChapterConstraintSet.model_validate(state.get("fact_gate_snapshot"))
     report = FactGateReport.model_validate((state.get("fact_reports") or {}).get("body"))
     ack = (state.get("fact_acknowledgements") or {}).get("body")
-    return {"fact_guard": archive_fact_guard(values["story_fact_repository"], values["tenant_id"], values["novel_id"], snapshot, report, ack)}
+    return {"fact_guard": archive_fact_guard(
+        values["story_fact_repository"], values["tenant_id"], values["novel_id"],
+        snapshot, report, ack,
+        allow_partial_automatic=bool(values.get("auto_mode") and settings.FACT_REVIEW_MODE != "human_only"),
+    )}
 
 
 async def _chapter_progress(
