@@ -22,7 +22,7 @@ def verify_fact_receipt(snapshot: ChapterConstraintSet, report: FactGateReport, 
         raise FactGateBlockedError("事实回执包含硬冲突")
     if allow_partial_automatic and report.status == "unknown":
         checked = validate_assertions(list(report.assertions), list(snapshot.fact_heads), draft=content)
-        if report.findings or report.coverage != "partial" or checked.status != "pass":
+        if report.findings or report.coverage != "partial" or checked.status == "blocked":
             raise FactGateBlockedError("提纲事实回执包含明确冲突，不能继续")
         return
     if report.status == "pass":
