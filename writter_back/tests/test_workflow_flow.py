@@ -767,6 +767,36 @@ async def test_retry_fact_review_clears_exhausted_fact_budgets():
 
 
 @pytest.mark.asyncio
+async def test_explicit_plan_retry_resets_only_validation_attempts():
+    service = orchestrator()
+    generation = {
+        "final_validation_attempts": 2,
+        "chapter_slots": [{"chapter_number": 1}],
+        "instruction": "修复伏笔引用",
+        "next_volume_index": 1,
+    }
+    service._workflow = SimpleNamespace(
+        aget_state=AsyncMock(return_value=SimpleNamespace(
+            values={"plan_generation": generation},
+            next=("novel_plan_finalize_node",),
+            tasks=[SimpleNamespace(
+                name="novel_plan_finalize_node", error=RuntimeError("校验失败")
+            )],
+        )),
+        aupdate_state=AsyncMock(),
+    )
+
+    await service.prepare_retry_checkpoint(tenant_context(), str(uuid4()))
+
+    update = service._workflow.aupdate_state.await_args.args[1]
+    assert update["plan_generation"] == {
+        **generation, "final_validation_attempts": 0,
+    }
+    assert generation["final_validation_attempts"] == 2
+    assert update["next_tool"] == "novel_plan_finalize_node"
+
+
+@pytest.mark.asyncio
 async def test_retry_checkpoint_reports_when_no_checkpoint_is_available():
     service = orchestrator()
     service._workflow = SimpleNamespace(

@@ -129,6 +129,7 @@ def validate_volume_slots(
     volume: VolumePlan,
     arcs: list[StoryArc],
     detail_level: str,
+    known_setup_ids: Iterable[str] = (),
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """校验单卷批次输出，保留模型强度权重供确定性分配。"""
     values = raw.get("chapter_slots") if isinstance(raw, dict) else None
@@ -141,7 +142,28 @@ def validate_volume_slots(
         errors.extend(_raw_slot_errors(item, volume, arc_map))
         item["volume_id"] = volume.volume_id
         item["detail_level"] = detail_level
+    errors.extend(_volume_foreshadowing_errors(slots, known_setup_ids))
     return slots, list(dict.fromkeys(errors))
+
+
+def _volume_foreshadowing_errors(
+    slots: list[dict[str, Any]], known_setup_ids: Iterable[str]
+) -> list[str]:
+    setup_ids = {str(item) for item in known_setup_ids if str(item).strip()}
+    errors: list[str] = []
+    for slot in sorted(slots, key=lambda item: int(item.get("chapter_number", 0) or 0)):
+        chapter = int(slot.get("chapter_number", 0) or 0)
+        current_setup_ids = {
+            str(item) for item in slot.get("setup_ids", []) if str(item).strip()
+        }
+        setup_ids.update(current_setup_ids)
+        for payoff_id in slot.get("payoff_ids", []) or []:
+            normalized = str(payoff_id).strip()
+            if normalized and normalized not in setup_ids:
+                errors.append(
+                    f"伏笔 {normalized} 在第 {chapter} 章回收前未安排埋设"
+                )
+    return errors
 
 
 def _raw_slot_errors(
@@ -285,7 +307,8 @@ def _locked_through(generation: dict[str, Any], completed: int) -> int:
 def _legacy_slot_payload(
     payload: dict[str, Any], legacy: dict[str, Any]
 ) -> dict[str, Any]:
-    outline = legacy.get("outline") if isinstance(legacy.get("outline"), dict) else {}
+    raw_outline = legacy.get("outline")
+    outline = raw_outline if isinstance(raw_outline, dict) else {}
     return {
         **payload,
         "story_function": outline.get("chapter_goal") or legacy.get("title") or payload["story_function"],

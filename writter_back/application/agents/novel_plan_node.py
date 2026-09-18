@@ -340,12 +340,23 @@ async def _generate_volume_slots(
         raw = await llm.structured_generate(
             prompt, VOLUME_SLOTS_SCHEMA, temperature=0.3, max_attempts=1
         )
+        known_setup_ids = _known_setup_ids(generation, volume.start_chapter)
         slots, errors = validate_volume_slots(
-            raw, volume, _blueprint_arcs(generation), detail
+            raw, volume, _blueprint_arcs(generation), detail, known_setup_ids
         )
         if not errors:
             return slots
     raise RetryableWorkflowError(f"分卷 {volume.title} 未通过校验：" + "；".join(errors))
+
+
+def _known_setup_ids(generation: dict[str, Any], start_chapter: int) -> set[str]:
+    return {
+        str(item)
+        for slot in generation.get("chapter_slots", [])
+        if int(slot.get("chapter_number", 0) or 0) < start_chapter
+        for item in slot.get("setup_ids", []) or []
+        if str(item).strip()
+    }
 
 
 def _blueprint_arcs(generation: dict[str, Any]) -> list[StoryArc]:
@@ -377,7 +388,13 @@ def _volume_prompt(
         detail_level=detail,
         locked_through=locked,
         errors=errors,
-        instruction=str(generation.get("instruction") or ""),
+        instruction=(
+            str(generation.get("instruction") or "")
+            + "\n伏笔引用契约：setup_ids 与 payoff_ids 必须引用完全相同的稳定 ID，"
+            "不得分别创建 setup-X 与 payoff-X 两个 ID，也不得改名。"
+            "允许在同章先埋设再回收，并在 must_happen 中明确事件先后；"
+            "单章作品的两组 ID 必须完全一致，且核心伏笔在该章收束。"
+        ).strip(),
     )
 
 

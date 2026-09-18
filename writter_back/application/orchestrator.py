@@ -619,6 +619,10 @@ class NovelOrchestrator(AgentOrchestrator):
             next_node = failed_node
             reasoning = f"从原失败节点重试 {next_node}"
             extra = self._reset_fact_retry_budget(values, next_node)
+            if failed_node == "novel_plan_finalize_node" and values.get("plan_generation"):
+                generation = dict(values["plan_generation"])
+                generation["final_validation_attempts"] = 0
+                extra["plan_generation"] = generation
             await self._route_retry_node(config, next_node, reasoning, extra)
         elif values.get("current_chapter_content"):
             next_node, reasoning = _route(values)

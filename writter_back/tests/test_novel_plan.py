@@ -18,6 +18,7 @@ from infrastructure.database.models import (
     NovelPlanExecutionModel,
     NovelPlanVersionModel,
 )
+from application.planning import validate_volume_slots
 from service.value_objects.novel_plan import (
     ChapterSlot,
     NovelPlan,
@@ -31,6 +32,47 @@ from service.value_objects.novel_plan import (
     validate_novel_plan,
     validate_plan_transition,
 )
+
+
+def test_volume_validation_rejects_payoff_without_prior_setup() -> None:
+    volume = VolumePlan(
+        "vol-1", "第一卷", 1, 2, 8400,
+        opening_state="危机出现", midpoint_turn="线索浮现",
+        climax="冲突升级", ending_state="阶段结束",
+    )
+    arc = StoryArc(
+        "main", "main", 1, 2, "解决危机",
+        [{"chapter_number": 1, "change": "冲突升级"}],
+        "危机解除", True,
+    )
+    raw = {
+        "chapter_slots": [
+            {
+                "chapter_number": 1,
+                "arc_ids": ["main"],
+                "story_function": "回收伏笔",
+                "must_happen": ["回收 F1"],
+                "planned_state_delta": "真相揭开",
+                "intensity_weight": 1,
+                "setup_ids": [],
+                "payoff_ids": ["F1"],
+            },
+            {
+                "chapter_number": 2,
+                "arc_ids": ["main"],
+                "story_function": "补设伏笔",
+                "must_happen": ["埋设 F1"],
+                "planned_state_delta": "关系改变",
+                "intensity_weight": 1,
+                "setup_ids": ["F1"],
+                "payoff_ids": [],
+            },
+        ]
+    }
+
+    _, errors = validate_volume_slots(raw, volume, [arc], "skeleton")
+
+    assert "伏笔 F1 在第 1 章回收前未安排埋设" in errors
 
 
 def _plan(chapters: int = 12, words: int = 50_400) -> NovelPlan:
