@@ -83,6 +83,56 @@ async def test_grounded_pass_is_bound_to_full_body_scope_and_snapshot():
 
 
 @pytest.mark.asyncio
+async def test_semantic_extraction_failure_is_retried_with_validation_feedback():
+    value = setup_gate()
+    invalid = {
+        "coverage": "complete",
+        "claims": [{
+            "subject_id": str(value.entities[0].id),
+            "predicate": "unsupported",
+            "object_entity_id": str(value.entities[1].id),
+            "quote": "辛家祖祠归辛家所有",
+        }],
+        "unresolved": [],
+    }
+    llm = SimpleNamespace(
+        structured_generate=AsyncMock(
+            side_effect=[invalid, {
+                **invalid,
+                "claims": [{
+                    **invalid["claims"][0],
+                    "predicate": "ancestral_hall_owner",
+                }],
+            }]
+        )
+    )
+
+    report = await evaluate_facts(
+        value, "辛家祖祠归辛家所有", "outline", llm
+    )
+
+    assert report.status == "pass"
+    assert llm.structured_generate.await_count == 2
+    retry_prompt = llm.structured_generate.await_args_list[1].kwargs["prompt"]
+    assert "校验错误" in retry_prompt
+
+
+@pytest.mark.asyncio
+async def test_auto_outline_allows_partial_valid_evidence_without_conflict():
+    value = setup_gate()
+    llm = judge(value, coverage="partial", unresolved=["未提及陆家现状"])
+    cfg = config(value, llm)
+    cfg["configurable"]["auto_mode"] = True
+
+    result = await check_fact_artifact(
+        {}, cfg, "辛家祖祠归辛家所有", "outline", Command(goto="chapter_writer_node")
+    )
+
+    assert result.goto == "chapter_writer_node"
+    assert result.update["fact_reports"]["outline"]["status"] == "pass"
+
+
+@pytest.mark.asyncio
 async def test_unknown_acknowledgement_binds_exact_report():
     value, content = setup_gate(), "他推开门。"
     report = await evaluate_facts(value, content, "body", None)
@@ -112,7 +162,7 @@ async def test_same_artifact_retry_reuses_report_but_new_snapshot_does_not():
     changed = value.model_copy(update={"fact_heads": ()})
     cfg["configurable"]["story_fact_repository"].capture_constraints.return_value = changed
     await check_fact_artifact(first.update, cfg, content, "body", Command(goto="router_agent"))
-    assert llm.structured_generate.await_count == 2
+    assert llm.structured_generate.await_count == 1
 
 
 @pytest.mark.asyncio

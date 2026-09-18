@@ -5,7 +5,7 @@ import logging
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import Field
+from pydantic import Field, ValidationError
 from config import settings
 from application.fact_prompt_binding import FactBoundLLM
 
@@ -32,6 +32,7 @@ class FactExtraction(FactContract):
 
 
 FACT_EXTRACTION_SHAPE = {"coverage": "string", "claims": "array", "unresolved": "array"}
+FACT_EXTRACTION_ATTEMPTS = 3
 
 
 def _extraction_prompt(snapshot: ChapterConstraintSet, content: str, kind: str) -> str:
@@ -79,6 +80,33 @@ def _merge(snapshot: ChapterConstraintSet, content: str, kind: str, extraction: 
         assertions=tuple(claims + literals), findings=findings, reasons=tuple(reasons))
 
 
+async def _extract_report(
+    snapshot: ChapterConstraintSet,
+    content: str,
+    kind: str,
+    llm: Any,
+    literals: list[StoryFactAssertion],
+) -> FactGateReport:
+    prompt = _extraction_prompt(snapshot, content, kind)
+    feedback = ""
+    for _attempt in range(FACT_EXTRACTION_ATTEMPTS):
+        raw = await llm.structured_generate(
+            prompt=prompt + feedback,
+            schema=FACT_EXTRACTION_SHAPE,
+            temperature=0.0,
+            max_attempts=1,
+        )
+        try:
+            extraction = FactExtraction.model_validate(raw)
+            return _merge(snapshot, content, kind, extraction, literals)
+        except ValidationError as exc:
+            feedback = (
+                "\n上一轮事实抽取结果无效，请只返回修正后的完整 JSON。"
+                f"校验错误：{str(exc)[:1200]}"
+            )
+    raise ValueError("事实抽取结果连续多次不符合业务契约")
+
+
 async def evaluate_facts(snapshot: ChapterConstraintSet, content: str, kind: str, llm: Any) -> FactGateReport:
     """失败、空报告和证据不足返回未知；高置信度硬冲突仅来自保守规则。"""
     literals = deterministic_assertions(snapshot, content, kind)
@@ -99,12 +127,17 @@ async def evaluate_facts(snapshot: ChapterConstraintSet, content: str, kind: str
             llm = llm.delegate
         if llm is None or len(content) > 40000 or len(snapshot.model_dump_json()) > 60000:
             raise ValueError("审校输入不可用或超过预算")
-        prompt = _extraction_prompt(snapshot, content, kind)
-        raw = await llm.structured_generate(prompt=prompt, schema=FACT_EXTRACTION_SHAPE,
-            temperature=0.0, max_attempts=1)
-        return _merge(snapshot, content, kind, FactExtraction.model_validate(raw), literals)
+        return await _extract_report(snapshot, content, kind, llm, literals)
     except Exception as exc:
-        logging.getLogger("uvicorn").warning("事实提取失败 | kind=%s exception=%s", kind, type(exc).__name__)
+        detail = type(exc).__name__
+        if isinstance(exc, ValidationError):
+            detail = "; ".join(
+                ".".join(str(part) for part in error["loc"]) + ":" + error["type"]
+                for error in exc.errors()
+            )
+        logging.getLogger("uvicorn").warning(
+            "事实提取失败 | kind=%s exception=%s detail=%s", kind, type(exc).__name__, detail[:500]
+        )
         return FactGateReport(**_base(snapshot, content, kind), status="unknown", coverage="unknown",
             assertions=tuple(literals), findings=checked.findings,
             reasons=("事实审校未获得有效的完整证据，请人工复核",))
