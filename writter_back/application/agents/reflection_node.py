@@ -588,6 +588,17 @@ def _automatic_quality_revision(state: NovelAgentState, config: RunnableConfig, 
 
     maximum = config["configurable"].get("max_reflection_loops", 5)
     if state.get("revision_attempts", 0) >= maximum:
+        if _allow_exhausted_auto_quality(config, gate):
+            accepted = {**gate, "decision": "pass",
+                        "auto_acceptance": "revision_budget_exhausted_without_hard_failure"}
+            return Command(
+                goto="persist_node",
+                update={
+                    "quality_gate": accepted,
+                    "quality_results": [accepted],
+                    "reflection_issues": issues,
+                },
+            )
         raise AutomaticRecoveryExhausted("章节自动修订已达上限，未通过验收，草稿已保留")
     budget = recovery_update(state, "质量审读", maximum)
     command = _direct_rewrite_revision(gate, issues) if gate["decision"] == "human_review" else _choice_command(
@@ -596,6 +607,20 @@ def _automatic_quality_revision(state: NovelAgentState, config: RunnableConfig, 
     return Command(goto=command.goto, update={
         **command.update, **budget, "pending_proposal": None, "pending_proposal_decision": None,
     })
+
+
+def _allow_exhausted_auto_quality(config: RunnableConfig, gate: dict) -> bool:
+    """自动修订耗尽时，仅允许无硬失败且达到质量线的草稿继续。"""
+    values = config["configurable"]
+    score = gate.get("score")
+    return bool(
+        values.get("auto_mode")
+        and not values.get("direct_rewrite")
+        and not gate.get("goal_review_required")
+        and not gate.get("hard_failures")
+        and isinstance(score, (int, float))
+        and score >= QUALITY_PASS_SCORE
+    )
 
 
 def _allow_nonblocking_auto_fulfillment(gate: dict, config: RunnableConfig) -> None:
