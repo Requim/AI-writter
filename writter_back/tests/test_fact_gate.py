@@ -134,6 +134,31 @@ async def test_auto_outline_does_not_forge_complete_evidence():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("automatic,kind", [(False, "outline"), (True, "body")])
+async def test_partial_evidence_only_continues_for_automatic_outline(automatic, kind):
+    value = setup_gate()
+    cfg = config(value, judge(value, coverage="partial"))
+    cfg["configurable"]["auto_mode"] = automatic
+    result = await check_fact_artifact(
+        {}, cfg, "辛家祖祠归辛家所有", kind, Command(goto="chapter_writer_node")
+    )
+    assert result.goto == "fact_review_node"
+
+
+@pytest.mark.asyncio
+async def test_auto_outline_respects_forced_human_review(monkeypatch):
+    from config import settings
+    monkeypatch.setattr(settings, "FACT_REVIEW_MODE", "human_only")
+    value = setup_gate()
+    cfg = config(value, judge(value))
+    cfg["configurable"]["auto_mode"] = True
+    result = await check_fact_artifact(
+        {}, cfg, "辛家祖祠归辛家所有", "outline", Command(goto="chapter_writer_node")
+    )
+    assert result.goto == "fact_review_node"
+
+
+@pytest.mark.asyncio
 async def test_unknown_acknowledgement_binds_exact_report():
     value, content = setup_gate(), "他推开门。"
     report = await evaluate_facts(value, content, "body", None)

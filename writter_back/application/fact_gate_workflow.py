@@ -55,6 +55,7 @@ async def check_fact_artifact(state: Any, config: Any, content: str, kind: str, 
     partial_auto_outline = (
         values.get("auto_mode") and kind == "outline" and report.status == "unknown"
         and not report.findings and report.coverage == "partial"
+        and settings.FACT_REVIEW_MODE != "human_only"
     )
     allowed = report.status == "pass" or partial_auto_outline or (
         report.status == "unknown" and ack and ack.get("report_digest") == report.digest
