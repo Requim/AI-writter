@@ -36,11 +36,15 @@ def verify_fact_receipt(snapshot: ChapterConstraintSet, report: FactGateReport, 
 
 
 def archive_fact_guard(store: Any, tenant_id: str, novel_id: str, snapshot: ChapterConstraintSet,
-                       report: FactGateReport, acknowledgement: dict[str, Any] | None) -> Any:
+                       report: FactGateReport, acknowledgement: dict[str, Any] | None,
+                       allow_partial_automatic: bool = False) -> Any:
     """构造在章节仓储同一事务和小说锁内执行的复验回调。"""
     async def guard(session: Any, chapter: Any) -> None:
         if report.artifact_kind != "body" or report.chapter_number != chapter.chapter_index + 1:
             raise FactGateBlockedError("归档事实回执章节或稿件类型不匹配")
-        verify_fact_receipt(snapshot, report, chapter.content, acknowledgement)
+        verify_fact_receipt(
+            snapshot, report, chapter.content, acknowledgement,
+            allow_partial_automatic=allow_partial_automatic,
+        )
         await store.assert_constraints_current(session, tenant_id, novel_id, chapter.chapter_index + 1, snapshot)
     return guard
