@@ -14,7 +14,10 @@ from api.routers import workflow_router
 from api.routers.workflow_router import (
     ClaimedWorkflowCommand,
     PreparedWorkflow,
+    StreamChannel,
     WorkflowInvokeRequest,
+    _auto_interrupt_value,
+    _produce_stream_events,
 )
 from application.events import WorkflowEvent
 from application.errors import (
@@ -106,12 +109,69 @@ class StreamingOrchestrator:
         return {"active_node": "outline_node"}
 
 
+def workflow_event(event_type: str, data: dict) -> WorkflowEvent:
+    return WorkflowEvent(id=1, type=event_type, thread_id="novel", data=data)
+
+
+class AutoContinueOrchestrator:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    async def stream_events(self, _context, _thread_id, **kwargs):
+        self.calls.append(kwargs)
+        if len(self.calls) == 1:
+            yield workflow_event(
+                "interrupt",
+                {"interrupts": [{"action": "review_or_modify_outline"}]},
+            )
+            return
+        yield workflow_event("completed", {"status": "idle"})
+
+    async def get_public_state(self, *_args):
+        return {"state": {"novel_type": "suspense"}}
+
+
 class FailingStreamingOrchestrator(StreamingOrchestrator):
     async def stream_events(self, *_args, **_kwargs):
         yield WorkflowEvent(
             id=1, type="status", thread_id="novel", data={"status": "started"}
         )
         raise RuntimeError("provider failed")
+
+
+def test_auto_interrupt_keeps_hard_review_boundaries():
+    assert _auto_interrupt_value(
+        workflow_event("interrupt", {"interrupts": [{"action": "review_or_modify_outline"}]})
+    ) == "retry"
+    assert _auto_interrupt_value(
+        workflow_event("interrupt", {"interrupts": [{"action": "fact_review_required"}]})
+    ) is None
+    assert _auto_interrupt_value(
+        workflow_event("interrupt", {"interrupts": [{"action": "quality_gate_human_review"}]})
+    ) is None
+
+
+@pytest.mark.asyncio
+async def test_auto_stream_consumes_review_interrupt_without_second_http_command():
+    context = SimpleNamespace()
+    prepared = PreparedWorkflow(
+        input_data={"novel_id": "novel"},
+        resume_value=None,
+        is_resume=False,
+        is_retry=False,
+        command=ClaimedWorkflowCommand("command", "lease"),
+        auto_mode=True,
+    )
+    orchestrator = AutoContinueOrchestrator()
+    channel = StreamChannel(asyncio.Queue(), asyncio.Event())
+
+    await _produce_stream_events(channel, orchestrator, context, "novel", prepared)
+    events = [channel.queue.get_nowait() for _ in range(channel.queue.qsize())]
+
+    assert [event.type for event in events] == ["status", "completed"]
+    assert events[0].data["status"] == "auto_continuing"
+    assert len(orchestrator.calls) == 2
+    assert orchestrator.calls[1]["is_retry"] is True
 
 
 class ProviderUnavailableError(RuntimeError):

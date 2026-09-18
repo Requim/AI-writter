@@ -95,6 +95,15 @@ class PreparedWorkflow:
 
 
 StreamItem: TypeAlias = WorkflowEvent | Exception | None
+AUTO_HUMAN_ACTIONS = {
+    "creative_paused",
+    "fact_review_required",
+    "quality_gate_exhausted",
+    "quality_gate_human_review",
+    "quality_review_unavailable",
+    "summary_review_required",
+    "review_novel_plan",
+}
 
 
 def _resolve_command_id(idempotency_key: str | None) -> str:
@@ -611,6 +620,46 @@ async def _wait_for_auto_retry(exc: Exception) -> float:
     return delay
 
 
+def _auto_interrupt_value(event: WorkflowEvent) -> str | None:
+    """返回自动模式可消费的中断类型；硬门禁保持人工处理。"""
+    if event.type != "interrupt" or not isinstance(event.data, dict):
+        return None
+    interrupts = event.data.get("interrupts")
+    first = interrupts[0] if isinstance(interrupts, list) and interrupts else None
+    if not isinstance(first, Mapping):
+        return None
+    action = str(first.get("action") or "")
+    proposal_kind = str(first.get("proposal_kind") or "")
+    if action in AUTO_HUMAN_ACTIONS or proposal_kind in {"fact_review", "novel_plan"}:
+        return None
+    return "resume" if action == "require_novel_type" else "retry"
+
+
+async def _auto_interrupt_command(
+    orchestrator: NovelOrchestrator,
+    context: TenantContext,
+    thread_id: str,
+    prepared: PreparedWorkflow,
+    event: WorkflowEvent,
+) -> PreparedWorkflow | None:
+    kind = _auto_interrupt_value(event)
+    if kind is None:
+        return None
+    if kind == "resume":
+        state = await orchestrator.get_public_state(context, thread_id)
+        value = (state.get("state") or {}).get("novel_type")
+        if not isinstance(value, str) or not value.strip():
+            return None
+        return replace(
+            prepared,
+            input_data=None,
+            resume_value=value,
+            is_resume=True,
+            is_retry=False,
+        )
+    return _retry_prepared(prepared)
+
+
 def _record_retry_attempt(
     orchestrator: NovelOrchestrator,
     context: TenantContext,
@@ -911,11 +960,34 @@ async def _produce_stream_events(
     current = prepared
     while True:
         try:
+            auto_resume: PreparedWorkflow | None = None
             async for event in _stream_attempt(
                 orchestrator, context, thread_id, current
             ):
+                if current.auto_mode and event.type == "interrupt":
+                    auto_resume = await _auto_interrupt_command(
+                        orchestrator, context, thread_id, current, event
+                    )
+                    if auto_resume is not None:
+                        sequence += 1
+                        await channel.emit(
+                            WorkflowEvent(
+                                id=sequence,
+                                type="status",
+                                thread_id=thread_id,
+                                command_id=current.command.command_id,
+                                data={
+                                    "status": "auto_continuing",
+                                    "message": "自动模式正在处理当前中断并继续创作",
+                                },
+                            )
+                        )
+                        continue
                 sequence += 1
                 await channel.emit(event.model_copy(update={"id": sequence}))
+            if auto_resume is not None:
+                current = auto_resume
+                continue
             return
         except Exception as exc:
             if not _should_auto_retry(current, exc, attempt):
