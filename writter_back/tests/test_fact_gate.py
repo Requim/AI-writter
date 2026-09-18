@@ -118,31 +118,35 @@ async def test_semantic_extraction_failure_is_retried_with_validation_feedback()
 
 
 @pytest.mark.asyncio
-async def test_auto_outline_does_not_forge_complete_evidence():
+@pytest.mark.parametrize("kind", ["outline", "body"])
+async def test_auto_partial_fact_does_not_forge_complete_evidence(kind):
     value = setup_gate()
     llm = judge(value, coverage="partial", unresolved=["未提及陆家现状"])
     cfg = config(value, llm)
     cfg["configurable"]["auto_mode"] = True
 
     result = await check_fact_artifact(
-        {}, cfg, "辛家祖祠归辛家所有", "outline", Command(goto="chapter_writer_node")
+        {}, cfg, "辛家祖祠归辛家所有", kind, Command(goto="chapter_writer_node")
     )
 
     assert result.goto == "chapter_writer_node"
-    assert result.update["fact_reports"]["outline"]["status"] == "unknown"
-    assert result.update["fact_reports"]["outline"]["coverage"] == "partial"
+    assert result.update["fact_reports"][kind]["status"] == "unknown"
+    assert result.update["fact_reports"][kind]["coverage"] == "partial"
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("automatic,kind", [(False, "outline"), (True, "body")])
-async def test_partial_evidence_only_continues_for_automatic_outline(automatic, kind):
+@pytest.mark.parametrize("automatic,kind,expected", [
+    (False, "outline", "fact_review_node"),
+    (True, "body", "chapter_writer_node"),
+])
+async def test_partial_evidence_only_continues_for_automatic_mode(automatic, kind, expected):
     value = setup_gate()
     cfg = config(value, judge(value, coverage="partial"))
     cfg["configurable"]["auto_mode"] = automatic
     result = await check_fact_artifact(
         {}, cfg, "辛家祖祠归辛家所有", kind, Command(goto="chapter_writer_node")
     )
-    assert result.goto == "fact_review_node"
+    assert result.goto == expected
 
 
 @pytest.mark.asyncio

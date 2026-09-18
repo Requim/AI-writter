@@ -52,18 +52,18 @@ async def check_fact_artifact(state: Any, config: Any, content: str, kind: str, 
         "fact_reports": {**(state.get("fact_reports") or {}), kind: report.model_dump(mode="json")},
         "fact_gate_snapshot": snapshot.model_dump(mode="json"), "fact_acknowledgements": acknowledgements}
     ack = acknowledgements.get(kind)
-    partial_auto_outline = (
-        values.get("auto_mode") and kind == "outline" and report.status == "unknown"
+    partial_auto_fact = (
+        values.get("auto_mode") and report.status == "unknown"
         and not report.findings and report.coverage == "partial"
         and settings.FACT_REVIEW_MODE != "human_only"
     )
-    allowed = report.status == "pass" or partial_auto_outline or (
+    allowed = report.status == "pass" or partial_auto_fact or (
         report.status == "unknown" and ack and ack.get("report_digest") == report.digest
     )
     if allowed:
         verify_fact_receipt(
             snapshot, report, content, ack,
-            allow_partial_outline=bool(values.get("auto_mode") and kind == "outline"),
+            allow_partial_automatic=bool(partial_auto_fact),
         )
         return Command(goto=continuation.goto, update={**(continuation.update or {}), **update})
     if values.get("direct_rewrite"):

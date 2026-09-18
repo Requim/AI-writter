@@ -10,7 +10,7 @@ from service.value_objects.fact_gate import FactGateBlockedError, FactGateReport
 
 def verify_fact_receipt(snapshot: ChapterConstraintSet, report: FactGateReport, content: str,
                         acknowledgement: dict[str, Any] | None = None,
-                        allow_partial_outline: bool = False) -> None:
+                        allow_partial_automatic: bool = False) -> None:
     """必须匹配稿件、作用域、规则和版本；人工确认也不能放过确定性硬冲突。"""
     if (report.tenant_id, report.novel_id, report.chapter_number, report.snapshot_digest, report.artifact_hash) != (
         snapshot.tenant_id, snapshot.novel_id, snapshot.chapter_number, snapshot.digest, source_digest(content),
@@ -20,7 +20,7 @@ def verify_fact_receipt(snapshot: ChapterConstraintSet, report: FactGateReport, 
         raise FactGateBlockedError("存在明确事实冲突，不能归档或接受")
     if any(item.severity == "hard_conflict" for item in report.findings):
         raise FactGateBlockedError("事实回执包含硬冲突")
-    if allow_partial_outline and report.artifact_kind == "outline" and report.status == "unknown":
+    if allow_partial_automatic and report.status == "unknown":
         checked = validate_assertions(list(report.assertions), list(snapshot.fact_heads), draft=content)
         if report.findings or report.coverage != "partial" or checked.status != "pass":
             raise FactGateBlockedError("提纲事实回执包含明确冲突，不能继续")
