@@ -42,6 +42,20 @@ def test_exhausted_auto_quality_fails_instead_of_waiting_for_review():
         )
 
 
+def test_exhausted_auto_quality_archives_without_hard_failure():
+    result = _route_quality_result(
+        {"revision_attempts": 5},
+        {"configurable": {"auto_mode": True}},
+        {"decision": "patch", "score": 0.86, "hard_failures": []},
+        [{"issue_id": "style-1", "priority_action": "must_fix"}],
+    )
+    assert result.goto == "persist_node"
+    assert result.update["quality_gate"]["decision"] == "pass"
+    assert result.update["quality_gate"]["auto_acceptance"] == (
+        "revision_budget_exhausted_without_hard_failure"
+    )
+
+
 @pytest.mark.asyncio
 async def test_unavailable_auto_review_retries_from_existing_draft():
     state = proposal_update({}, "reflection", {"status": "unavailable"}, 1)
