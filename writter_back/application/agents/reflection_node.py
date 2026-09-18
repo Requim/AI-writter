@@ -598,6 +598,33 @@ def _automatic_quality_revision(state: NovelAgentState, config: RunnableConfig, 
     })
 
 
+def _allow_nonblocking_auto_fulfillment(gate: dict, config: RunnableConfig) -> None:
+    """自动模式下仅低风险兑现偏差不阻塞归档，目标失败仍必须停下。"""
+    values = config["configurable"]
+    if not values.get("auto_mode") or gate.get("goal_review_required"):
+        return
+    if not gate.get("fulfillment_review_required") or gate.get("hard_failures"):
+        return
+    plan = gate.get("plan_fulfillment", {})
+    tactical = gate.get("tactical_fulfillment", {})
+    if plan.get("status") != "reviewed" or tactical.get("status") != "reviewed":
+        return
+    if plan.get("missing_required_events") or plan.get("deferred_items"):
+        return
+    if any(plan.get(field) for field in (
+        "volume_boundary_breached", "core_arc_breached",
+        "ending_contract_breached", "scale_change_required",
+    )):
+        return
+    if not all(tactical.get(field) is True for field in (
+        "tactical_goal_fulfilled", "approach_followed", "exit_hook_established",
+    )):
+        return
+    gate.pop("fulfillment_review_required", None)
+    if gate.get("decision") == "human_review":
+        gate["decision"] = "pass"
+
+
 def _route_quality_result(
     state: NovelAgentState, config: RunnableConfig, gate: dict, issues: list[dict]
 ) -> Command:
@@ -605,6 +632,16 @@ def _route_quality_result(
     attempts = state.get("revision_attempts", 0)
     maximum = values.get("max_reflection_loops", 5)
     if values.get("auto_mode", False) and not values.get("direct_rewrite", False):
+        _allow_nonblocking_auto_fulfillment(gate, config)
+        if gate.get("decision") == "pass":
+            return Command(
+                goto="persist_node",
+                update={
+                    "quality_gate": gate,
+                    "quality_results": [gate],
+                    "reflection_issues": issues,
+                },
+            )
         return _automatic_quality_revision(state, config, gate, issues)
     if values.get("direct_rewrite", False):
         if gate.get("fulfillment_review_required"):

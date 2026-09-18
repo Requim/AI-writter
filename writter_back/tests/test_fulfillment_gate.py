@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from application.agents.reflection_node import _quality_gate, reflection_node
+from application.agents.reflection_node import _quality_gate, _route_quality_result, reflection_node
 from application.fulfillment import PlanFulfillment, normalize_fulfillment
 
 
@@ -73,6 +73,28 @@ def test_complete_reports_can_pass_and_legacy_remains_compatible():
     legacy, _ = _quality_gate(result, "正文")
     assert legacy["decision"] == "pass"
     assert legacy["plan_fulfillment"]["status"] == "unknown"
+
+
+def test_auto_mode_archives_low_risk_fulfillment_deviation():
+    gate = {
+        "decision": "human_review",
+        "score": 0.88,
+        "hard_failures": [],
+        "fulfillment_review_required": True,
+        "plan_fulfillment": {
+            "status": "reviewed", "missing_required_events": [], "deferred_items": [],
+            "volume_boundary_breached": False, "core_arc_breached": False,
+            "ending_contract_breached": False, "scale_change_required": False,
+        },
+        "tactical_fulfillment": {
+            "status": "reviewed", "tactical_goal_fulfilled": True,
+            "approach_followed": True, "exit_hook_established": True,
+            "deviations": ["光线方向存在轻微偏差"],
+        },
+    }
+    result = _route_quality_result({}, {"configurable": {"auto_mode": True}}, gate, [])
+    assert result.goto == "persist_node"
+    assert "fulfillment_review_required" not in result.update["quality_gate"]
 
 
 @pytest.mark.asyncio
