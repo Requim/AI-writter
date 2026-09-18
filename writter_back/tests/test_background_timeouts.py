@@ -94,3 +94,69 @@ async def test_actual_node_deadline_still_stops_stuck_work(monkeypatch):
         await asyncio.Event().wait()
     with pytest.raises(WorkflowNodeTimeoutError):
         await measured_node("node", node)({})
+
+
+@pytest.mark.asyncio
+async def test_auto_mode_node_uses_background_node_budget(monkeypatch):
+    monkeypatch.setattr(workflow_router.settings, "WORKFLOW_NODE_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(
+        workflow_router.settings, "WORKFLOW_BACKGROUND_NODE_TIMEOUT_SECONDS", 1
+    )
+
+    async def slow_node(state, config=None):
+        await asyncio.sleep(0.03)
+        return {"completed": True}
+
+    result = await measured_node("novel_plan_volume_node", slow_node)(
+        {}, config={"configurable": {"auto_mode": True}}
+    )
+    assert result == {"completed": True}
+
+
+@pytest.mark.asyncio
+async def test_auto_node_deadline_reports_its_budget_and_cleans_up(monkeypatch):
+    from application import runtime_observability
+
+    monkeypatch.setattr(
+        workflow_router.settings, "WORKFLOW_BACKGROUND_NODE_TIMEOUT_SECONDS", 0.01
+    )
+    measurements = []
+    monkeypatch.setattr(
+        runtime_observability,
+        "_record_measurement",
+        lambda *args: measurements.append(args),
+    )
+    cleaned = asyncio.Event()
+
+    async def stuck_node(state):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleaned.set()
+
+    with pytest.raises(WorkflowNodeTimeoutError) as caught:
+        await measured_node("novel_plan_volume_node", stuck_node)(
+            {}, config={"configurable": {"auto_mode": True}}
+        )
+    assert caught.value.timeout_seconds == 0.01
+    assert cleaned.is_set()
+    assert measurements[0][1] == "timeout"
+
+
+@pytest.mark.asyncio
+async def test_auto_node_cancellation_is_not_swallowed():
+    entered = asyncio.Event()
+
+    async def node(state):
+        entered.set()
+        await asyncio.Event().wait()
+
+    task = asyncio.create_task(
+        measured_node("node", node)(
+            {}, config={"configurable": {"auto_mode": True}}
+        )
+    )
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
