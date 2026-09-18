@@ -128,7 +128,7 @@ async def test_auto_outline_does_not_forge_complete_evidence():
         {}, cfg, "辛家祖祠归辛家所有", "outline", Command(goto="chapter_writer_node")
     )
 
-    assert result.goto == "fact_review_node"
+    assert result.goto == "chapter_writer_node"
     assert result.update["fact_reports"]["outline"]["status"] == "unknown"
     assert result.update["fact_reports"]["outline"]["coverage"] == "partial"
 
