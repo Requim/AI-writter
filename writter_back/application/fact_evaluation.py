@@ -39,7 +39,13 @@ def _extraction_prompt(snapshot: ChapterConstraintSet, content: str, kind: str) 
     constraints = json.dumps({"snapshot_digest": snapshot.digest, "snapshot": snapshot.model_dump(mode="json")},
                              ensure_ascii=False)
     prompt = render_prompt("fact_judge.txt", constraints=constraints, kind=kind, content=content)
-    return prompt + "\n只输出符合以下 JSON Schema 的业务数据，不要输出 Schema 本身：\n" + json.dumps(
+    rules = (
+        "\n字段约束：family、ancestral_hall_owner、location 必须填写实体表中的"
+        " object_entity_id，value_text 必须为 null；surname、life_status 必须填写"
+        " value_text，object_entity_id 必须为 null。不得把地点名称当作 location 的文本值。"
+        "若目标实体不在实体表中，不得编造 ID，必须记录到 unresolved。"
+    )
+    return prompt + rules + "\n只输出符合以下 JSON Schema 的业务数据，不要输出 Schema 本身：\n" + json.dumps(
         FactExtraction.model_json_schema(), ensure_ascii=False)
 
 

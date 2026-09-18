@@ -47,8 +47,6 @@ async def check_fact_artifact(state: Any, config: Any, content: str, kind: str, 
     report = _cached(state, snapshot, content, kind)
     if report is None:
         report = await evaluate_facts(snapshot, content, kind, values.get("llm_config", {}).get("llm_instance"))
-    if values.get("auto_mode"):
-        report = _allow_partial_auto_outline(report)
     acknowledgements = dict(state.get("fact_acknowledgements") or {})
     update = {**{key: value for key, value in (continuation.update or {}).items() if key in {"chapter_constraints", "chapter_fact_input"}},
         "fact_reports": {**(state.get("fact_reports") or {}), kind: report.model_dump(mode="json")},
@@ -65,13 +63,6 @@ async def check_fact_artifact(state: Any, config: Any, content: str, kind: str, 
         "fact_continuation": {"goto": continuation.goto, "update": continuation.update or {}},
         "fact_artifact": {"content": content, "kind": kind},
         **({"current_chapter_content": content} if kind == "body" else {})})
-
-
-def _allow_partial_auto_outline(report: FactGateReport) -> FactGateReport:
-    """自动模式下提纲允许部分覆盖，但仍拦截明确冲突和无有效断言。"""
-    if report.artifact_kind != "outline" or report.findings or not report.assertions:
-        return report
-    return report.model_copy(update={"status": "pass", "coverage": "complete", "reasons": ()})
 
 
 def _fact_retry(state: Any, decision: Any) -> Command:

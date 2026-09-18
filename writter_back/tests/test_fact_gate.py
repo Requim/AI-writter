@@ -118,7 +118,7 @@ async def test_semantic_extraction_failure_is_retried_with_validation_feedback()
 
 
 @pytest.mark.asyncio
-async def test_auto_outline_allows_partial_valid_evidence_without_conflict():
+async def test_auto_outline_does_not_forge_complete_evidence():
     value = setup_gate()
     llm = judge(value, coverage="partial", unresolved=["未提及陆家现状"])
     cfg = config(value, llm)
@@ -128,8 +128,9 @@ async def test_auto_outline_allows_partial_valid_evidence_without_conflict():
         {}, cfg, "辛家祖祠归辛家所有", "outline", Command(goto="chapter_writer_node")
     )
 
-    assert result.goto == "chapter_writer_node"
-    assert result.update["fact_reports"]["outline"]["status"] == "pass"
+    assert result.goto == "fact_review_node"
+    assert result.update["fact_reports"]["outline"]["status"] == "unknown"
+    assert result.update["fact_reports"]["outline"]["coverage"] == "partial"
 
 
 @pytest.mark.asyncio
@@ -161,7 +162,9 @@ async def test_same_artifact_retry_reuses_report_but_new_snapshot_does_not():
     assert llm.structured_generate.await_count == 1
     changed = value.model_copy(update={"fact_heads": ()})
     cfg["configurable"]["story_fact_repository"].capture_constraints.return_value = changed
-    await check_fact_artifact(first.update, cfg, content, "body", Command(goto="router_agent"))
+    result = await check_fact_artifact(first.update, cfg, content, "body", Command(goto="router_agent"))
+    assert result.update["fact_reports"]["body"]["snapshot_digest"] == changed.digest
+    assert result.update["fact_reports"]["body"]["status"] == "unknown"
     assert llm.structured_generate.await_count == 1
 
 
