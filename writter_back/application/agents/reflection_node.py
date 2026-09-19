@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator, model_v
 
 from application.continuity import build_story_bible, related_character_cards
 from application.review_evidence import repair_goal_quotes
+from application.review_contract_rules import review_contract_rules, unmet_review_findings
 from application.errors import (
     QualityGateReviewRequired,
     RetryableWorkflowError,
@@ -289,6 +290,7 @@ async def _generate_valid_review(
     llm: LLMService, prompt: str, schema: dict[str, Any]
 ) -> dict:
     """Retry one business-contract failure with explicit scale feedback."""
+    prompt += review_contract_rules(schema)
     prompt += (
         "\n【服务端输出契约】只返回一个完整 JSON 对象，必须包含以下所有字段及嵌套字段。"
         "字段值应来自本次实际审读，不得为满足格式伪造通过。goal_checks 只能作为该对象的字段。"
@@ -487,6 +489,7 @@ def _direct_rewrite_revision(gate: dict, issues: list[dict]) -> Command:
     instruction = "本章质量门禁未通过且缺少可安全局修的原文证据，请进行全文质量重构。"
     if focus:
         instruction += f"优先提升：{focus}。"
+    instruction += unmet_review_findings(gate)
     return Command(
         goto="revision_node",
         update={
