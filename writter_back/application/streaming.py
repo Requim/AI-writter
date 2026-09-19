@@ -23,6 +23,12 @@ async def collect_streamed_text(
     temperature: float = 0.7,
     prefix: str = "",
 ) -> str:
+    if node in {"chapter_writer_node", "revision_node"}:
+        system_prompt = (system_prompt or "") + (
+            "\n【正文输出边界】本次只输出小说正文。目标契约约束情节，不是输出格式。"
+            "不要输出 goal_checks、JSON 验收报告、自我评分或修改说明。"
+            "提示中的“审读时返回”仅适用于后续独立审读，本次不是审读。"
+        )
     parts: list[str] = []
     if prefix:
         parts.append(prefix)
