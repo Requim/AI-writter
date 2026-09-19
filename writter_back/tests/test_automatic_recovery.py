@@ -42,18 +42,15 @@ def test_exhausted_auto_quality_fails_instead_of_waiting_for_review():
         )
 
 
-def test_exhausted_auto_quality_archives_without_hard_failure():
-    result = _route_quality_result(
-        {"revision_attempts": 5},
-        {"configurable": {"auto_mode": True}},
-        {"decision": "patch", "score": 0.86, "hard_failures": []},
-        [{"issue_id": "style-1", "priority_action": "must_fix"}],
-    )
-    assert result.goto == "persist_node"
-    assert result.update["quality_gate"]["decision"] == "pass"
-    assert result.update["quality_gate"]["auto_acceptance"] == (
-        "revision_budget_exhausted_without_hard_failure"
-    )
+def test_exhausted_high_score_does_not_override_invalid_word_count():
+    with pytest.raises(AutomaticRecoveryExhausted):
+        _route_quality_result(
+            {"revision_attempts": 5},
+            {"configurable": {"auto_mode": True}},
+            {"decision": "refactor", "score": 0.88, "hard_failures": [],
+             "word_count_analysis": {"is_valid_word_count": False}},
+            [{"issue_id": "length-1", "priority_action": "must_fix"}],
+        )
 
 
 @pytest.mark.asyncio

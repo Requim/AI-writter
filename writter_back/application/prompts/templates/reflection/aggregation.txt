@@ -12,6 +12,7 @@ $chunks_summary
 5. hard_failures 只列力量体系违例、因果断裂、严重 OOC、知识越界或核心场景缺失。
 6. 每个问题必须引用正文中连续、可精确查找的 evidence；找不到原句就不要报。
 7. 对照章节细纲中的 plan_context 判断本章计划兑现；非结构性延后与结局、卷边界、核心弧、规模违约必须分开标记。
+8. 对照 tactical_context 独立判断近期战术兑现，输出 tactical_fulfillment；不能省略或用计划兑现报告代替。
 
 $editorial_checks
 
@@ -64,6 +65,13 @@ $previous_issues
     "core_arc_breached": false,
     "ending_contract_breached": false,
     "scale_change_required": false,
+    "notes": ""
+  },
+  "tactical_fulfillment": {
+    "tactical_goal_fulfilled": true,
+    "approach_followed": true,
+    "exit_hook_established": true,
+    "deviations": [],
     "notes": ""
   }
 }

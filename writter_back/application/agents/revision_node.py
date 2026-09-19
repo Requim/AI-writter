@@ -95,10 +95,11 @@ def _full_revision_prompt(
 ) -> tuple[str, float, str]:
     decision = state.get("user_decision", {}) or {}
     instructions = decision.get("instructions")
+    issues = [i for i in state.get("reflection_issues", []) or [] if not i.get("issue_resolved")]
     if instructions:
+        instructions += "\n【尚未解决的审读问题】\n" + format_issues_for_prompt(issues)
         prompt = build_user_instruction_revision_prompt(instructions, content, outline, context, bible)
         return prompt, 0.5, "user_instruction"
-    issues = state.get("reflection_issues", []) or []
     prompt = build_refactor_revision_prompt(
         format_issues_for_prompt(issues), content, outline, _history_text(state), context, bible
     )
@@ -113,7 +114,11 @@ async def _generate_full(
     )
     revised = await collect_streamed_text(
         llm, prompt, node="revision_node", chapter_index=chapter_index,
-        system_prompt=build_revision_system_prompt(), temperature=temperature,
+        system_prompt=build_revision_system_prompt() + (
+            "\n本次仅输出完整修订后的小说正文，不输出 JSON、goal_checks、验收报告或修改说明。"
+            "输入中已有的验收 JSON 不属于小说正文，不得复制到修订稿。"
+            "目标契约仅用于约束情节，证据报告由后续独立审读生成。"
+        ), temperature=temperature,
     )
     if not revised.strip():
         raise RetryableWorkflowError("章节修订失败：模型未返回正文")
