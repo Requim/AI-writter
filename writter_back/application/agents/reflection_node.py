@@ -610,6 +610,11 @@ def _allow_nonblocking_auto_fulfillment(gate: dict, config: RunnableConfig) -> N
     values = config["configurable"]
     if not values.get("auto_mode") or gate.get("goal_review_required"):
         return
+    words = gate.get("word_count_analysis") or {}
+    if (words.get("is_valid_word_count") is not True
+            or words.get("effective_density", 0) < MIN_EFFECTIVE_DENSITY
+            or gate.get("score", 0) < QUALITY_PASS_SCORE):
+        return
     if not gate.get("fulfillment_review_required") or gate.get("hard_failures"):
         return
     plan = gate.get("plan_fulfillment", {})

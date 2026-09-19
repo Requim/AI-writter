@@ -1,8 +1,10 @@
 """Keep whole-book constraints and precise repair instructions authoritative."""
 
 import json
+import pytest
 
 from application.agents.reflection_node import _direct_rewrite_revision, _quality_gate
+from application.agents.reflection_node import _allow_nonblocking_auto_fulfillment
 from application.review_contract_rules import review_contract_rules
 
 
@@ -55,3 +57,18 @@ def test_local_consistency_blocker_uses_patch_without_passing_gate():
     result["issues"][0]["type"] = "consistency"
     result["overall_quality_score"] = 0.4
     assert _quality_gate(result, content)[0]["decision"] == "refactor"
+
+
+@pytest.mark.parametrize("score,valid,density", [(0.7, True, 85), (0.9, False, 85), (0.9, True, 60)])
+def test_fulfillment_exception_cannot_override_quality_failure(score, valid, density):
+    gate = {
+        "decision": "human_review", "score": score,
+        "word_count_analysis": {"is_valid_word_count": valid, "effective_density": density},
+        "fulfillment_review_required": True, "hard_failures": [],
+        "plan_fulfillment": {"status": "reviewed"},
+        "tactical_fulfillment": {"status": "reviewed", "tactical_goal_fulfilled": True,
+                                "approach_followed": True, "exit_hook_established": True},
+    }
+    _allow_nonblocking_auto_fulfillment(gate, {"configurable": {"auto_mode": True}})
+    assert gate["decision"] == "human_review"
+    assert gate["fulfillment_review_required"] is True

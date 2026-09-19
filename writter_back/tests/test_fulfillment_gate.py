@@ -79,6 +79,7 @@ def test_auto_mode_archives_low_risk_fulfillment_deviation():
     gate = {
         "decision": "human_review",
         "score": 0.88,
+        "word_count_analysis": {"is_valid_word_count": True, "effective_density": 85},
         "hard_failures": [],
         "fulfillment_review_required": True,
         "plan_fulfillment": {
