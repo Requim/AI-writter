@@ -72,3 +72,24 @@ def test_fulfillment_exception_cannot_override_quality_failure(score, valid, den
     _allow_nonblocking_auto_fulfillment(gate, {"configurable": {"auto_mode": True}})
     assert gate["decision"] == "human_review"
     assert gate["fulfillment_review_required"] is True
+
+
+@pytest.mark.parametrize("words,total,minimum,maximum", [
+    (5022, 47109, 0, 4113),
+    (2000, 37000, 2800, 11200),
+])
+def test_scale_failure_has_concrete_current_chapter_budget(words, total, minimum, maximum):
+    from application.review_contract_rules import unmet_review_findings
+    gate = {"goal_acceptance": {"checks": [{"id": "scale", "status": "failed",
+            "actual_chapter_words": words, "actual_total_words": total, "range": [37800, 46200]}]}}
+    text = unmet_review_findings(gate)
+    assert f"{minimum} 至 {maximum} 字" in text
+    assert "不得删去必达事件" in text
+    assert "不得以截断正文" in text
+
+
+def test_unknown_scale_does_not_invent_a_chapter_budget():
+    from application.review_contract_rules import unmet_review_findings
+    gate = {"goal_acceptance": {"checks": [{"id": "scale", "status": "failed",
+            "actual_chapter_words": 5000, "actual_total_words": None, "range": [37800, 46200]}]}}
+    assert "明确预算" not in unmet_review_findings(gate)
