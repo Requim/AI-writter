@@ -39,7 +39,7 @@ def quality_revision_update(state: dict, maximum: int) -> dict:
     """按已完成修订扣减预算，重复调度不额外占用一次修订。"""
     chapter = int(state.get("current_chapter_index") or 0)
     previous = state.get("automatic_recovery") or {}
-    recovery = dict(previous) if previous.get("chapter") == chapter else {
+    recovery: dict = dict(previous) if previous.get("chapter") == chapter else {
         "quality_revision_baseline": int(state.get("revision_attempts") or 0) if "chapter" in previous else 0,
     }
     current = int(state.get("revision_attempts") or 0)

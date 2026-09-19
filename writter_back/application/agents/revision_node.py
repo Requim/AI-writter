@@ -31,6 +31,7 @@ from application.proposals import (
     require_proposal,
 )
 from application.schemas.agent_state import NovelAgentState
+from application.revision_policy import allow_full_revision_fallback
 from application.streaming import collect_streamed_text, emit_workflow_event
 from service.ports.llm_service import LLMService
 
@@ -324,6 +325,8 @@ async def revision_node(
         try:
             revised = await _generate_patch(llm, state, content, outline, context, bible)
         except RetryableWorkflowError as exc:
+            if not allow_full_revision_fallback(outline, config):
+                raise RetryableWorkflowError("局部修订无法安全完成，原稿已保留；请明确选择扩大修改范围") from exc
             logger.warning("【修正节点】局部 Patch 无法安全应用，降级全文重构 | 原因=%s", exc)
             revised = await _generate_refactor(llm, state, content, outline, context, bible)
     else:
