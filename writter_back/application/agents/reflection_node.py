@@ -644,7 +644,12 @@ def _route_quality_result(
     attempts = state.get("revision_attempts", 0)
     maximum = values.get("max_reflection_loops", 5)
     if values.get("auto_mode", False) and not values.get("direct_rewrite", False):
+        previous_decision = gate["decision"]
         _allow_nonblocking_auto_fulfillment(gate, config)
+        if gate["decision"] != previous_decision:
+            emit_workflow_event(
+                "quality", {**gate, "issues": issues, "attempt": attempts}, "reflection_node",
+            )
         if gate.get("decision") == "pass":
             return Command(
                 goto="persist_node",

@@ -75,7 +75,10 @@ def test_complete_reports_can_pass_and_legacy_remains_compatible():
     assert legacy["plan_fulfillment"]["status"] == "unknown"
 
 
-def test_auto_mode_archives_low_risk_fulfillment_deviation():
+def test_auto_mode_archives_low_risk_fulfillment_deviation(monkeypatch):
+    emitted = []
+    monkeypatch.setitem(_route_quality_result.__globals__, "emit_workflow_event",
+                        lambda *args: emitted.append(args))
     gate = {
         "decision": "human_review",
         "score": 0.88,
@@ -96,6 +99,8 @@ def test_auto_mode_archives_low_risk_fulfillment_deviation():
     result = _route_quality_result({}, {"configurable": {"auto_mode": True}}, gate, [])
     assert result.goto == "persist_node"
     assert "fulfillment_review_required" not in result.update["quality_gate"]
+    assert emitted[-1][0] == "quality"
+    assert emitted[-1][1]["decision"] == "pass"
 
 
 @pytest.mark.asyncio
