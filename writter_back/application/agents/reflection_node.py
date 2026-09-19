@@ -10,6 +10,7 @@ from langgraph.types import Command
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from application.continuity import build_story_bible, related_character_cards
+from application.review_evidence import repair_goal_quotes
 from application.errors import (
     QualityGateReviewRequired,
     RetryableWorkflowError,
@@ -353,7 +354,9 @@ async def _review_content(
         ) + build_score_contract()
         result = await _generate_valid_review(llm, prompt, AGGREGATION_SCHEMA)
         result["issues"] = _merge_issues(result.get("issues"), chunks)
-    return result
+    return await repair_goal_quotes(
+        llm, result, content, context["chapter_outline"].get("goal_contract"),
+    )
 
 
 def _quality_gate(result: dict, content: str, *, require_fulfillment: bool = False) -> tuple[dict, list[dict]]:
