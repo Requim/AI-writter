@@ -71,3 +71,18 @@ def test_next_chapter_has_own_budget_without_erasing_cumulative_count():
         state["revision_attempts"] = 15 + count
     with pytest.raises(AutomaticRecoveryExhausted):
         _route_quality_result(state, config, gate, [])
+
+
+def test_outline_counter_reset_does_not_leave_a_stale_high_baseline():
+    state = {"current_chapter_index": 2, "revision_attempts": 0,
+             "automatic_recovery": {"chapter": 2, "quality_revision_baseline": 14,
+                                    "attempts": {"事实审校:body": 1}}}
+    config = {"configurable": {"auto_mode": True}}
+    gate = {"decision": "patch", "score": 0.7}
+    for count in range(5):
+        command = _route_quality_result(state, config, gate, [])
+        state.update(command.update)
+        assert state["automatic_recovery"]["quality_revision_baseline"] == 0
+        state["revision_attempts"] = count + 1
+    with pytest.raises(AutomaticRecoveryExhausted):
+        _route_quality_result(state, config, gate, [])

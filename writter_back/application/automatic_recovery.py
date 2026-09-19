@@ -42,10 +42,10 @@ def quality_revision_update(state: dict, maximum: int) -> dict:
     recovery = dict(previous) if previous.get("chapter") == chapter else {
         "quality_revision_baseline": int(state.get("revision_attempts") or 0) if "chapter" in previous else 0,
     }
-    completed = max(
-        0, int(state.get("revision_attempts") or 0)
-        - int(recovery.get("quality_revision_baseline") or 0),
-    )
+    current = int(state.get("revision_attempts") or 0)
+    baseline = min(current, int(recovery.get("quality_revision_baseline") or 0))
+    recovery["quality_revision_baseline"] = baseline
+    completed = current - baseline
     attempts = {**(recovery.get("attempts") or {}), "质量审读": completed}
     recovery.update(chapter=chapter, attempts=attempts)
     return recovery_update({**state, "automatic_recovery": recovery}, "质量审读", maximum)
