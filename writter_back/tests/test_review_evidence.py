@@ -23,6 +23,8 @@ async def test_invalid_citation_is_rechecked_without_changing_prose_or_quality()
     assert original["goal_checks"] == [row]
     llm.structured_generate.assert_awaited_once()
     assert content in llm.structured_generate.await_args.args[0]
+    assert "不要求单章重述全书背景或提前完成结局" in llm.structured_generate.await_args.args[0]
+    assert "本章必达事件与 state_delta 则必须逐项实际兑现" in llm.structured_generate.await_args.args[0]
 
 
 @pytest.mark.asyncio

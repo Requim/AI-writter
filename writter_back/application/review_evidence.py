@@ -25,6 +25,11 @@ async def repair_goal_quotes(
         "以下目标被此前审读判为 passed，但 evidence 不是当前正文的连续逐字引用。\n"
         "重新核对目标：有依据时返回一段连续原文（原样保留标点和换行），"
         "不要用省略号拼接多段，不要添加包裹引号。无法证实时返回 unknown 或 failed。\n"
+        "保持原目标范围：brief:* 与 user:summary 是全书前提、阅读承诺及摘要，"
+        "只核对本章与其兼容，不要求单章重述全书背景或提前完成结局；"
+        "本章必达事件与 state_delta 则必须逐项实际兑现。"
+        "优先引用能支撑结论的一句短原文，在 reason 中解释适用范围和因果，"
+        "不要为一次引文拼接所有事件。\n"
         "仅输出 JSON 对象 {\"goal_checks\": [{\"id\": \"目标ID\", \"status\": "
         "\"passed/failed/unknown\", \"evidence\": \"连续原句\", \"reason\": \"判断依据\"}]}。\n"
         "目标：" + json.dumps(requirements, ensure_ascii=False)
