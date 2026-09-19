@@ -77,3 +77,6 @@
 - 290fa5a 已推送部署，从已保存草稿再次审读。
 - 进一步发现修订范围规则重复且矛盾：revision_prompts 将一致性问题归为 patch，reflection 的硬错误分类却将其一律归为 refactor。统一复用既有 classify_revision_mode；hard_failures 仍保留，问题修好前不可归档。
 - 新回归验证局部一致性 must_fix 走 patch、逻辑问题和低分稿走 refactor；137 项相关测试通过。
+- 线上第 2 章已通过真实审读并归档，检查点 current_chapter_index=2，正文 5,028 字，goal_acceptance 全部通过。自动进入第 3 章，无人工接受质量报告。
+- 跨章检查发现累计 revision_attempts=14 保留但下一章预算默认基线为 0，会提前耗尽。新增跨章独立基线，保留累计历史；旧无章节元数据的耗尽状态仍不可绕过。
+- 覆盖先发生事实恢复再发生质量修订的跨章顺序，138 项相关测试通过。

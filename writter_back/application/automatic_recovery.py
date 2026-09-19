@@ -15,6 +15,8 @@ def recovery_update(state: dict, stage: str, maximum: int = 2) -> dict:
         )
     attempts[stage] = count + 1
     metadata = dict(previous) if previous.get("chapter") == chapter else {}
+    if "chapter" in previous and previous["chapter"] != chapter and "revision_attempts" in state:
+        metadata["quality_revision_baseline"] = int(state.get("revision_attempts") or 0)
     return {"automatic_recovery": {**metadata, "chapter": chapter, "attempts": attempts}}
 
 
@@ -37,7 +39,9 @@ def quality_revision_update(state: dict, maximum: int) -> dict:
     """按已完成修订扣减预算，重复调度不额外占用一次修订。"""
     chapter = int(state.get("current_chapter_index") or 0)
     previous = state.get("automatic_recovery") or {}
-    recovery = dict(previous) if previous.get("chapter") == chapter else {}
+    recovery = dict(previous) if previous.get("chapter") == chapter else {
+        "quality_revision_baseline": int(state.get("revision_attempts") or 0) if "chapter" in previous else 0,
+    }
     completed = max(
         0, int(state.get("revision_attempts") or 0)
         - int(recovery.get("quality_revision_baseline") or 0),

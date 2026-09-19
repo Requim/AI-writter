@@ -54,3 +54,20 @@ def test_replayed_dispatch_does_not_spend_an_uncompleted_revision():
     state["revision_attempts"] = 10
     with pytest.raises(AutomaticRecoveryExhausted):
         _route_quality_result(state, config, gate, [])
+
+
+def test_next_chapter_has_own_budget_without_erasing_cumulative_count():
+    state = {"current_chapter_index": 2, "revision_attempts": 14,
+             "automatic_recovery": {"chapter": 1, "quality_revision_baseline": 9,
+                                    "attempts": {"质量审读": 5}}}
+    config = {"configurable": {"auto_mode": True}}
+    gate = {"decision": "patch", "score": 0.7}
+    state.update(recovery_update(state, "事实审校:body"))
+    assert state["automatic_recovery"]["quality_revision_baseline"] == 14
+    for count in range(5):
+        command = _route_quality_result(state, config, gate, [])
+        state.update(command.update)
+        assert state["automatic_recovery"]["quality_revision_baseline"] == 14
+        state["revision_attempts"] = 15 + count
+    with pytest.raises(AutomaticRecoveryExhausted):
+        _route_quality_result(state, config, gate, [])
