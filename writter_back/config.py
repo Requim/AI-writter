@@ -42,9 +42,9 @@ class Settings(BaseSettings):
     DEEPSEEK_MODEL: str = "deepseek-chat"
     LLM_TIMEOUT_SECONDS: float = 180.0
     LLM_MAX_RETRIES: int = 0
-    WORKFLOW_NODE_TIMEOUT_SECONDS: float = 240.0
+    WORKFLOW_NODE_TIMEOUT_SECONDS: float = 900.0
     WORKFLOW_BACKGROUND_NODE_TIMEOUT_SECONDS: float = 900.0
-    WORKFLOW_TIMEOUT_SECONDS: float = 600.0
+    WORKFLOW_TIMEOUT_SECONDS: float = 1800.0
     WORKFLOW_BACKGROUND_TIMEOUT_SECONDS: float = 86400.0
     WORKFLOW_GENERATION_PAUSED: bool = False
     FACT_REVIEW_MODE: Literal["standard", "human_only"] = "standard"
