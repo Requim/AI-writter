@@ -31,3 +31,17 @@ def quality_retry_update(state: dict) -> dict:
         quality_revision_baseline=int(state.get("revision_attempts") or 0),
     )
     return {"automatic_recovery": recovery}
+
+
+def quality_revision_update(state: dict, maximum: int) -> dict:
+    """按已完成修订扣减预算，重复调度不额外占用一次修订。"""
+    chapter = int(state.get("current_chapter_index") or 0)
+    previous = state.get("automatic_recovery") or {}
+    recovery = dict(previous) if previous.get("chapter") == chapter else {}
+    completed = max(
+        0, int(state.get("revision_attempts") or 0)
+        - int(recovery.get("quality_revision_baseline") or 0),
+    )
+    attempts = {**(recovery.get("attempts") or {}), "质量审读": completed}
+    recovery.update(chapter=chapter, attempts=attempts)
+    return recovery_update({**state, "automatic_recovery": recovery}, "质量审读", maximum)

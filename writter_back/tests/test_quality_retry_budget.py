@@ -37,3 +37,20 @@ def test_unrelated_recovery_preserves_retry_baseline():
     assert "quality_revision_baseline" not in recovery_update(
         {**state, "current_chapter_index": 2}, "审读重试"
     )["automatic_recovery"]
+
+
+def test_replayed_dispatch_does_not_spend_an_uncompleted_revision():
+    state = {"current_chapter_index": 1, "revision_attempts": 9,
+             "automatic_recovery": {"chapter": 1, "quality_revision_baseline": 5,
+                                    "attempts": {"质量审读": 5, "事实审校:body": 1}}}
+    config = {"configurable": {"auto_mode": True}}
+    gate = {"decision": "patch", "score": 0.7}
+    for _ in range(3):
+        result = _route_quality_result(state, config, gate, [])
+        assert result.goto == "revision_node"
+        state.update(result.update)
+        assert state["automatic_recovery"]["attempts"] == {
+            "质量审读": 5, "事实审校:body": 1}
+    state["revision_attempts"] = 10
+    with pytest.raises(AutomaticRecoveryExhausted):
+        _route_quality_result(state, config, gate, [])

@@ -591,7 +591,7 @@ async def reflection_node(
 
 
 def _automatic_quality_revision(state: NovelAgentState, config: RunnableConfig, gate: dict, issues: list[dict]) -> Command:
-    from application.automatic_recovery import recovery_update
+    from application.automatic_recovery import quality_revision_update
     from application.errors import AutomaticRecoveryExhausted
 
     maximum = config["configurable"].get("max_reflection_loops", 5)
@@ -601,7 +601,7 @@ def _automatic_quality_revision(state: NovelAgentState, config: RunnableConfig, 
     ) == int(state.get("current_chapter_index") or 0) else 0
     if state.get("revision_attempts", 0) - baseline >= maximum:
         raise AutomaticRecoveryExhausted("章节自动修订已达上限，未通过验收，草稿已保留")
-    budget = recovery_update(state, "质量审读", maximum)
+    budget = quality_revision_update(state, maximum)
     command = _direct_rewrite_revision(gate, issues) if gate["decision"] == "human_review" else _choice_command(
         ReviewDecision("revise"), issues, gate
     )
