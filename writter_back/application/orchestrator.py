@@ -580,6 +580,10 @@ class NovelOrchestrator(AgentOrchestrator):
     def _reset_fact_retry_budget(
         values: dict[str, Any], next_node: str,
     ) -> dict[str, Any]:
+        if next_node in {"reflection_node", "reflection_review_node", "revision_node"}:
+            from application.automatic_recovery import quality_retry_update
+
+            return quality_retry_update(values)
         if next_node != "fact_review_node":
             return {}
         artifact = values.get("fact_artifact")
