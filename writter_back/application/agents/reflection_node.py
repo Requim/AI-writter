@@ -32,6 +32,7 @@ from application.prompts.reflection_prompts import (
     split_into_chunks,
 )
 from application.prompts.version import PROMPT_VERSION
+from application.prompts.revision_prompts import classify_revision_mode
 from application.proposals import (
     ReviewDecision,
     decide_proposal,
@@ -47,7 +48,6 @@ logger = logging.getLogger("uvicorn")
 REVIEW_CHUNK_THRESHOLD = 8000
 QUALITY_PASS_SCORE = 0.8
 MIN_EFFECTIVE_DENSITY = 70.0
-HARD_FAILURE_TYPES = {"logic", "power_system", "character", "consistency"}
 RUBRIC_FIELDS = (
     "causality", "continuity", "character", "scene_function", "voice",
     "prose_specificity", "ending_effect",
@@ -374,7 +374,7 @@ def _quality_gate(result: dict, content: str, *, require_fulfillment: bool = Fal
         issue for issue in issues
         if issue["priority_action"] == "must_fix" and not issue["issue_resolved"] and issue["evidence_valid"]
     ]
-    hard = any(issue["issue_id"] in hard_ids or issue.get("type") in HARD_FAILURE_TYPES for issue in blocking)
+    hard = classify_revision_mode(blocking) == "refactor"
     words = metrics.word_count_analysis
     passed = score >= QUALITY_PASS_SCORE and words.effective_density >= MIN_EFFECTIVE_DENSITY
     passed = passed and words.is_valid_word_count and not blocking

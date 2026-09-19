@@ -2,7 +2,7 @@
 
 import json
 
-from application.agents.reflection_node import _direct_rewrite_revision
+from application.agents.reflection_node import _direct_rewrite_revision, _quality_gate
 from application.review_contract_rules import review_contract_rules
 
 
@@ -34,3 +34,24 @@ def test_revision_gets_blockers_outside_issue_list():
     assert "没有完成交付" in instruction
     assert json.dumps({"id": "b", "status": "passed", "reason": "已满足"}, ensure_ascii=False) not in instruction
     assert "不得把验收报告写入小说正文" in instruction
+
+
+def test_local_consistency_blocker_uses_patch_without_passing_gate():
+    content = "卷宗已经合上，她却看见夹在里面的附页。"
+    result = {
+        "overall_quality_score": 0.9,
+        "word_count_analysis": {
+            "total_count": len(content), "effective_density": 85,
+            "is_valid_word_count": True},
+        "issues": [{"issue_id": "local", "type": "consistency", "severity": "medium",
+                    "priority_action": "must_fix", "evidence": content}],
+        "hard_failures": ["local"],
+    }
+    gate, _ = _quality_gate(result, content)
+    assert gate["decision"] == "patch"
+    assert gate["hard_failures"] == ["local"]
+    result["issues"][0]["type"] = "logic"
+    assert _quality_gate(result, content)[0]["decision"] == "refactor"
+    result["issues"][0]["type"] = "consistency"
+    result["overall_quality_score"] = 0.4
+    assert _quality_gate(result, content)[0]["decision"] == "refactor"
