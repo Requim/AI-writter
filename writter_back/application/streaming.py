@@ -3,6 +3,7 @@ from typing import Any
 
 from langgraph.config import get_stream_writer
 from service.ports.llm_service import LLMService
+from application.prose_output import strip_trailing_goal_report
 
 
 def emit_workflow_event(event_type: str, data: dict[str, Any], node: str) -> None:
@@ -48,4 +49,5 @@ async def collect_streamed_text(
             {"chapter_index": chapter_index, "operation": "append", "text": fragment},
             node,
         )
-    return "".join(parts)
+    content = "".join(parts)
+    return strip_trailing_goal_report(content) if node in {"chapter_writer_node", "revision_node"} else content
