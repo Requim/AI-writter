@@ -891,6 +891,19 @@ class PostgresNovelRepository(
                 updated_at=novel_model.updated_at,
             )
 
+    async def completed_chapter_word_counts(self, tenant_id: str, novel_id: str) -> list[dict]:
+        """仅查询本租户作品已归档正文长度，不加载全文或信任旧缓存字数。"""
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(ChapterModel.chapter_index, func.char_length(ChapterModel.content)).where(
+                    ChapterModel.tenant_id == uuid.UUID(tenant_id),
+                    ChapterModel.novel_id == uuid.UUID(novel_id),
+                    ChapterModel.status == "completed",
+                ).order_by(ChapterModel.chapter_index)
+            )
+            return [{"chapter_index": index, "word_count": count or 0}
+                    for index, count in result.all()]
+
     async def find_by_id_with_chapters(
         self, tenant_id: str, novel_id: str
     ) -> Optional[Novel]:

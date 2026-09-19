@@ -565,6 +565,8 @@ async def reflection_node(
         "status", {"status": "started", "message": "正在执行章节质量审读"},
         "reflection_node",
     )
+    from application.archive_metrics import refresh_archived_word_counts
+    state = await refresh_archived_word_counts(state, config)
     content, context = _review_context(state)
     try:
         result = await _review_content(llm, content, context, state.get("reflection_issues", []))
