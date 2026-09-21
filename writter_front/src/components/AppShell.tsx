@@ -1,6 +1,7 @@
 import type { MouseEvent as ReactMouseEvent, PropsWithChildren } from 'react'
 import {
   BookOutlined,
+  FileSearchOutlined,
   LogoutOutlined,
   PlusOutlined,
   SafetyCertificateOutlined,
@@ -63,6 +64,9 @@ function HeaderNavigation({
       <GuardedNavLink to="/" guard={guard}>书架</GuardedNavLink>
       {['owner', 'admin'].includes(role || '') && (
         <Tooltip title="编辑部设置"><Button type="text" aria-label="编辑部设置" icon={<SettingOutlined />} onClick={() => runGuarded(guard, () => navigate('/settings/members'))} /></Tooltip>
+      )}
+      {['owner', 'admin'].includes(role || '') && (
+        <Tooltip title="研究资料"><Button type="text" aria-label="研究资料" icon={<FileSearchOutlined />} onClick={() => runGuarded(guard, () => navigate('/research-workbench'))} /></Tooltip>
       )}
       {isPlatformAdmin && (
         <Tooltip title="租户总台"><Button type="text" aria-label="租户总台" icon={<SafetyCertificateOutlined />} onClick={() => runGuarded(guard, () => navigate('/admin'))} /></Tooltip>

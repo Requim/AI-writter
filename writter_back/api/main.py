@@ -10,6 +10,7 @@ from api.routers import novel_router, workflow_router
 from api.routers import workflow_replay_router
 from api.routers import harness_metrics_router
 from api.routers import admin_router, auth_router, tenant_router, story_fact_router
+from api.routers import research_router
 from application.auth_service import AuthService
 from application.orchestrator import NovelOrchestrator
 from application.quota_service import QuotaService
@@ -18,9 +19,20 @@ from infrastructure.command_store.postgres_command_store import PostgresWorkflow
 from infrastructure.database.repository import PostgresNovelRepository
 from infrastructure.database.identity_repository import IdentityRepository
 from infrastructure.memory.postgres_memory import PostgresMemoryAdapter
+from infrastructure.research.library_client import ResearchLibraryClient
 
 if hasattr(asyncio, "WindowsSelectorEventLoopPolicy"):
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+
+def _build_research_library() -> ResearchLibraryClient | None:
+    if not settings.RESEARCH_LIBRARY_ENABLED:
+        return None
+    return ResearchLibraryClient(
+        settings.RESEARCH_LIBRARY_BASE_URL or "",
+        settings.RESEARCH_LIBRARY_TOKEN,
+        settings.RESEARCH_LIBRARY_TIMEOUT_SECONDS,
+    )
 
 
 @asynccontextmanager
@@ -35,6 +47,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     auth_service = AuthService(identity_repository, settings)
     quota_service = QuotaService(identity_repository)
     memory_service = PostgresMemoryAdapter(settings.DATABASE_URL, repository.async_session)
+    research_library = _build_research_library()
     workflow_command_store = PostgresWorkflowCommandStore(repository.async_session)
     await workflow_command_store.recover_expired()
     orchestrator = NovelOrchestrator(
@@ -58,6 +71,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.auth_service = auth_service
     app.state.quota_service = quota_service
     app.state.memory_service = memory_service
+    app.state.research_library = research_library
     app.state.orchestrator = orchestrator
     app.state.workflow_command_store = workflow_command_store
     try:
@@ -65,6 +79,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     finally:
         await orchestrator.aclose()
         await workflow_command_store.aclose()
+        if research_library:
+            await research_library.close()
         await repository.aclose()
 
 
@@ -95,6 +111,7 @@ app.include_router(harness_metrics_router.router, prefix="/api/v1/workflows", ta
 app.include_router(auth_router.router, prefix="/api/v1/auth", tags=["Auth"])
 app.include_router(tenant_router.router, prefix="/api/v1/tenants", tags=["Tenants"])
 app.include_router(admin_router.router, prefix="/api/v1/admin", tags=["Admin"])
+app.include_router(research_router.router, prefix="/api/v1/research", tags=["Research"])
 
 
 @app.get("/health/live", tags=["Health"])

@@ -56,6 +56,10 @@ class Settings(BaseSettings):
     ADAPTIVE_COMPACTION_ENABLED: bool = False
     AUTONOMOUS_AUTHOR_ENABLED: bool = False
     TAVILY_API_KEY: str | None = None
+    RESEARCH_LIBRARY_ENABLED: bool = False
+    RESEARCH_LIBRARY_BASE_URL: str | None = None
+    RESEARCH_LIBRARY_TOKEN: str | None = None
+    RESEARCH_LIBRARY_TIMEOUT_SECONDS: float = 10.0
 
     AGENT_MAX_CONTEXT_TOKENS: int = 128000
     MAX_TOOL_OUTPUT_CHARS: int = 10000

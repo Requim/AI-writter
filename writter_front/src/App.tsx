@@ -18,6 +18,7 @@ const Register = lazy(() => import('@/pages/Register'))
 const AcceptInvite = lazy(() => import('@/pages/AcceptInvite'))
 const TenantSettings = lazy(() => import('@/pages/TenantSettings'))
 const PlatformAdmin = lazy(() => import('@/pages/PlatformAdmin'))
+const ResearchConsole = lazy(() => import('@/pages/ResearchConsole'))
 
 function LegacyStudioRedirect() {
   const { novelId } = useParams<{ novelId: string }>()
@@ -40,6 +41,7 @@ const router = createBrowserRouter([{
     { path: '/novels/new', element: protect(<CreateNovel />) },
     { path: '/novels/:novelId', element: protect(<NovelStudio />) },
     { path: '/settings/members', element: protect(<TenantSettings />) },
+    { path: '/research-workbench', element: protect(<ResearchConsole />) },
     { path: '/admin', element: protect(<PlatformAdminRoute><PlatformAdmin /></PlatformAdminRoute>) },
     { path: '/novel/new', element: <Navigate to="/novels/new" replace /> },
     { path: '/novel/:novelId', element: protect(<LegacyStudioRedirect />) },
