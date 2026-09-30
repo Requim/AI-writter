@@ -1,0 +1,6 @@
+Command: writter_back/.venv/Scripts/python.exe -m pytest -q
+Observed: 680 passed, 64 skipped, 2 failed.
+Known failures predate this vertical slice and remain in existing static gates:
+- api/routers/workflow_router.py:951 _produce_stream_events lines=53 nesting=5
+- application/review_contract_rules.py:11 review_contract_rules chars=432
+This is not a full-suite green result.

@@ -10,6 +10,22 @@ import { qualityScoreOutOfFive } from './presentation'
 
 interface ReviewProps { interrupt: InterruptInfo }
 
+export function GenreStrategyReview({ interrupt }: ReviewProps) {
+  const strategy = proposalPayload(interrupt)
+    || asRecord(interrupt.ai_generated_genre_strategy)
+  if (!strategy) return null
+  const labels = [
+    ['读者承诺', 'reader_promise'], ['剧情引擎', 'plot_engine'],
+    ['行文约束', 'style_constraints'], ['章节要求', 'chapter_requirements'],
+    ['审读维度', 'review_dimensions'], ['禁用解法', 'avoid_solutions'],
+    ['语气方向', 'tone_guidance'], ['原创方向', 'originality_hooks'],
+  ]
+  return <div className="review-surface">
+    <ReviewHeading eyebrow="题材策略" />
+    <ReviewRows rows={labels.map(([label, key]) => [label, strategy[key]])} />
+  </div>
+}
+
 const briefLabels: Array<[string, string]> = [
   ['核心设想', 'core_premise'], ['主角驱动力', 'protagonist_drive'], ['核心冲突', 'core_conflict'],
   ['主题命题', 'theme_question'], ['读者体验', 'reader_promise'], ['基调', 'tone'],
@@ -24,7 +40,13 @@ export function CreativeBriefReview({ interrupt }: ReviewProps) {
   const direct = proposalFrom(interrupt)?.kind === 'creative_brief' ? payload : undefined
   const brief = asRecord(payload?.creative_brief) || direct || legacy
   if (!brief) return null
-  return <div className="review-surface"><ReviewHeading eyebrow="创作简报" /><ReviewRows rows={briefLabels.map(([label, key]) => [label, brief[key]])} /></div>
+  const material = asRecord(brief.research_material)
+  return <div className="review-surface"><ReviewHeading eyebrow="创作简报" />
+    {material && <details><summary>写作素材：{material.status === 'applied' ? `已载入 v${material.version} · ${material.sample_count} 个样本` : '未使用已审核素材'}</summary><ReviewRows rows={[
+      ['素材版本', material.knowledge_version_id], ['写作参考', material.writing_guidance],
+      ['来源证据', material.evidence_sample_ids], ['适用限制', material.limitations],
+    ]} /></details>}
+    <ReviewRows rows={briefLabels.map(([label, key]) => [label, brief[key]])} /></div>
 }
 
 interface TitleReviewProps extends ReviewProps {
@@ -134,6 +156,11 @@ export function QualityReview({ interrupt }: ReviewProps) {
   return <div className="review-surface quality-review">
     <ReviewHeading eyebrow="质量报告" title={interrupt.chapter_number ? `第 ${interrupt.chapter_number} 章` : undefined} />
     {asText(payload.reason) && <p>{asText(payload.reason)}</p>}
+    {gate.goal_acceptance !== undefined && <details open>
+      <summary>原始目标验收</summary>
+      {gate.goal_review_required === true && <p role="alert">目标未满足或证据不足，不能以接受质量问题代替验收。</p>}
+      <ReviewValue value={gate.goal_acceptance} />
+    </details>}
     {gate.fulfillment_review_required === true && <div role="alert">
       <strong>计划兑现尚未确认，章节未归档</strong>
       <details open><summary>需要核对的结果</summary><ReviewRows rows={[

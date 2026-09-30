@@ -340,23 +340,17 @@ async def _generate_volume_slots(
         raw = await llm.structured_generate(
             prompt, VOLUME_SLOTS_SCHEMA, temperature=0.3, max_attempts=1
         )
-        known_setup_ids = _known_setup_ids(generation, volume.start_chapter)
+        known_setup_ids = {
+            str(setup_id)
+            for slot in generation.get("chapter_slots", [])
+            for setup_id in slot.get("setup_ids") or []
+        }
         slots, errors = validate_volume_slots(
             raw, volume, _blueprint_arcs(generation), detail, known_setup_ids
         )
         if not errors:
             return slots
     raise RetryableWorkflowError(f"分卷 {volume.title} 未通过校验：" + "；".join(errors))
-
-
-def _known_setup_ids(generation: dict[str, Any], start_chapter: int) -> set[str]:
-    return {
-        str(item)
-        for slot in generation.get("chapter_slots", [])
-        if int(slot.get("chapter_number", 0) or 0) < start_chapter
-        for item in slot.get("setup_ids", []) or []
-        if str(item).strip()
-    }
 
 
 def _blueprint_arcs(generation: dict[str, Any]) -> list[StoryArc]:
@@ -388,13 +382,12 @@ def _volume_prompt(
         detail_level=detail,
         locked_through=locked,
         errors=errors,
-        instruction=(
-            str(generation.get("instruction") or "")
-            + "\n伏笔引用契约：setup_ids 与 payoff_ids 必须引用完全相同的稳定 ID，"
+        instruction=str(generation.get("instruction") or "") + (
+            "\n伏笔引用契约：setup_ids 与 payoff_ids 必须引用完全相同的稳定 ID，"
             "不得分别创建 setup-X 与 payoff-X 两个 ID，也不得改名。"
             "允许在同章先埋设再回收，并在 must_happen 中明确事件先后；"
             "单章作品的两组 ID 必须完全一致，且核心伏笔在该章收束。"
-        ).strip(),
+        ),
     )
 
 
@@ -515,6 +508,8 @@ def _mirrored_outline(state: NovelAgentState, plan: NovelPlan) -> dict[str, Any]
         volumes=[asdict(volume) for volume in plan.volumes],
     )
     outline.pop("chapters", None)
+    if state.get("author_mode") == "autonomous_v1":
+        outline["main_plot"] = {"ending_contract": dict(plan.ending_contract), "arcs": [asdict(arc) for arc in plan.arcs]}
     return outline
 
 
@@ -525,6 +520,9 @@ async def novel_plan_review_node(
     await require_planning_v1(config)
     proposal = require_proposal(state, "novel_plan")
     generation = dict(state.get("plan_generation") or {})
+    from application.creative.replanning import validate_autonomous_plan, record_autonomous_acceptance
+    candidate_plan = _proposal_plan(proposal["payload"])
+    await validate_autonomous_plan(state, config, candidate_plan, proposal["proposal_id"])
     decision = decide_proposal(
         state, proposal, config,
         force_human=False,
@@ -546,15 +544,17 @@ async def novel_plan_review_node(
             },
         )
     accepted = await _accept_plan(
-        _proposal_plan(proposal["payload"]),
+        candidate_plan,
         generation,
         str(proposal["proposal_id"]),
         config,
     )
+    creative_update = await record_autonomous_acceptance(state, config, accepted, proposal["proposal_id"])
     return Command(
         goto=_review_return(generation),
         update={
             "novel_plan": accepted.to_dict(),
+            **creative_update,
             "scale_contract": accepted.scale.to_dict(),
             "total_outline": _mirrored_outline(state, accepted),
             "plan_generation": None,

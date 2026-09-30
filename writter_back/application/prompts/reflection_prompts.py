@@ -8,6 +8,7 @@ from application.continuity import (
     compact_text,
 )
 from application.prompts.genre_strategy import genre_strategy_block
+from application.prompts.reader_contract import build_reader_contract_prompt
 from application.prompts.template_loader import render_prompt
 
 
@@ -52,6 +53,14 @@ def _json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
+def _reader_contract(outline: dict) -> str:
+    try:
+        chapter_number = int(outline.get("chapter_number") or 0)
+    except (TypeError, ValueError):
+        chapter_number = 0
+    return build_reader_contract_prompt(outline, chapter_number)
+
+
 def build_chunk_reflection_prompt(
     chunk_text: str,
     chunk_index: int,
@@ -79,6 +88,7 @@ def build_chunk_reflection_prompt(
         memory_context=build_budgeted_context(memory_context, max_chars=1800),
         story_bible=compact_story_bible(story_bible, 1400) if story_bible else "无",
         genre_strategy=genre_strategy_block(novel_type, creative_brief, "reflection"),
+        reader_contract=_reader_contract(chapter_outline),
     )
 
 
@@ -115,7 +125,7 @@ def build_aggregation_prompt(
         "reflection/aggregation.txt",
         chunks_summary=_format_chunk_results(chunk_results),
         editorial_checks=_editorial_checks(),
-        chapter_content=compact_text(chapter_content, 9000, tail_ratio=0.45),
+        chapter_content=chapter_content if chapter_outline.get("goal_contract") else compact_text(chapter_content, 9000, tail_ratio=0.45),
         chapter_outline=_json(chapter_outline),
         main_characters=_json(main_characters),
         memory_context=build_budgeted_context(memory_context, max_chars=2600),
@@ -123,6 +133,7 @@ def build_aggregation_prompt(
         previous_issues=_json(previous_issues or []),
         content_length=content_length,
         genre_strategy=genre_strategy_block(novel_type, creative_brief, "reflection"),
+        reader_contract=_reader_contract(chapter_outline),
     )
 
 
@@ -141,7 +152,7 @@ def build_reflection_prompt(
     return render_prompt(
         "reflection/full.txt",
         editorial_checks=_editorial_checks(),
-        chapter_content=compact_text(chapter_content, 9000, tail_ratio=0.45),
+        chapter_content=chapter_content if chapter_outline.get("goal_contract") else compact_text(chapter_content, 9000, tail_ratio=0.45),
         chapter_outline=_json(chapter_outline),
         main_characters=_json(main_characters),
         memory_context=build_budgeted_context(memory_context, max_chars=2600),
@@ -149,6 +160,7 @@ def build_reflection_prompt(
         previous_issues=_json(previous_issues or []),
         content_length=content_length,
         genre_strategy=genre_strategy_block(novel_type, creative_brief, "reflection"),
+        reader_contract=_reader_contract(chapter_outline),
     )
 
 

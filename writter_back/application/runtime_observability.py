@@ -9,6 +9,9 @@ from langgraph.errors import GraphInterrupt
 from application.streaming import emit_workflow_event
 from application.errors import WorkflowNodeTimeoutError
 from config import settings
+from application.prompts.template_loader import reset_prompt_snapshot, set_prompt_snapshot
+from application.creative.errors import CreativePause
+from application.creative.runtime import run_creative_node, pause_creative
 
 
 def _node_timeout(config: Any) -> float:
@@ -26,8 +29,13 @@ def measured_node(name: str, node: Any) -> Any:
         started = time.perf_counter()
         outcome = 'completed'
         timeout_seconds = _node_timeout(config)
+        token = set_prompt_snapshot(
+            state.get("prompt_snapshot") if isinstance(state, dict) else None
+        )
         try:
-            result = node(state, config=config) if accepts_config else node(state)
+            result = run_creative_node(name, node, accepts_config, state, config) if state.get("author_mode") == "autonomous_v1" else (
+                node(state, config=config) if accepts_config else node(state)
+            )
             if not inspect.isawaitable(result):
                 return result
             deadline = asyncio.timeout(timeout_seconds)
@@ -41,11 +49,15 @@ def measured_node(name: str, node: Any) -> Any:
                 raise WorkflowNodeTimeoutError(
                     name, timeout_seconds
                 ) from error
+        except CreativePause as error:
+            outcome = "interrupted"
+            return pause_creative(error, name)
         except BaseException as error:
             if outcome != 'timeout':
                 outcome = 'interrupted' if isinstance(error, GraphInterrupt) else 'failed'
             raise
         finally:
+            reset_prompt_snapshot(token)
             _record_measurement(name, outcome, time.perf_counter() - started)
     return measured
 

@@ -21,7 +21,7 @@ def build_character_design_prompt(
     feedback: str = "",
 ) -> str:
     """渲染只允许模型引用本次候选池的角色设计提示词。"""
-    return render_prompt(
+    prompt = render_prompt(
         "character_design/design.txt",
         novel_type=novel_type,
         creative_brief=json.dumps(creative_brief, ensure_ascii=False, indent=2),
@@ -29,3 +29,6 @@ def build_character_design_prompt(
         candidate_pool=json.dumps(candidate_pool, ensure_ascii=False, indent=2),
         feedback=feedback or "无",
     )
+    if creative_brief.get("autonomous_contract"):
+        prompt += "\n自主模式role_type只能为protagonist/antagonist/core/supporting；稳定主角模式恰好一名protagonist，群像模式至少一名。人物职责承接已接受的发动机与叙事承诺。"
+    return prompt

@@ -12,6 +12,8 @@ $editorial_checks
 
 $genre_strategy
 
+$reader_contract
+
 【题材专项检查】
 - 若本块明显没有服务题材承诺、母题变体或读者快感，可输出 issue.type 为 genre_promise、trope_misuse 或 genre_logic。
 

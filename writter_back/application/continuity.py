@@ -204,6 +204,8 @@ def normalize_chapter_contract(
     normalized = dict(outline)
     normalized["chapter_number"] = chapter_number
     normalized.setdefault("chapter_goal", "推进当前卷核心冲突")
+    from application.prompts.reader_contract import normalize_reader_contract
+    normalized["reader_contract"] = normalize_reader_contract(normalized, chapter_number)
     normalized.setdefault("pov_character", "")
     normalized.setdefault("dramatic_question", "本章冲突将如何改变当前局势")
     normalized.setdefault("desire", "推进当前目标")
@@ -245,9 +247,12 @@ def normalize_chapter_contract(
 
 
 def validate_chapter_contract(
-    outline: dict[str, Any], chapter_number: int
+    outline: dict[str, Any], chapter_number: int, *, autonomous: bool = False,
 ) -> list[str]:
     """Validate the minimum causal contract required before prose generation."""
+    if autonomous:
+        from application.creative.scenes import validate_scene_contract
+        return validate_scene_contract(outline, chapter_number)
     issues: list[str] = []
     try:
         generated_number = int(outline.get("chapter_number", 0) or 0)

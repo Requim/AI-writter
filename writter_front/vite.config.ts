@@ -16,7 +16,11 @@ export default defineConfig({
       '/api': {
         target: 'http://localhost:8000',
         changeOrigin: true,
-      }
+      },
+      '/research': {
+        target: 'http://localhost:8010',
+        changeOrigin: true,
+      },
     }
   },
   test: {

@@ -1,0 +1,9 @@
+[PROMPT_VERSION:$PROMPT_VERSION]
+为既有人物和未来角色槽绑定已接受的剧情弧，只返回JSON。
+计划数据：$plan
+已准入角色：$characters
+未来角色槽：$slots
+characters逐一返回character_id和arc_duties数组。职责字段为arc_id、function(drive/oppose/witness/inherit)、status(planned)。
+核心角色至少承担一项职责，同一角色可以参与多个剧情弧。不得更换ID或改动人物目标、能力与底线。
+slots逐一返回slot_id、arc_ids、entrance_start、entrance_end；只将原始功能映射到真实计划，不得改写已绑定的character_id。
+未来人物只预留作用与时间窗，不在此处具体化姓名和人物卡。不得把计划标成已发生事件。

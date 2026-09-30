@@ -91,6 +91,26 @@ describe('durable replay', () => {
 })
 
 describe('workflow request recovery', () => {
+  it.each([502, 503, 504])('hides gateway HTML and does not invite a duplicate command for %s', async (status) => {
+    const response = new Response('<html><h1>Bad Gateway</h1></html>', { status })
+    const error = await parseSseStream(response, () => undefined).catch((reason: unknown) => reason)
+    expect(error).toMatchObject({ status, code: 'workflow_transport_unavailable', retryable: false })
+    if (!(error instanceof WorkflowRequestError)) throw new Error('Expected workflow request error')
+    expect(error.message).toContain('同步现场')
+    expect(error.message).not.toContain('<html>')
+  })
+
+  it('keeps the session when token refresh encounters a gateway outage', async () => {
+    useAuthStore.setState({ accessToken: 'expired', refreshToken: 'refresh' })
+    const error = Object.assign(new Error('gateway'), { isAxiosError: true, response: { status: 502 } })
+    vi.spyOn(axios, 'post').mockRejectedValue(error)
+    const request = vi.fn().mockResolvedValue(new Response('', { status: 401 }))
+    vi.stubGlobal('fetch', request)
+    await expect(streamWorkflow('n', {}, () => undefined)).rejects.toBe(error)
+    expect(useAuthStore.getState().refreshToken).toBe('refresh')
+    expect(request).toHaveBeenCalledTimes(1)
+  })
+
   it('extracts a readable FastAPI detail instead of exposing raw JSON', async () => {
     const response = new Response(JSON.stringify({
       detail: {

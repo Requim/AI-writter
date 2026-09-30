@@ -1,0 +1,4 @@
+Command: read-only UTF-8 live catalog smoke through BiqugeCatalogAdapter
+Scope: seven configured category pages; no chapter page requested
+Observed:
+{'categories': 7, 'candidate_counts': {'玄幻': 35, '武侠': 30, '恐怖': 17, '军事': 36, '女频': 36, '游戏': 31, '科幻': 31}, 'total_candidates': 216}

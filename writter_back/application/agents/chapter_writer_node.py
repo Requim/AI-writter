@@ -57,12 +57,13 @@ class ChapterDraftContext:
 
 
 async def _final_word_check(
-    content: str, llm: LLMService, system_prompt: str, chapter_index: int
+    content: str, llm: LLMService, system_prompt: str, chapter_index: int,
+    outline: dict | None = None,
 ) -> str:
     """Expand only drafts that remain below the minimum chapter length."""
     if len(content) >= MIN_WORDS:
         return content
-    prompt = build_chapter_continue_prompt(len(content), content)
+    prompt = build_chapter_continue_prompt(len(content), content, outline)
     extra = await collect_streamed_text(
         llm, prompt, node="chapter_writer_node", chapter_index=chapter_index,
         system_prompt=system_prompt, temperature=CHAPTER_WRITER_TEMPERATURE,
@@ -141,7 +142,8 @@ async def _generate_draft(
     context: ChapterDraftContext, llm: LLMService
 ) -> tuple[str, list[dict]]:
     scenes = context.outline.get("scenes", [])
-    if isinstance(scenes, list) and len(scenes) >= SCENE_QUEUE_MIN_SCENES:
+    minimum = 1 if context.outline.get("creative_contract_version") == 1 else SCENE_QUEUE_MIN_SCENES
+    if isinstance(scenes, list) and len(scenes) >= minimum:
         queue = SceneQueueContext(
             scenes=scenes, chapter_outline=context.outline,
             novel_type=context.novel_type, title=context.title,
@@ -175,6 +177,9 @@ async def chapter_writer_node(
         config,
         workflow_schema_version=int(state.get("workflow_schema_version") or 2),
     )
+    from application.goal_contract import current_goal_contract
+
+    contract = current_goal_contract(state)
     config, fact_update = await bind_chapter_fact_input(state, config)
     llm = config["configurable"].get("llm_config", {}).get("llm_instance")
     if not llm:
@@ -194,7 +199,8 @@ async def chapter_writer_node(
     context = _draft_context(state, previous_tail)
     content, ledger = await _generate_draft(context, llm)
     system_prompt = build_chapter_system_prompt(context.novel_type)
-    content = await _final_word_check(content, llm, system_prompt, index)
+    if not contract:
+        content = await _final_word_check(content, llm, system_prompt, index, context.outline)
     logger.info("【章节写作节点】完成 | 第%s章, %s字", index + 1, len(content))
     command = attach_fact_input(_draft_command(content, ledger), fact_update)
     return await check_fact_artifact(state, config, content, "body", command)

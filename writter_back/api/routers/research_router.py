@@ -72,6 +72,7 @@ async def search_knowledge(
     opening_pattern: str | None = Query(default=None),
     mechanism: str | None = Query(default=None),
     limit: int = Query(default=8, ge=1, le=50),
+    approved_only: bool = Query(default=True),
 ) -> dict[str, Any]:
     """检索当前已审核的类型知识包。"""
     return await _invoke(
@@ -82,6 +83,7 @@ async def search_knowledge(
             opening_pattern=opening_pattern,
             mechanism=mechanism,
             limit=limit,
+            approved_only=approved_only,
         ),
     )
 

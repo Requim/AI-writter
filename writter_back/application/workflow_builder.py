@@ -2,9 +2,17 @@
 from langgraph.graph import END, StateGraph
 
 from application.schemas.agent_state import NovelAgentState
+from application.research.materials import research_material_node, with_research_material
 from application.fact_gate_workflow import fact_review_node
+from application.creative.development import creative_development_node
+from application.creative.narrative import creative_decision_node
+from application.creative.postprocess import creative_postprocess_node
+from application.creative.recap import creative_recap_node
+from application.creative.experiments import creative_experiment_node
 from application.agents import (
     type_confirmation_node,
+    genre_strategy_node,
+    genre_strategy_review_node,
     creative_brief_node,
     creative_brief_review_node,
     character_design_node,
@@ -39,8 +47,16 @@ from application.agents import (
 )
 
 WORKFLOW_NODES = {
+    "research_material_node": research_material_node,
+    "creative_development_node": creative_development_node,
+    "creative_decision_node": creative_decision_node,
+    "creative_postprocess_node": creative_postprocess_node,
+    "creative_recap_node": creative_recap_node,
+    "creative_experiment_node": creative_experiment_node,
     "fact_review_node": fact_review_node,
     "type_confirmation": type_confirmation_node,
+    "genre_strategy_node": genre_strategy_node,
+    "genre_strategy_review_node": genre_strategy_review_node,
     "creative_brief_node": creative_brief_node,
     "creative_brief_review_node": creative_brief_review_node,
     "character_design_node": character_design_node,
@@ -83,7 +99,13 @@ ROUTER_ROUTES = {
 def _add_nodes(workflow: StateGraph) -> None:
     """注册工作流节点。"""
     from application.runtime_observability import measured_node
+    material_stages = {
+        "genre_strategy_node", "creative_brief_node", "creative_development_node",
+        "chapter_outline_node", "chapter_writer_node", "reflection_node", "revision_node",
+    }
     for name, node in WORKFLOW_NODES.items():
+        if name in material_stages:
+            node = with_research_material(node)
         workflow.add_node(name, measured_node(name, node))
 
 

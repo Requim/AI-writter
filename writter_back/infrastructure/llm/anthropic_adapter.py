@@ -2,6 +2,7 @@
 import logging
 
 import anthropic
+from .metering import completion, anthropic_stream
 from typing import Any, AsyncIterator, Dict, List, Optional
 from .base import (
     BaseLLMAdapter,
@@ -44,7 +45,7 @@ class AnthropicAdapter(BaseLLMAdapter):
         if system_prompt:
             kwargs["system"] = system_prompt
 
-        response = await self.client.messages.create(**kwargs)
+        response = await completion(self.client, provider="anthropic", **kwargs)
         return response.content[0].text
 
     async def stream_text(
@@ -63,7 +64,7 @@ class AnthropicAdapter(BaseLLMAdapter):
         }
         if system_prompt:
             kwargs["system"] = system_prompt
-        async with self.client.messages.stream(**kwargs) as stream:
+        async with anthropic_stream(self.client, **kwargs) as stream:
             async for text in stream.text_stream:
                 if text:
                     yield text
@@ -88,7 +89,7 @@ class AnthropicAdapter(BaseLLMAdapter):
                     "role": "user",
                     "content": structured_retry_instruction(retry_errors),
                 })
-            response = await self.client.messages.create(
+            response = await completion(self.client, provider="anthropic",
                 model=self.model, max_tokens=8192, temperature=temperature,
                 top_p=top_p, messages=request_messages, system=combined_system,
             )
@@ -124,5 +125,5 @@ class AnthropicAdapter(BaseLLMAdapter):
         if system_prompt:
             kwargs["system"] = system_prompt
 
-        response = await self.client.messages.create(**kwargs)
+        response = await completion(self.client, provider="anthropic", **kwargs)
         return response.content[0].text

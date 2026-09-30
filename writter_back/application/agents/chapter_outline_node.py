@@ -25,6 +25,7 @@ from application.reserved_names import (
     hydrate_reserved_introductions,
 )
 from application.prompts.chapter_outline_prompts import (
+    AUTONOMOUS_CHAPTER_OUTLINE_SCHEMA,
     CHAPTER_OUTLINE_SCHEMA,
     build_chapter_outline_prompt,
 )
@@ -68,11 +69,19 @@ def _validated_outline(
 ) -> dict[str, Any]:
     if not isinstance(generated, dict) or not generated:
         raise RuntimeError("章节细纲生成失败：模型未返回有效 JSON")
-    outline = normalize_chapter_contract(generated, chapter_number)
+    autonomous = (total_outline or {}).get("author_config", {}).get("author_mode") == "autonomous_v1"
+    outline = dict(generated) if autonomous else normalize_chapter_contract(generated, chapter_number)
+    if autonomous:
+        from application.prompts.reader_contract import normalize_reader_contract
+        outline["reader_contract"] = normalize_reader_contract(outline, chapter_number)
+        outline["creative_contract_version"] = 1
     outline = hydrate_reserved_introductions(outline, total_outline or {})
+    if autonomous:
+        from application.creative.scenes import validate_scene_identities
+        validate_scene_identities(outline, total_outline or {})
     if plan is not None and window is not None:
         outline = _attach_execution_contract(outline, plan, window, chapter_number)
-    issues = validate_chapter_contract(outline, chapter_number)
+    issues = validate_chapter_contract(outline, chapter_number, autonomous=autonomous)
     if issues:
         raise RuntimeError(f"第 {chapter_number} 章细纲生成失败：" + "；".join(issues))
     word_count = outline.get("estimated_word_count", 5000)
@@ -136,6 +145,15 @@ def _attach_execution_contract(
     return result
 
 
+async def _creative_plan_context(state, config, chapter_number, plan, plan_context):
+    if state.get("author_mode") != "autonomous_v1":
+        return plan_context
+    from application.creative.artifacts import workspace
+    work = await workspace(config)
+    decision = await work.latest("decision", f"{chapter_number}:plan{plan.version if plan else 0}")
+    return {**(plan_context or {}), "character_decision": decision["payload"]} if decision else plan_context
+
+
 async def _generate_outline(
     state: NovelAgentState, config: RunnableConfig, chapter_number: int
 ) -> dict[str, Any]:
@@ -149,6 +167,7 @@ async def _generate_outline(
     plan = _novel_plan(state) if _schema5(state) else None
     window = _tactical_window(state) if plan else None
     plan_context = _plan_context(state, chapter_number)
+    plan_context = await _creative_plan_context(state, config, chapter_number, plan, plan_context)
     tactical_context = hydrate_tactical_window(window, plan) if window and plan else {}
     requirements = _execution_requirements(plan, chapter_number) if plan else {}
     errors: list[str] = []
@@ -168,7 +187,7 @@ async def _generate_outline(
         )
         generated = await llm.structured_generate(
             prompt=append_review_feedback(prompt, state.get("chapter_outline_feedback")),
-            schema=CHAPTER_OUTLINE_SCHEMA,
+            schema=AUTONOMOUS_CHAPTER_OUTLINE_SCHEMA if state.get("author_mode") == "autonomous_v1" else CHAPTER_OUTLINE_SCHEMA,
             temperature=0.45,
         )
         try:
@@ -243,7 +262,14 @@ def _attach_plan_contract(
 def _accept_outline_update(
     state: NovelAgentState, outline: dict[str, Any], *, clear_proposal: bool = False,
 ) -> dict[str, Any]:
+    from application.goal_contract import compile_goal_contract
+
     total = _total_outline(state.get("total_outline"))
+    outline = dict(outline)
+    outline.pop("goal_contract", None)
+    contract = compile_goal_contract(state)
+    if contract:
+        outline["goal_contract"] = contract
     update: dict[str, Any] = {
         "chapter_outlines": [outline],
         "total_outline": consume_reserved_introductions(total, outline),

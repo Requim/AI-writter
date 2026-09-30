@@ -3,10 +3,12 @@ services:
     image: pgvector/pgvector:pg16
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-novel_writer}
+      POSTGRES_RESEARCH_DB: ${POSTGRES_RESEARCH_DB:-novel_research}
       POSTGRES_USER: ${POSTGRES_USER:-novel_writer}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
     volumes:
       - novel_writer_data:/var/lib/postgresql/data
+      - ./scripts/init-research-db.sql:/docker-entrypoint-initdb.d/10-research-db.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-novel_writer} -d ${POSTGRES_DB:-novel_writer}"]
       interval: 5s
@@ -45,9 +47,9 @@ services:
       WORKFLOW_REVIEW_V3_ENABLED: ${WORKFLOW_REVIEW_V3_ENABLED:-false}
       NOVEL_PLANNING_V1_ENABLED: ${NOVEL_PLANNING_V1_ENABLED:-false}
       ADAPTIVE_COMPACTION_ENABLED: ${ADAPTIVE_COMPACTION_ENABLED:-false}
-      RESEARCH_LIBRARY_ENABLED: ${RESEARCH_LIBRARY_ENABLED:-false}
+      RESEARCH_LIBRARY_ENABLED: ${RESEARCH_LIBRARY_ENABLED:-true}
       RESEARCH_LIBRARY_BASE_URL: ${RESEARCH_LIBRARY_BASE_URL:-http://research-api:8010}
-      RESEARCH_LIBRARY_TOKEN: ${RESEARCH_LIBRARY_TOKEN:-}
+      RESEARCH_LIBRARY_TOKEN: ${RESEARCH_INTERNAL_TOKEN:-}
       WORKERS: 1
     depends_on:
       database:
@@ -61,6 +63,41 @@ services:
       interval: 10s
       timeout: 5s
       retries: 12
+
+  research-api:
+    build: ./research_service
+    environment:
+      RESEARCH_ENVIRONMENT: ${ENVIRONMENT:-development}
+      RESEARCH_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-novel_writer}:${POSTGRES_PASSWORD}@database:5432/${POSTGRES_RESEARCH_DB:-novel_research}
+      RESEARCH_INTERNAL_TOKEN: ${RESEARCH_INTERNAL_TOKEN:-}
+      RESEARCH_LLM_BASE_URL: ${RESEARCH_LLM_BASE_URL:-}
+      RESEARCH_LLM_API_KEY: ${RESEARCH_LLM_API_KEY:-}
+      RESEARCH_SUMMARY_MODEL: ${RESEARCH_SUMMARY_MODEL:-}
+      RESEARCH_OPENING_AUTHORIZED: ${RESEARCH_OPENING_AUTHORIZED:-false}
+    depends_on:
+      database:
+        condition: service_healthy
+    ports:
+      - "8010:8010"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8010/health/ready')"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  research-worker:
+    build: ./research_service
+    command: ["python", "-m", "research_service.worker"]
+    environment:
+      RESEARCH_ENVIRONMENT: ${ENVIRONMENT:-development}
+      RESEARCH_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-novel_writer}:${POSTGRES_PASSWORD}@database:5432/${POSTGRES_RESEARCH_DB:-novel_research}
+      RESEARCH_LLM_BASE_URL: ${RESEARCH_LLM_BASE_URL:-}
+      RESEARCH_LLM_API_KEY: ${RESEARCH_LLM_API_KEY:-}
+      RESEARCH_SUMMARY_MODEL: ${RESEARCH_SUMMARY_MODEL:-}
+      RESEARCH_OPENING_AUTHORIZED: ${RESEARCH_OPENING_AUTHORIZED:-false}
+    depends_on:
+      database:
+        condition: service_healthy
 
   frontend:
     build: ./writter_front

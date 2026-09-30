@@ -1,0 +1,8 @@
+Commands:
+- writter_back/.venv/Scripts/python.exe -m ruff check <new research files>
+- writter_back/.venv/Scripts/python.exe -m compileall -q infrastructure/research service/value_objects/novel_research.py
+- custom AST check for new research files
+Observed:
+- Ruff: All checks passed
+- compileall: passed
+- new-file function limits: no violations

@@ -12,6 +12,7 @@ import { PlatformAdminRoute, ProtectedRoute } from '@/components/ProtectedRoute'
 import BookShelf from '@/pages/BookShelf'
 import CreateNovel from '@/pages/CreateNovel'
 import NovelStudio from '@/pages/NovelStudio'
+import { workbenchTheme } from '@/theme'
 
 const Login = lazy(() => import('@/pages/Login'))
 const Register = lazy(() => import('@/pages/Register'))
@@ -29,7 +30,7 @@ const protect = (element: React.ReactNode) => <ProtectedRoute>{element}</Protect
 
 const router = createBrowserRouter([{
   element: (
-    <Suspense fallback={<div className="route-loading" role="status" aria-live="polite">正在铺开稿纸...</div>}>
+    <Suspense fallback={<div className="route-loading" role="status" aria-live="polite">正在加载工作台...</div>}>
       <Outlet />
     </Suspense>
   ),
@@ -54,11 +55,7 @@ export default function App() {
   return (
     <ConfigProvider
       locale={zhCN}
-      theme={{ token: {
-        colorPrimary: '#8d2f3d', colorInfo: '#176b5b', colorSuccess: '#176b5b',
-        colorText: '#292625', colorTextSecondary: '#716b66', colorBorder: '#d8d1c8',
-        colorBgContainer: '#fffefa', borderRadius: 6, fontFamily: '"Noto Sans SC", sans-serif',
-      } }}
+      theme={workbenchTheme}
     >
       <AntApp>
         <RouterProvider router={router} />

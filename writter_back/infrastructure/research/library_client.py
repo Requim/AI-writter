@@ -84,6 +84,7 @@ class ResearchLibraryClient:
         opening_pattern: str | None = None,
         mechanism: str | None = None,
         limit: int = 8,
+        approved_only: bool = True,
     ) -> dict[str, Any]:
         """按题材检索当前已审核的类型知识包。"""
         return await self._request(
@@ -95,6 +96,7 @@ class ResearchLibraryClient:
                 "opening_pattern": opening_pattern,
                 "mechanism": mechanism,
                 "limit": limit,
+                "approved_only": approved_only,
             },
         )
 

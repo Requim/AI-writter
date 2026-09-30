@@ -74,9 +74,8 @@ export default function BookShelf() {
       <div className="shelf-page page-enter">
         <section className="shelf-intro">
           <div>
-            <span className="eyebrow">私人小说编辑部</span>
-            <h1>我的书架</h1>
-            <p>从设定、章节生成到质量审读，稿件都在同一张创作桌上推进。</p>
+            <h1>作品管理</h1>
+            <p>我的作品{!loading && !loadError ? ` · 共 ${novels.length} 部` : ''}</p>
           </div>
           <div className="shelf-controls">
             <label>新任务默认模式</label>
@@ -207,7 +206,7 @@ export default function BookShelf() {
                     </div>
                     <h2>{novel.title || '未命名作品'}</h2>
                     <p>{novel.summary || '这部作品还没有简介。'}</p>
-                    <Progress percent={progress} showInfo={false} strokeColor="#176b5b" />
+                    <Progress percent={progress} showInfo={false} strokeColor="var(--accent)" />
                     <span className="book-open-action">
                       <EditOutlined /> {novel.status === 'completed' ? '查看稿件' : progress > 0 ? '继续创作' : '打开稿件'}
                     </span>

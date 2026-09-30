@@ -9,6 +9,13 @@ services:
     container_name: novel-writer-backend
     ports: !reset []
 
+  research-api:
+    container_name: novel-writer-research-api
+    ports: !reset []
+
+  research-worker:
+    container_name: novel-writer-research-worker
+
   frontend:
     container_name: novel-writer-frontend
     build:

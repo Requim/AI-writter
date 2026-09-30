@@ -56,6 +56,10 @@ class TenantModel(Base):
     novel_planning_v1_enabled = Column(
         Boolean, nullable=False, default=False, server_default=false()
     )
+    autonomous_author_enabled = Column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
+    autonomous_request_limit = Column(Integer, nullable=False, default=10000, server_default="10000")
     created_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now)
 

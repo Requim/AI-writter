@@ -1,0 +1,49 @@
+services:
+  research-api:
+    image: novel-writer-research:20260920
+    build:
+      context: ./research_service
+      dockerfile: Dockerfile
+    container_name: novel-writer-research-api
+    restart: unless-stopped
+    environment:
+      RESEARCH_ENVIRONMENT: ${RESEARCH_ENVIRONMENT:-production}
+      RESEARCH_ROOT_PATH: ${RESEARCH_ROOT_PATH:-/research}
+      RESEARCH_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-novel_writer}:${POSTGRES_PASSWORD}@novel-writer-database:5432/${POSTGRES_RESEARCH_DB:-novel_research}
+      RESEARCH_INTERNAL_TOKEN: ${RESEARCH_INTERNAL_TOKEN:?set RESEARCH_INTERNAL_TOKEN}
+      RESEARCH_LLM_BASE_URL: ${RESEARCH_LLM_BASE_URL:-}
+      RESEARCH_LLM_API_KEY: ${RESEARCH_LLM_API_KEY:-}
+      RESEARCH_SUMMARY_MODEL: ${RESEARCH_SUMMARY_MODEL:-}
+      RESEARCH_OPENING_AUTHORIZED: ${RESEARCH_OPENING_AUTHORIZED:-false}
+    networks:
+      - novel-writer_default
+    ports:
+      - "127.0.0.1:8010:8010"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8010/health/ready')"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  research-worker:
+    image: novel-writer-research:20260920
+    build:
+      context: ./research_service
+      dockerfile: Dockerfile
+    container_name: novel-writer-research-worker
+    restart: unless-stopped
+    command: ["python", "-m", "research_service.worker"]
+    environment:
+      RESEARCH_ENVIRONMENT: ${RESEARCH_ENVIRONMENT:-production}
+      RESEARCH_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-novel_writer}:${POSTGRES_PASSWORD}@novel-writer-database:5432/${POSTGRES_RESEARCH_DB:-novel_research}
+      RESEARCH_LLM_BASE_URL: ${RESEARCH_LLM_BASE_URL:-}
+      RESEARCH_LLM_API_KEY: ${RESEARCH_LLM_API_KEY:-}
+      RESEARCH_SUMMARY_MODEL: ${RESEARCH_SUMMARY_MODEL:-}
+      RESEARCH_OPENING_AUTHORIZED: ${RESEARCH_OPENING_AUTHORIZED:-false}
+    networks:
+      - novel-writer_default
+
+networks:
+  novel-writer_default:
+    external: true
+    name: novel-writer_default

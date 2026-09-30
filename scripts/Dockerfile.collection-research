@@ -1,0 +1,2 @@
+FROM novel-writer-research:materials-20260922
+COPY research_service/biquge.py research_service/sampling.py research_service/batch_runner.py /app/research_service/

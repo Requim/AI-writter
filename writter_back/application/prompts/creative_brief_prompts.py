@@ -47,6 +47,14 @@ def normalize_creative_brief(value: Any) -> dict[str, Any]:
     raw = value if isinstance(value, dict) else {}
     text_fields = (*_REQUIRED_TEXT_FIELDS, *_OPTIONAL_TEXT_FIELDS)
     brief = {field: str(raw.get(field, "") or "").strip() for field in text_fields}
+    if isinstance(raw.get("genre_strategy"), dict):
+        brief["genre_strategy"] = dict(raw["genre_strategy"])
+    if isinstance(raw.get("autonomous_contract"), dict):
+        brief["autonomous_contract"] = dict(raw["autonomous_contract"])
+    if isinstance(raw.get("genre_strategy_meta"), dict):
+        brief["genre_strategy_meta"] = dict(raw["genre_strategy_meta"])
+    if isinstance(raw.get("research_material"), dict):
+        brief["research_material"] = dict(raw["research_material"])
     for field in _OBJECT_FIELDS:
         brief[field] = raw.get(field, {}) if isinstance(raw.get(field), dict) else {}
     context = raw.get("genre_context", {})

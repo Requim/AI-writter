@@ -1,0 +1,10 @@
+[PROMPT_VERSION:$PROMPT_VERSION]
+仅从归档正文更新既有人物。返回updates数组；每项包含character_id、changes、evidence[{start,quote}]。无变化返回空数组。
+允许字段：goal、belief、knowledge、allegiance、narrative_status、perceived_life_status、life_status、name、aliases、role、narrative_center、arc_duties。
+不得更换身份ID、底线或能力。计划或草稿不算实际登场。正文中的传闻、视角人物误判及假死只能更新perceived_life_status；life_status变化还须通过规范事实台账确认。
+配角晋升、匿名人物转长期角色必须保留身份经历及原文证据；名字变化保留全部历史姓名在aliases中。
+narrative_status取planned/active/latent/offstage/exited；暂时离开使用offstage，只有主线职责和伏笔已处置才可exited。
+arc_duties保留全部历史职责，status只可planned/active/fulfilled/transferred；转移必须给出successor_id，不可凭退场删除职责。
+主线中心接力必须同时提交交出者和承接者，并各带relay_basis对象，说明ability、motivation、reader_awareness、inheritance。稳定主角模式不得接力，配角晋升不自动成为中心。
+角色数据：$characters
+归档正文：$content

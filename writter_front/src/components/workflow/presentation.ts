@@ -2,6 +2,8 @@ import type { WorkflowViewState } from '@/hooks/useWorkflowStream'
 
 export const nodeLabels: Record<string, string> = {
   type_confirmation: '确认题材', creative_brief_node: '凝练创作简报',
+  research_material_node: '载入写作素材',
+  genre_strategy_node: '生成题材策略', genre_strategy_review_node: '审阅题材策略',
   creative_brief_review_node: '审阅创作简报', character_design_node: '设计核心角色',
   character_design_review_node: '审阅角色设计', title_node: '推敲书名',
   title_review_node: '选择书名', summary_node: '撰写简介', summary_review_node: '审阅简介',
@@ -22,6 +24,8 @@ export const nodeLabels: Record<string, string> = {
 
 export const nodeDescriptions: Record<string, string> = {
   type_confirmation: '正在确认作品题材和基础约束。', creative_brief_node: '正在明确故事母题、核心冲突与读者体验。',
+  research_material_node: '正在按题材绑定已审核素材及来源证据。',
+  genre_strategy_node: '正在根据题材选择生成本作品专属策略。', genre_strategy_review_node: '题材策略已经生成，正在等待你的决定。',
   creative_brief_review_node: '创作简报已经生成，正在等待你的决定。', character_design_node: '正在设计人物动机、关系与典故姓名。',
   character_design_review_node: '角色与姓名候选已经生成，正在等待你的决定。', title_node: '正在生成或确认小说名称。',
   title_review_node: '书名候选已经生成，正在等待你的选择。', summary_node: '正在整理故事简介与内部策划摘要。',
@@ -73,6 +77,7 @@ export function chapterNumberFromState(state: WorkflowViewState): number | undef
 
 const reviewNodes: Record<string, string> = {
   fact_review_required: 'fact_review_node',
+  review_or_modify_genre_strategy: 'genre_strategy_review_node',
   review_or_modify_chapter_plan: 'chapter_plan_review_node',
   review_or_modify_creative_brief: 'creative_brief_review_node',
   review_or_modify_character_design: 'character_design_review_node',

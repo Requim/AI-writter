@@ -20,6 +20,8 @@ $chapter_outline
 
 $continuity_block
 
+$reader_contract
+
 【输出要求】
 - 直接输出修正后的全文，保持 3000-7000 字。
 - 不得输出修改说明、批注或“已修正”标记。

@@ -655,6 +655,8 @@ function useStudioDocument(novelId: string, app: AppContext, planningEnabled: bo
 }
 
 function studioCompleted(state: DocumentState, workflow: WorkflowViewState): boolean {
+  if (state.novel?.status === 'postprocess_pending' || state.progress?.status === 'postprocess_pending') return false
+  if (state.novel?.total_outline?.author_config && ['paused', 'running', 'stalled', 'recoverable', 'cancelling', 'error'].includes(workflow.status)) return false
   const total = state.progress?.total_chapters || state.novel?.total_outline?.total_chapters || 0
   const current = workflow.currentChapter ?? state.progress?.current_chapter ?? 0
   const busy = ['running', 'paused', 'stalled', 'cancelling'].includes(workflow.status)

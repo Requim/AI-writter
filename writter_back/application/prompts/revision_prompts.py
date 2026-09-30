@@ -7,6 +7,7 @@ from application.continuity import (
     compact_story_bible,
 )
 from application.prompts.template_loader import render_prompt
+from application.prompts.reader_contract import build_reader_contract_prompt
 
 
 PATCH_SCHEMA = {"edits": "array", "unresolved_issue_ids": "array"}
@@ -24,6 +25,14 @@ REFACTOR_TRIGGER_TYPES = {"power_system", "logic"}
 
 def _json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False)
+
+
+def _reader_contract(chapter_outline: dict) -> str:
+    try:
+        chapter_number = int(chapter_outline.get("chapter_number") or 0)
+    except (TypeError, ValueError):
+        chapter_number = 0
+    return build_reader_contract_prompt(chapter_outline, chapter_number)
 
 
 def _continuity_block(continuity_context: str, story_bible: str) -> str:
@@ -62,6 +71,7 @@ def build_user_instruction_revision_prompt(
         chapter_outline=_json(chapter_outline),
         current_content=current_content,
         continuity_block=_continuity_block(continuity_context, story_bible),
+        reader_contract=_reader_contract(chapter_outline),
     )
 
 
@@ -91,6 +101,7 @@ def build_patch_revision_prompt(
         current_content=current_content,
         chapter_outline=_json(chapter_outline),
         continuity_block=_continuity_block(continuity_context, story_bible),
+        reader_contract=_reader_contract(chapter_outline),
     )
 
 
@@ -110,6 +121,7 @@ def build_refactor_revision_prompt(
         current_content=current_content,
         chapter_outline=_json(chapter_outline),
         continuity_block=_continuity_block(continuity_context, story_bible),
+        reader_contract=_reader_contract(chapter_outline),
     )
 
 
@@ -154,6 +166,7 @@ def build_expansion_prompt(
         chapter_outline=_json(chapter_outline),
         continuity_block=_continuity_block(continuity_context, story_bible),
         target_words=target_words,
+        reader_contract=_reader_contract(chapter_outline),
     )
 
 

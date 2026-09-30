@@ -124,12 +124,25 @@ async def _generate_valid_proposal(
             prompt, CHARACTER_DESIGN_SCHEMA, temperature=0.55, top_p=0.85,
         )
         try:
+            _validate_autonomous_roles(state, generated)
             return build_character_design_proposal(
                 generated, pool, proposal_version=version, prompt_version=PROMPT_VERSION,
             )
         except NamingValidationError as exc:
             feedback = str(exc)
     raise RetryableWorkflowError(f"角色设计生成失败：{feedback or '模型输出无效'}")
+
+
+def _validate_autonomous_roles(state, generated):
+    if state.get("author_mode") != "autonomous_v1":
+        return
+    roles = [*generated.get("core_roles", []), *generated.get("supporting_characters", [])]
+    if any(r.get("role_type") not in {"protagonist", "antagonist", "core", "supporting"} for r in roles):
+        raise NamingValidationError(["自主模式角色职责类型无效"])
+    centers = sum(r.get("role_type") == "protagonist" for r in roles)
+    mode = state.get("creative_narrative_mode")
+    if not centers or (mode == "stable" and centers != 1):
+        raise NamingValidationError(["人物主线中心与已接受的叙事模式不一致"])
 
 
 async def character_design_node(

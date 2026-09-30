@@ -16,6 +16,9 @@ $tactical_context
 【本章执行覆盖要求】
 $execution_requirements
 
+【网文读者推进要求】
+$reader_contract_requirements
+
 $genre_strategy
 
 【静态故事圣经，不可违背】
@@ -35,6 +38,7 @@ $reserved_name_pool
 5. 依据本章复杂度选择 2-5 个场景，不固定数量；每个场景必须产生不同的转折或代价。
 6. entry_state 继承前文；knowledge_boundaries 禁止角色获得作者视角信息。
 7. callback 与 setup 只在因果需要的位置出现，不按固定百分比机械安放。
+8. reader_contract 必须写出 promise、opening_hook、immediate_goal、immediate_risk、reader_question、chapter_payoff、next_pressure；这些字段必须能落到人物动作和后果，不得写成空泛宣传语。
 $planning_layer_rule
 9. ending_mode 从 revelation、decision、reversal、arrival、deadline、emotional_shift 中选择；结尾必须来自本章行动后果。
 10. 对照 recent_narrative_patterns，POV、地点、冲突手段、转折类型、结尾类型或高频意象不得无理由连续重复。
@@ -47,6 +51,7 @@ $planning_layer_rule
   "chapter_number": $chapter_index,
   "title": "章节标题",
   "chapter_goal": "本章在全书中的唯一功能",
+  "reader_contract": {"promise": "", "opening_hook": "", "immediate_goal": "", "immediate_risk": "", "reader_question": "", "chapter_payoff": "", "next_pressure": ""},
   "pov_character": "本章视角人物",
   "dramatic_question": "本章结束前必须回答的问题",
   "desire": "视角人物当下目标",

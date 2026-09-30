@@ -16,6 +16,8 @@ $chapter_outline
 
 $continuity_block
 
+$reader_contract
+
 【输出要求】
 - 直接输出扩写后的完整正文，不加说明。
 - 目标字数约 $target_words 字。

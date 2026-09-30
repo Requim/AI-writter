@@ -1,0 +1,12 @@
+........................................................................ [100%]
+=============================== warnings summary ===============================
+.venv/lib/python3.11/site-packages/langgraph/checkpoint/serde/encrypted.py:5
+  /app/.venv/lib/python3.11/site-packages/langgraph/checkpoint/serde/encrypted.py:5: LangChainPendingDeprecationWarning: The default value of `allowed_objects` will change in a future version. Pass an explicit value (e.g., allowed_objects='messages' or allowed_objects='core') to suppress this warning.
+    from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+
+tests/test_workflow_flow.py::test_registered_nodes_use_langgraph_supported_signatures
+  /app/.venv/lib/python3.11/site-packages/pytest_asyncio/plugin.py:916: PytestDeprecationWarning: Overriding the "event_loop_policy" fixture is deprecated and will be removed in a future version of pytest-asyncio. Use the "pytest_asyncio_loop_factories" hook to customize event loop creation.
+    warnings.warn(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+72 passed, 2 warnings in 2.89s

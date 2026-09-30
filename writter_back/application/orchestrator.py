@@ -35,6 +35,7 @@ from service.ports.agent_service import AgentOrchestrator
 logger = logging.getLogger("uvicorn")
 
 LARGE_STATE_FIELDS = {
+    "author_config",
     "fact_continuation", "fact_artifact", "fact_gate_snapshot", "fact_reports",
     "chapter_constraints",
     "current_chapter_content",
@@ -170,12 +171,14 @@ class NovelOrchestrator(AgentOrchestrator):
         llm_config: dict[str, Any],
         quota_service: QuotaService | None = None,
         tenant_planning_loader: TenantPlanningLoader | None = None,
+        research_library: Any = None,
     ) -> None:
         self.repository = repository
         self.memory_service = memory_service
         self.llm_config = llm_config
         self.quota_service = quota_service
         self.tenant_planning_loader = tenant_planning_loader
+        self.research_library = research_library
         self._workflow: Any = None
         self._checkpointer: Any = None
         self._llm_instance: Any = None
@@ -269,7 +272,13 @@ class NovelOrchestrator(AgentOrchestrator):
     ) -> dict[str, Any]:
         internal_thread_id = self.execution_key(context, thread_id)
         llm = self._get_llm_instance() if include_llm else self._llm_instance
+        from infrastructure.database.creative_repository import PostgresCreativeRepository
+        from infrastructure.database.author_repository import PostgresAuthorRepository
+        from application.creative.style_service import CreativeStyleService
+        creative_repository = PostgresCreativeRepository(self.repository.async_session) if isinstance(self.repository, PostgresNovelRepository) else None
+        style_service = CreativeStyleService(PostgresAuthorRepository(self.repository.async_session), creative_repository) if creative_repository else None
         return {
+            "recursion_limit": 12000,
             "configurable": {
                 "thread_id": internal_thread_id,
                 "public_thread_id": thread_id,
@@ -285,7 +294,10 @@ class NovelOrchestrator(AgentOrchestrator):
                 "tenant_planning_loader": self.tenant_planning_loader,
                 "adaptive_compaction_enabled": settings.ADAPTIVE_COMPACTION_ENABLED,
                 "memory_service": self.memory_service,
+                "research_library": self.research_library,
                 "novel_repository": self.repository,
+                "creative_repository": creative_repository,
+                "creative_style_service": style_service,
                 "story_fact_repository": PostgresStoryFactRepository(self.repository.async_session)
                 if isinstance(self.repository, PostgresNovelRepository) else None,
                 "quota_service": self.quota_service,

@@ -5,6 +5,7 @@ import json
 from application.continuity import build_budgeted_context, build_story_bible
 from application.prompts.genre_strategy import genre_strategy_block
 from application.prompts.outline_prompts import volume_for_chapter
+from application.prompts.reader_contract import reader_contract_outline_rules
 from application.prompts.template_loader import render_prompt
 
 
@@ -81,7 +82,9 @@ def build_chapter_outline_prompt(
         retry_block = "\n【上一版未通过校验】\n- " + "\n- ".join(validation_issues)
     planning_rule, contract_field = _planning_contract(schema_version)
     return render_prompt(
-        "chapter/outline.txt",
+        "chapter/autonomous_outline.txt"
+        if total_outline.get("author_config", {}).get("author_mode") == "autonomous_v1"
+        else "chapter/outline.txt",
         title=title,
         chapter_index=chapter_index,
         novel_type=novel_type,
@@ -100,6 +103,7 @@ def build_chapter_outline_prompt(
         execution_requirements=_compact_json(execution_requirements or {}),
         planning_layer_rule=planning_rule,
         execution_contract_field=contract_field,
+        reader_contract_requirements=reader_contract_outline_rules(chapter_index),
     )
 
 
@@ -107,6 +111,7 @@ CHAPTER_OUTLINE_SCHEMA = {
     "chapter_number": "integer",
     "title": "string",
     "chapter_goal": "string",
+    "reader_contract": "object",
     "pov_character": "string",
     "dramatic_question": "string",
     "desire": "string",
@@ -133,3 +138,11 @@ CHAPTER_OUTLINE_SCHEMA = {
     "chapter_execution_contract": "object",
     "estimated_word_count": "integer",
 }
+
+AUTONOMOUS_CHAPTER_OUTLINE_SCHEMA = {
+    key: value for key, value in CHAPTER_OUTLINE_SCHEMA.items()
+    if key not in {"dramatic_question", "desire", "obstacle", "tactics", "turn", "price_paid"}
+}
+AUTONOMOUS_CHAPTER_OUTLINE_SCHEMA.update(
+    chapter_intent="object", existing_character_decision="string",
+)

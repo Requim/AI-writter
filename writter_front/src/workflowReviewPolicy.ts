@@ -1,4 +1,5 @@
 export const HUMAN_REQUIRED_ACTIONS = new Set([
+  'creative_paused',
   'fact_review_required',
   'quality_gate_exhausted',
   'quality_gate_human_review',

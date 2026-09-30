@@ -15,6 +15,7 @@ from application.continuity import (
     compact_text,
 )
 from application.prompts.genre_strategy import genre_strategy_block
+from application.prompts.reader_contract import build_reader_contract_prompt
 from application.prompts.template_loader import render_prompt
 from application.word_budget import chapter_target_words
 
@@ -80,6 +81,10 @@ def _build_scene_block(scene_num: int, scene: dict) -> str:
     dialogue = _fmt_dialogue(scene.get("dialogue_targets"))
     purpose = scene.get("purpose", "未指定")
     dramatic = {
+        "function": scene.get("function", "conflict"),
+        "state_change": scene.get("state_change", ""),
+        "allowed_information": scene.get("allowed_information", []),
+        "action_requirements": scene.get("action_requirements", []),
         "scene_goal": scene.get("scene_goal", ""),
         "desire": scene.get("desire", ""),
         "obstacle": scene.get("obstacle", ""),
@@ -103,6 +108,8 @@ def _build_scene_block(scene_num: int, scene: dict) -> str:
 def _build_contract_block(chapter_outline: dict) -> str:
     """Format the continuity-critical subset of the chapter contract."""
     contract = {
+        "chapter_intent": chapter_outline.get("chapter_intent", {}),
+        "reader_contract": chapter_outline.get("reader_contract", {}),
         "chapter_goal": chapter_outline.get("chapter_goal", ""),
         "pov_character": chapter_outline.get("pov_character", ""),
         "dramatic_question": chapter_outline.get("dramatic_question", ""),
@@ -121,11 +128,24 @@ def _build_contract_block(chapter_outline: dict) -> str:
         "continuity_constraints": chapter_outline.get("continuity_constraints", []),
         "exit_state": chapter_outline.get("exit_state", {}),
     }
-    return json.dumps(contract, ensure_ascii=False, indent=2)
+    from application.goal_contract import goal_prompt
+
+    return json.dumps(contract, ensure_ascii=False, indent=2) + goal_prompt(chapter_outline.get("goal_contract"))
 
 
-def _writing_principles() -> str:
-    return render_prompt("chapter/writing_principles.txt")
+def _writing_principles(chapter_outline: dict | None = None) -> str:
+    from application.creative.runtime import active_creative_rules
+    if active_creative_rules.get():
+        base = render_prompt("chapter/autonomous_principles.txt", include_active_rules=False)
+    else:
+        base = render_prompt("chapter/writing_principles.txt", include_active_rules=False)
+    if not isinstance(chapter_outline, dict):
+        return base
+    try:
+        chapter_number = int(chapter_outline.get("chapter_number") or 0)
+    except (TypeError, ValueError):
+        chapter_number = 0
+    return base + "\n\n" + build_reader_contract_prompt(chapter_outline, chapter_number)
 
 
 # ─────────────────────────────────────────────
@@ -177,7 +197,7 @@ def build_first_scene_prompt(
         memory_context=ctx,
         previous_tail=prev_tail_block,
         genre_strategy=genre_strategy_block(novel_type, creative_brief, "chapter_writer"),
-        writing_principles=_writing_principles(),
+        writing_principles=_writing_principles(chapter_outline),
     )
 
 
@@ -230,7 +250,7 @@ def build_next_scene_prompt(
         memory_context=ctx,
         correction=correction,
         genre_strategy=genre_strategy_block(novel_type, creative_brief, "chapter_writer"),
-        writing_principles=_writing_principles(),
+        writing_principles=_writing_principles(chapter_outline),
     )
 
 
@@ -244,6 +264,7 @@ def build_scene_continue_prompt(
     target_words: int,
     existing_content: str,
     correction_note: str = "",
+    chapter_outline: dict | None = None,
 ) -> str:
     """场景字数不足时扩展内容的提示词（动态校准版）"""
     correction = f"【动态校准】{correction_note}\n" if correction_note else ""
@@ -252,7 +273,7 @@ def build_scene_continue_prompt(
         word_count=word_count,
         target_words=target_words,
         correction_note=correction,
-        writing_principles=_writing_principles(),
+        writing_principles=_writing_principles(chapter_outline),
         existing_tail=existing_content[-800:],
     )
 
@@ -313,16 +334,18 @@ def build_chapter_writer_prompt(
         memory_context=ctx,
         previous_tail=prev_tail_block,
         genre_strategy=genre_strategy_block(novel_type, creative_brief, "chapter_writer"),
-        writing_principles=_writing_principles(),
+        writing_principles=_writing_principles(chapter_outline),
     )
 
 
-def build_chapter_continue_prompt(word_count: int, existing_content: str) -> str:
+def build_chapter_continue_prompt(
+    word_count: int, existing_content: str, chapter_outline: dict | None = None,
+) -> str:
     """字数不足时扩展内容的提示词（降级模式用）"""
     return render_prompt(
         "chapter/chapter_continue.txt",
         word_count=word_count,
-        writing_principles=_writing_principles(),
+        writing_principles=_writing_principles(chapter_outline),
         existing_tail=existing_content[-800:],
     )
 

@@ -12,6 +12,7 @@ WorkflowEventType = Literal[
     "metadata_updated",
     "quality",
     "plan_reconciled",
+    "creative",
     "interrupt",
     "progress",
     "completed",

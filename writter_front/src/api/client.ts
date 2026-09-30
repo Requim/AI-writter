@@ -1,6 +1,6 @@
 import axios, { type AxiosError, type InternalAxiosRequestConfig } from 'axios'
 import { useAuthStore } from '@/stores/authStore'
-import { redirectToLogin, refreshSession } from './session'
+import { isSessionInvalid, redirectToLogin, refreshSession } from './session'
 
 interface RetryConfig extends InternalAxiosRequestConfig {
   _retry?: boolean
@@ -33,7 +33,7 @@ async function retryAfterRefresh(error: AxiosError): Promise<unknown> {
     config.headers.Authorization = `Bearer ${session.access_token}`
     return apiClient(config)
   } catch (refreshError) {
-    redirectToLogin()
+    if (isSessionInvalid(refreshError)) redirectToLogin()
     return Promise.reject(refreshError)
   }
 }

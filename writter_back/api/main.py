@@ -65,6 +65,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         },
         quota_service=quota_service,
         tenant_planning_loader=identity_repository.tenant_novel_planning_enabled,
+        research_library=research_library,
     )
     app.state.repository = repository
     app.state.identity_repository = identity_repository
@@ -103,6 +104,10 @@ app.add_middleware(
         "X-Tenant-ID",
     ],
 )
+from api.routers import creative_router
+
+app.include_router(creative_router.router, prefix="/api/v1/novels", tags=["Creative"])
+app.include_router(creative_router.author_router, prefix="/api/v1/author", tags=["Author Profiles"])
 app.include_router(story_fact_router.router, prefix="/api/v1/novels", tags=["Story Facts"])
 app.include_router(novel_router.router, prefix="/api/v1/novels", tags=["Novels"])
 app.include_router(workflow_router.router, prefix="/api/v1/workflows", tags=["Workflows"])

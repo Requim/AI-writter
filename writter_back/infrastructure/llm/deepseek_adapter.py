@@ -2,6 +2,7 @@
 import logging
 
 import openai
+from .metering import completion
 from typing import Any, AsyncIterator, Dict, List, Optional
 from .base import (
     BaseLLMAdapter,
@@ -40,7 +41,7 @@ class DeepSeekAdapter(BaseLLMAdapter):
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
-        response = await self.client.chat.completions.create(
+        response = await completion(self.client,
             model=self.model,
             messages=messages,
             temperature=temperature,
@@ -59,7 +60,7 @@ class DeepSeekAdapter(BaseLLMAdapter):
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
-        stream = await self.client.chat.completions.create(
+        stream = await completion(self.client,
             model=self.model,
             messages=messages,
             temperature=temperature,
@@ -91,7 +92,7 @@ class DeepSeekAdapter(BaseLLMAdapter):
                     "role": "user",
                     "content": structured_retry_instruction(retry_errors),
                 })
-            response = await self.client.chat.completions.create(
+            response = await completion(self.client,
                 model=self.model,
                 messages=request_messages,
                 response_format={"type": "json_object"},
@@ -112,7 +113,7 @@ class DeepSeekAdapter(BaseLLMAdapter):
 
     async def chat(self, messages: List[Dict[str, str]], temperature: float = 0.7, top_p: float = 1.0) -> str:
         """对话生成"""
-        response = await self.client.chat.completions.create(
+        response = await completion(self.client,
             model=self.model,
             messages=messages,
             temperature=temperature,

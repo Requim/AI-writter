@@ -13,11 +13,13 @@ from application.continuity import build_story_bible, related_character_cards
 from application.review_evidence import repair_goal_quotes
 from application.review_contract_rules import review_contract_rules, unmet_review_findings
 from application.errors import (
+    InvalidReviewDecisionError,
     QualityGateReviewRequired,
     RetryableWorkflowError,
     StructuredOutputInvalidError,
 )
 from application.feature_policy import require_planning_v1
+from application.goal_contract import current_goal_contract, evaluate_goals, goal_prompt
 from application.fulfillment import (
     PlanFulfillment, TacticalFulfillment, fulfillment_passes, normalize_fulfillment,
 )
@@ -345,20 +347,28 @@ async def _review_content(
             content, context["chapter_outline"], context["main_characters"],
             context["memory_context"], len(content), context["story_bible"], previous,
             context["novel_type"], context["creative_brief"],
-        ) + build_score_contract()
-        result = await _generate_valid_review(llm, prompt, REFLECTION_SCHEMA)
+        ) + build_score_contract() + goal_prompt(context["chapter_outline"].get("goal_contract"))
+        schema = _goal_review_schema(REFLECTION_SCHEMA, context)
+        result = await _generate_valid_review(llm, prompt, schema)
     else:
         chunks = await _review_chunks(llm, content, context)
         prompt = build_aggregation_prompt(
             chunks, content, context["chapter_outline"], context["main_characters"],
             context["memory_context"], len(content), context["story_bible"], previous,
             context["novel_type"], context["creative_brief"],
-        ) + build_score_contract()
-        result = await _generate_valid_review(llm, prompt, AGGREGATION_SCHEMA)
+        ) + build_score_contract() + goal_prompt(context["chapter_outline"].get("goal_contract"))
+        schema = _goal_review_schema(AGGREGATION_SCHEMA, context)
+        result = await _generate_valid_review(llm, prompt, schema)
         result["issues"] = _merge_issues(result.get("issues"), chunks)
     return await repair_goal_quotes(
         llm, result, content, context["chapter_outline"].get("goal_contract"),
     )
+
+
+def _goal_review_schema(schema: dict, context: dict) -> dict:
+    if not context["chapter_outline"].get("goal_contract"):
+        return schema
+    return {**schema, "goal_checks": "array"}
 
 
 def _quality_gate(result: dict, content: str, *, require_fulfillment: bool = False) -> tuple[dict, list[dict]]:
@@ -412,6 +422,8 @@ def _choice_command(
     decision: ReviewDecision, issues: list[dict], gate: dict
 ) -> Command:
     if decision.action == "accept":
+        if gate.get("goal_review_required"):
+            raise InvalidReviewDecisionError("目标验收未通过，请补足证据或修订正文；接受质量缺点不能变更目标")
         return Command(
             goto="persist_node",
             update={
@@ -457,6 +469,8 @@ def _review_payload(action: str, state: NovelAgentState, gate: dict, issues: lis
         message = "自动修订已达上限，请人工决定接受、重写或继续修订"
     if gate.get("fulfillment_review_required"):
         message = "计划兑现未确认或存在偏差，章节尚未归档，请核对本章要求后决定"
+    if gate.get("goal_review_required"):
+        message = "原始目标验收未通过，请按未满足项修订或重新审读，不能直接接受归档"
     return {
         "action": action,
         "message": message,
@@ -501,6 +515,7 @@ def _direct_rewrite_revision(gate: dict, issues: list[dict]) -> Command:
 
 
 def _review_context(state: NovelAgentState) -> tuple[str, dict[str, Any]]:
+    current_goal_contract(state)
     content = str(state.get("current_chapter_content") or "")
     outlines = state.get("chapter_outlines") or []
     outline = outlines[-1] if outlines and isinstance(outlines[-1], dict) else {}
@@ -534,7 +549,9 @@ def _reflection_proposal(
 
 
 def _unavailable_proposal(state: NovelAgentState, reason: str) -> Command:
-    payload = {"status": "unavailable", "reason": reason}
+    payload: dict[str, Any] = {"status": "unavailable", "reason": reason}
+    if current_goal_contract(state):
+        payload["goal_review_required"] = True
     update = proposal_update(
         state, "reflection", payload, state.get("current_chapter_index", 0) + 1
     )
@@ -577,6 +594,7 @@ async def reflection_node(
     gate, issues = _quality_gate(
         result, content, require_fulfillment=int(state.get("workflow_schema_version") or 2) >= 5,
     )
+    _apply_goal_gate(state, result, content, gate)
     gate["chapter_number"] = chapter
     logger.info("【反思检查节点】评分审计 | scale=%s raw=%s", gate.get("source_score_scale"), gate.get("raw_rubric_scores"))
     emit_workflow_event(
@@ -593,6 +611,17 @@ async def reflection_node(
             },
         )
     return _route_quality_result(state, config, gate, issues)
+
+
+def _apply_goal_gate(state: dict, result: dict, content: str, gate: dict) -> None:
+    report = evaluate_goals(state, result, content)
+    if not report:
+        return
+    gate["goal_acceptance"] = report
+    gate["word_count_analysis"]["total_count"] = len(content)
+    if report["status"] != "passed":
+        gate["decision"] = "human_review"
+        gate["goal_review_required"] = True
 
 
 def _automatic_quality_revision(state: NovelAgentState, config: RunnableConfig, gate: dict, issues: list[dict]) -> Command:
@@ -750,6 +779,14 @@ async def reflection_review_node(
     decision = decide_proposal(
         state, proposal, config, force_human=True, **fields
     )
+    if current_goal_contract(state) and decision.action == "accept":
+        from application.goal_contract import require_goal_acceptance
+
+        reviewed_state = {**state, "quality_gate": payload.get("gate", {})}
+        if not require_goal_acceptance(reviewed_state, str(state.get("current_chapter_content") or "")):
+            raise InvalidReviewDecisionError("当前正文缺少有效的目标验收，不能接受归档")
+    if decision.action == "revise" and decision.instruction in {"retry", "regenerate_review"}:
+        return Command(goto="reflection_node", update={"pending_proposal": None, "pending_proposal_decision": None})
     if payload.get("status") == "unavailable":
         return _unavailable_choice(
             decision, str(payload.get("reason") or ""), chapter

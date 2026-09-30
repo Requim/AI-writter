@@ -4,6 +4,7 @@ import {
   PlayCircleOutlined, ProjectOutlined, ReloadOutlined, SaveOutlined, StopOutlined, UnorderedListOutlined,
 } from '@ant-design/icons'
 import { MarkdownManuscript } from '@/components/MarkdownManuscript'
+import { CreativeWorkspace } from '@/components/creative/CreativeWorkspace'
 import { NovelPlanView } from '@/components/novel-plan/NovelPlanView'
 import { PlanReplanDialog } from '@/components/novel-plan/PlanReplanDialog'
 import { WorkflowPanel } from '@/components/WorkflowPanel'
@@ -49,6 +50,8 @@ function StudioHeader({ controller }: { controller: NovelStudioController }) {
         <h1>{novel?.title || '未命名作品'}</h1>
       </div>
       <div className="studio-actions">
+        {novel?.total_outline?.author_config?.author_mode === 'autonomous_v1' && <CreativeWorkspace key={controller.novelId} novelId={controller.novelId}
+          chapter={controller.document.selectedChapter} revision={controller.workflow.state.creativeRevision} />}
         <FactLedger novelId={controller.novelId} activeReview={controller.workflow.state.interrupt} onResume={controller.resumeWriting} />
         <Segmented
           value={controller.autoMode ? 'auto' : 'manual'}
@@ -252,12 +255,13 @@ function EditorActions({ controller }: { controller: NovelStudioController }) {
 
 function EditorToolbar({ controller, live }: { controller: NovelStudioController; live: boolean }) {
   const { editorMode, editorTitle, progress } = controller.document
+  const reviewingFacts = controller.workflow.state.interrupt?.action === 'fact_review_required'
   return (
     <div className="editor-toolbar">
       <div>
-        <span className="eyebrow">{live ? '正在生成正文' : '章节正文'}</span>
+        <span className="eyebrow">{live ? reviewingFacts ? '待事实核对正文' : '正在生成正文' : '章节正文'}</span>
         {live ? (
-          <h2>AI 正在撰写第 {progress?.current_chapter ? progress.current_chapter + 1 : 1} 章</h2>
+          <h2>{reviewingFacts ? '待核对第' : 'AI 正在撰写第'} {progress?.current_chapter ? progress.current_chapter + 1 : 1} 章</h2>
         ) : editorMode === 'edit' ? (
           <Input value={editorTitle} onChange={(event) => controller.setEditor({ editorTitle: event.target.value })} variant="borderless" />
         ) : <h2>{editorTitle || '未命名章节'}</h2>}
@@ -304,7 +308,7 @@ function EditorBody({ controller, live }: { controller: NovelStudioController; l
       }}
     />
   )
-  return <MarkdownManuscript content={content} live={live} />
+  return <MarkdownManuscript content={content} live={live && controller.workflow.state.status === 'running'} />
 }
 
 function ChapterEditor({ controller }: { controller: NovelStudioController }) {

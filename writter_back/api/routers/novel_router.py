@@ -40,6 +40,8 @@ from service.value_objects.novel_type import NovelType
 from service.value_objects.outline import Outline
 from service.value_objects.novel_plan import NovelPlan, ScaleContract, planning_options
 from service.value_objects.progress import Progress
+from service.value_objects.creative import AuthorConfiguration
+from application.creative.errors import CreativeConflict, CreativePause
 from service.value_objects.tactical_plan import TacticalWindow
 
 router = APIRouter()
@@ -78,6 +80,7 @@ class NovelCreateRequest(BaseModel):
     novel_type: str
     title: str | None = None
     summary: str | None = None
+    author_config: AuthorConfiguration | None = None
     total_outline: dict[str, Any] | None = None
     planning: NovelPlanningInput | None = None
 
@@ -235,13 +238,15 @@ async def create_novel(
     payload: NovelCreateRequest,
     context: TenantContext = Depends(get_tenant_context),
     repo: PostgresNovelRepository = Depends(get_repository),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ):
     try:
         valid_type = NovelType(payload.novel_type)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="无效的小说类型") from exc
     outline, progress = _creation_outline_and_progress(payload)
-    novel_id = uuid4()
+    command = _creation_command(payload, idempotency_key)
+    novel_id = uuid5(context.tenant_id, "creative:create:" + idempotency_key) if command else uuid4()
     novel = Novel(
         id=novel_id,
         tenant_id=context.tenant_id,
@@ -255,12 +260,27 @@ async def create_novel(
         created_at=datetime.now(),
         updated_at=datetime.now(),
     )
-    saved = await repo.save(_tenant_id(context), novel)
+    try:
+        saved = await repo.save(_tenant_id(context), novel, creation_command=command) if command else await repo.save(_tenant_id(context), novel)
+    except CreativePause as exc:
+        raise HTTPException(status_code=409, detail={"code": exc.reason, "message": str(exc)}) from exc
+    except CreativeConflict as exc:
+        raise HTTPException(409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {
         "novel_id": str(saved.id),
         "thread_id": novel.thread_id,
         "status": "created",
     }
+
+
+def _creation_command(payload, key):
+    if payload.author_config is None:
+        return None
+    if not isinstance(key, str) or not key or len(key) > 128:
+        raise HTTPException(422, "自主新书创建必须提供Idempotency-Key")
+    return {"key": key, "payload": {"operation": "create", **payload.model_dump(mode="json")}}
 
 
 @router.get("", response_model=list[NovelResponse])
@@ -298,7 +318,18 @@ async def get_novel(
     novel = await repo.find_by_id(_tenant_id(context), novel_id)
     if novel is None:
         raise HTTPException(status_code=404, detail="小说不存在")
+    await _overlay_creative_status(repo, context, novel)
     return _novel_response(novel)
+
+
+async def _overlay_creative_status(repo, context, novel):
+    """正文进度和创作后处理分开显示，末章后处理失败仍可恢复。"""
+    if not novel.total_outline or not novel.total_outline.author_config:
+        return
+    from infrastructure.database.creative_repository import PostgresCreativeRepository
+    session = await PostgresCreativeRepository(repo.async_session).get_session(_tenant_id(context), str(novel.id))
+    if session and session["stage"].startswith("postprocess:"):
+        novel.progress.status = "postprocess_pending"
 
 
 @router.get("/{novel_id}/plan", response_model=dict[str, Any] | None)
@@ -379,6 +410,7 @@ async def get_progress(
     novel = await repo.find_by_id(_tenant_id(context), novel_id)
     if novel is None:
         raise HTTPException(status_code=404, detail="小说不存在")
+    await _overlay_creative_status(repo, context, novel)
     progress = novel.progress or Progress()
     plan = await repo.get_latest_plan(_tenant_id(context), novel_id)
     tactical = await repo.get_latest_tactical_plan(_tenant_id(context), novel_id)
@@ -611,6 +643,10 @@ async def _load_rewrite_target(
         raise HTTPException(status_code=404, detail="章节不存在")
     if not chapter.outline:
         raise HTTPException(status_code=400, detail="该章节没有细纲数据，无法重写")
+    outline = novel.total_outline
+    if outline and (outline.get("author_config") if isinstance(outline, dict) else outline.author_config):
+        raise HTTPException(409, detail={"code": "autonomous_archive_locked",
+                                       "message": "自主模式禁止AI追溯重写归档章节，请使用隔离实验或明确的人工编辑"})
     return chapter, novel
 
 
@@ -771,6 +807,12 @@ def _creation_outline_and_progress(
             total_chapters=contract.target_chapters,
             scale=contract.to_dict(),
         )
+    if payload.author_config:
+        if contract is None:
+            raise HTTPException(status_code=422, detail="自主作家模式必须指定创作规模")
+        outline_data["author_config"] = payload.author_config.model_dump(mode="json")
+    elif outline_data.get("author_config"):
+        raise HTTPException(status_code=422, detail="自主模式配置必须通过author_config字段提交")
     outline = Outline(**outline_data) if outline_data else None
     return outline, Progress(
         total_chapters=contract.target_chapters if contract else 0,

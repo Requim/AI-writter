@@ -121,11 +121,8 @@ async def test_auto_node_deadline_reports_its_budget_and_cleans_up(monkeypatch):
         workflow_router.settings, "WORKFLOW_BACKGROUND_NODE_TIMEOUT_SECONDS", 0.01
     )
     measurements = []
-    monkeypatch.setattr(
-        runtime_observability,
-        "_record_measurement",
-        lambda *args: measurements.append(args),
-    )
+    monkeypatch.setattr(runtime_observability, "_record_measurement",
+                        lambda *args: measurements.append(args))
     cleaned = asyncio.Event()
 
     async def stuck_node(state):
@@ -151,11 +148,9 @@ async def test_auto_node_cancellation_is_not_swallowed():
         entered.set()
         await asyncio.Event().wait()
 
-    task = asyncio.create_task(
-        measured_node("node", node)(
-            {}, config={"configurable": {"auto_mode": True}}
-        )
-    )
+    task = asyncio.create_task(measured_node("node", node)(
+        {}, config={"configurable": {"auto_mode": True}}
+    ))
     await entered.wait()
     task.cancel()
     with pytest.raises(asyncio.CancelledError):

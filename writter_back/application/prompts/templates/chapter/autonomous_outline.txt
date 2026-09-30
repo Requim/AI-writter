@@ -1,0 +1,68 @@
+[PROMPT_VERSION:$PROMPT_VERSION]
+为《$title》生成第$chapter_index章的自主创作执行契约，只返回JSON。
+
+【本章已接受计划】
+$plan_context
+【近期战术】
+$tactical_context
+【必需覆盖ID】
+$execution_requirements
+【网文读者推进要求】
+$reader_contract_requirements
+【作者规划视图】
+$story_bible
+【归档连续性】
+$memory_context
+【未用姓名池】
+$reserved_name_pool
+$retry_block
+
+主功能从conflict/setup/aftermath/relationship/discovery中选择。1-5个场景。
+chapter_intent必须说明expected_effect（认知、关系或情绪变化）及subsequent_role（后续作用）。
+reader_contract必须具体描述本章给读者的承诺、开场触发、人物立即目标、即时风险、核心追问、阶段兑现和下一步压力；不得用“制造悬念”“推进剧情”等空话替代。
+冲突场景仅在active_opposition=true时要求counteraction、至少2条tactics及cost。
+铺垫、余波、关系、发现不强求反转、主动反制和即时损失；无状态增量或后续作用的重复仍不合格。
+每个场景按人物ID选择出场人物，不能凭姓名合并；allowed_information只列本场景允许呈现的信息。
+禁止把作者隐藏真相、未到期秘密、未来计划或unknown知识放入allowed_information、events和action_requirements。
+新增长期角色之前必须在existing_character_decision说明为何既有角色不适合；新人不能凭未铺垫能力解决核心危机。
+新角色从姓名池提交candidate_id和稳定character_id；如承接预留职责，同时提交role_slot_id。
+完整profile必须包括identity/story_function/relationship_anchor/external_goal/internal_lack/false_belief/secret/abilities/limitations/moral_red_line/speech_fingerprint/address_system/arc_direction；未知秘密明确填写“尚未设计”，不要捏造事实。
+不得调整已接受叙事模式、用户硬约束、全书规模、已完成正文或锁定窗口。
+$planning_layer_rule
+
+JSON字段：
+{
+  "chapter_number": $chapter_index,
+  "title": "章节标题",
+  "chapter_goal": "本章唯一作用",
+  "reader_contract": {"promise": "", "opening_hook": "", "immediate_goal": "", "immediate_risk": "", "reader_question": "", "chapter_payoff": "", "next_pressure": ""},
+  "pov_character": "视角人物",
+  "chapter_intent": {"primary_function": "conflict|setup|aftermath|relationship|discovery", "expected_effect": "", "subsequent_role": ""},
+  "state_delta": "与入场相比的实际变化",
+  "ending_mode": "revelation|decision|reversal|arrival|deadline|emotional_shift",
+  "entry_state": {"time": "", "location": "", "characters": []},
+  "exit_state": {"time": "", "location": "", "characters": []},
+  "key_events": [],
+  "causal_chain": [],
+  "state_changes": [],
+  "knowledge_boundaries": [],
+  "continuity_constraints": [],
+  "narrative_pattern": {"pov": "", "locations": [], "conflict_method": "", "turn_type": "", "ending_mode": "", "motifs": []},
+  "genre_contract": {},
+  "new_long_term_characters": [],
+  "existing_character_decision": "新增角色或复用既有角色的判断",
+  "scenes": [{
+    "scene_index": 1, "function": "setup",
+    "location": "", "characters": [], "character_ids": [],
+    "purpose": "为什么不可删除", "state_change": "认知/关系/情绪/资源变化",
+    "active_opposition": false, "counteraction": "", "tactics": [], "cost": "",
+    "allowed_information": [], "action_requirements": [],
+    "events": {"entry": "", "struggle": "", "result": ""},
+    "sensory_anchors": [], "dialogue_targets": {"explicit": "", "implicit": ""}
+  }],
+  "internal_monologue": "",
+  "logic_hooks": {"callback": "", "setup": ""},
+$execution_contract_field
+  "rolling_plan": [],
+  "estimated_word_count": $word_target
+}

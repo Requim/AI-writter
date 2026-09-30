@@ -1,6 +1,6 @@
 import type { WorkflowEvent } from '@/types/novel'
 import { useAuthStore } from '@/stores/authStore'
-import { redirectToLogin, refreshSession } from './session'
+import { isSessionInvalid, redirectToLogin, refreshSession } from './session'
 
 export interface WorkflowRequest {
   input?: Record<string, unknown>
@@ -62,12 +62,19 @@ function numeric(value: unknown): number | undefined {
 }
 
 function responseError(response: Response, raw: string): WorkflowRequestError {
+  if ([502, 503, 504].includes(response.status)) {
+    return new WorkflowRequestError(
+      `暂时无法连接创作服务（HTTP ${response.status}），请同步现场后确认任务状态，勿重复启动。`,
+      response.status, { code: 'workflow_transport_unavailable', retryable: false },
+    )
+  }
   let detail: unknown = raw
   try {
     const payload = JSON.parse(raw) as { detail?: unknown }
     detail = payload.detail ?? payload
   } catch {
-    // Non-JSON upstream responses are presented as plain text.
+    // 网关返回的 HTML 不作为可读业务错误展示。
+    if (/<[a-z!][^>]*>/i.test(raw)) detail = undefined
   }
   if (detail && typeof detail === 'object') {
     const value = detail as Record<string, unknown>
@@ -141,7 +148,7 @@ export async function streamWorkflow(
       await refreshSession()
       response = await postWorkflow(threadId, body, signal, idempotencyKey)
     } catch (error) {
-      redirectToLogin()
+      if (isSessionInvalid(error)) redirectToLogin()
       throw error
     }
   }

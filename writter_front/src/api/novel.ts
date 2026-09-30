@@ -20,8 +20,10 @@ async function data<T>(request: Promise<{ data: T }>): Promise<T> {
 }
 
 export const novelApi = {
-  create: (payload: NovelCreateRequest) =>
-    data<{ novel_id: string; thread_id: string; status: string }>(apiClient.post('/v1/novels', payload)),
+  create: (payload: NovelCreateRequest, idempotencyKey = createIdempotencyKey()) =>
+    data<{ novel_id: string; thread_id: string; status: string }>(apiClient.post('/v1/novels', payload, {
+      headers: { 'Idempotency-Key': idempotencyKey },
+    })),
   list: () => data<NovelResponse[]>(apiClient.get('/v1/novels')),
   get: (novelId: string) => data<NovelResponse>(apiClient.get(`/v1/novels/${novelId}`)),
   genreTaxonomy: () => data<GenreProfile[]>(apiClient.get('/v1/novels/genre-taxonomy')),

@@ -25,8 +25,12 @@ from application.prompts.creative_brief_prompts import (
 )
 from application.prompts.outline_prompts import build_outline_prompt
 from application.prompts.reflection_prompts import build_reflection_prompt
+from application.prompts.reader_contract import normalize_reader_contract
 from application.prompts.revision_prompts import build_patch_revision_prompt
-from application.prompts.template_loader import render_prompt
+from application.prompts.template_loader import (
+    load_prompt_template, prompt_manifest, render_prompt, reset_prompt_snapshot,
+    set_prompt_snapshot,
+)
 from application.prompts.version import PROMPT_VERSION
 from service.value_objects.genre_profile import get_genre_taxonomy
 
@@ -92,6 +96,35 @@ def test_renderer_is_versioned_strict_and_preserves_dollar_in_values() -> None:
         render_prompt("../version.txt")
     with pytest.raises(ValueError, match="非法提示词模板路径"):
         render_prompt(r"..\version.txt")
+
+
+def test_prompt_manifest_is_stable_and_contains_template_hashes() -> None:
+    manifest = prompt_manifest(["title/candidates.txt", "chapter/system.txt"])
+    assert manifest["version"].startswith(f"{PROMPT_VERSION}:")
+    assert set(manifest["templates"]) == {"chapter/system.txt", "title/candidates.txt"}
+    assert all(len(value) == 64 for value in manifest["templates"].values())
+
+
+def test_external_prompt_is_hot_loaded_and_invalid_update_keeps_last_valid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "title" / "candidates.txt"
+    target.parent.mkdir()
+    target.write_text("第一版 $novel_type", encoding="utf-8")
+    monkeypatch.setattr("application.prompts.template_loader.settings.PROMPT_ROOT", str(tmp_path))
+    assert load_prompt_template("title/candidates.txt") == "第一版 $novel_type"
+    target.write_text("第二版 $novel_type", encoding="utf-8")
+    assert load_prompt_template("title/candidates.txt") == "第二版 $novel_type"
+    target.write_text("非法 ${", encoding="utf-8")
+    assert load_prompt_template("title/candidates.txt") == "第二版 $novel_type"
+
+
+def test_prompt_snapshot_overrides_live_template_for_current_execution() -> None:
+    token = set_prompt_snapshot({"title/candidates.txt": "快照版 $novel_type"})
+    try:
+        assert render_prompt("title/candidates.txt", novel_type="悬疑").startswith("快照版 悬疑")
+    finally:
+        reset_prompt_snapshot(token)
 
 
 def test_prompt_python_modules_do_not_embed_long_prompt_literals() -> None:
@@ -200,6 +233,42 @@ def test_every_prose_path_uses_shared_principles_and_ending_mode() -> None:
     assert all("ending_mode" in prompt for prompt in prompts)
     assert "线索推理" in prompts[3]
     assert "必须翻到下一页" not in prompts[3]
+
+
+def test_reader_contract_reaches_outline_prose_review_and_revision() -> None:
+    outline = {
+        **_outline(),
+        "reader_contract": {
+            "promise": "读者要看到她如何摆脱错站",
+            "opening_hook": "广播报出不存在的站名",
+            "immediate_goal": "确认列车停靠位置",
+            "immediate_risk": "错过最后一班车",
+            "reader_question": "谁在修改广播",
+            "chapter_payoff": "她拿到被删掉的站牌",
+            "next_pressure": "有人发现她带走了站牌",
+        },
+    }
+    contract = normalize_reader_contract(outline, 1)
+    prompt = build_first_scene_prompt(
+        scene=_scene(), chapter_outline=outline, novel_type="悬疑", title="雨站",
+        chapter_num=1, ch_title="错站", memory_context="", target_words=1000,
+        total_scenes=2, logic_hooks={}, internal_monologue="",
+    )
+    reflection = build_reflection_prompt(
+        "正文", outline, [], "", 2, novel_type="悬疑",
+    )
+    assert contract["reader_question"] == "谁在修改广播"
+    assert "前500字内" in prompt
+    assert "谁在修改广播" in prompt
+    assert "首章开头 500 字内" in reflection
+
+
+def test_legacy_outline_gets_reader_contract_without_losing_scene_data() -> None:
+    outline = _outline()
+    contract = normalize_reader_contract(outline, 1)
+    assert contract["opening_hook"] == "抵达"
+    assert contract["immediate_goal"]
+    assert outline["scenes"][0]["events"]["entry"] == "抵达"
 
 
 def test_reflection_prompt_contains_score_anchors_and_ai_cliche_checks() -> None:

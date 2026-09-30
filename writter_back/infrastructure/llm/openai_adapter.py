@@ -3,6 +3,7 @@ import asyncio
 import logging
 
 import openai
+from .metering import completion
 from typing import Any, AsyncIterator, Dict, List, Optional
 from .base import (
     BaseLLMAdapter,
@@ -49,7 +50,7 @@ class OpenAIAdapter(BaseLLMAdapter):
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
-        response = await self.client.chat.completions.create(
+        response = await completion(self.client,
             model=self.model,
             messages=messages,
             temperature=temperature,
@@ -68,7 +69,7 @@ class OpenAIAdapter(BaseLLMAdapter):
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
-        stream = await self.client.chat.completions.create(
+        stream = await completion(self.client,
             model=self.model,
             messages=messages,
             temperature=temperature,
@@ -126,7 +127,7 @@ class OpenAIAdapter(BaseLLMAdapter):
         """收集结构化响应，并对瞬时流中断进行一次原请求重试。"""
         for transport_attempt in range(2):
             try:
-                stream = await self.client.chat.completions.create(
+                stream = await completion(self.client,
                     model=self.model,
                     messages=messages,
                     response_format={"type": "json_object"},
@@ -153,7 +154,7 @@ class OpenAIAdapter(BaseLLMAdapter):
 
     async def chat(self, messages: List[Dict[str, str]], temperature: float = 0.7, top_p: float = 1.0) -> str:
         """对话生成"""
-        response = await self.client.chat.completions.create(
+        response = await completion(self.client,
             model=self.model,
             messages=messages,
             temperature=temperature,

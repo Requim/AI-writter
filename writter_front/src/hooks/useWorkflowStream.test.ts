@@ -14,6 +14,54 @@ function event(id: number, operation: 'append' | 'reset', text: string): Workflo
 }
 
 describe('workflowReducer command isolation', () => {
+  it('restores the exact pending body from the authorized fact review snapshot', () => {
+    const snapshot: WorkflowSnapshot = {
+      thread_id: 'thread-1', status: 'paused', has_interrupt: true,
+      interrupts: [{ action: 'fact_review_required', artifact_content: '第一段。\n\n第二段。',
+        fact_report: { artifact_kind: 'body', status: 'unknown' } }],
+      state: { has_current_chapter_content: true }, next_nodes: ['fact_review_node'],
+    }
+    const restored = workflowReducer(initialWorkflowState, { type: 'snapshot', snapshot })
+    expect(restored.draft).toBe('第一段。\n\n第二段。')
+    expect(restored.status).toBe('paused')
+    expect(restored.connection).toBe('idle')
+    expect(restored.hasCheckpointDraft).toBe(true)
+  })
+
+  it('never displays an outline or an unrelated artifact as chapter prose', () => {
+    for (const artifact_kind of ['outline', 'unknown']) {
+      const restored = workflowReducer(initialWorkflowState, { type: 'snapshot', snapshot: {
+        thread_id: 'thread-1', status: 'paused', has_interrupt: true, state: {},
+        interrupts: [{ action: 'fact_review_required', artifact_content: '{"scenes":[]}',
+          fact_report: { artifact_kind } }],
+      } })
+      expect(restored.draft).toBe('')
+    }
+  })
+
+  it('replaces partial stream text with the complete body at the review boundary', () => {
+    const restored = workflowReducer({ ...initialWorkflowState, draft: '第一段。' }, {
+      type: 'event', event: { id: 1, type: 'interrupt', thread_id: 'thread-1',
+        timestamp: '2026-09-10T00:00:00Z', data: { interrupts: [{
+          action: 'fact_review_required', artifact_content: '第一段。第二段。',
+          fact_report: { artifact_kind: 'body' },
+        }] } },
+    })
+    expect(restored.draft).toBe('第一段。第二段。')
+  })
+
+  it('treats gateway failures as unknown transport state without losing the draft', () => {
+    const state = workflowReducer({
+      ...initialWorkflowState, status: 'running', draft: '已收到正文', activeCommandId: 'current',
+    }, { type: 'failure', message: '请同步现场', code: 'workflow_transport_unavailable' })
+    expect(state.status).toBe('stalled')
+    expect(state.syncState).toBe('unknown')
+    expect(state.connection).toBe('detached')
+    expect(state.draft).toBe('已收到正文')
+    expect(state.activeCommandId).toBe('current')
+    expect(state.retryable).toBe(false)
+  })
+
   it('keeps technical measurements out of the author progress panel', () => {
     const state = { ...initialWorkflowState, status: 'running' as const, activeCommandId: 'current' }
     const next = workflowReducer(state, { type: 'event', event: {

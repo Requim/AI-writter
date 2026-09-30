@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import json
+from pathlib import Path
 from typing import Any
 
 from service.value_objects.novel_type import NovelType
@@ -295,16 +297,50 @@ GENRE_PROFILES: tuple[GenreProfile, ...] = (
 )
 
 
-_PROFILES_BY_VALUE = {profile.value: profile for profile in GENRE_PROFILES}
-_PROFILES_BY_LABEL = {profile.label: profile for profile in GENRE_PROFILES}
+def _load_external_profiles() -> tuple[GenreProfile, ...]:
+    try:
+        from config import settings
+        if not settings.GENRE_PROFILE_ROOT:
+            return GENRE_PROFILES
+        path = Path(settings.GENRE_PROFILE_ROOT).expanduser().resolve()
+        if path.is_dir():
+            path = path / "genres.json"
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(raw, list):
+            raise ValueError("类型配置必须是数组")
+        result = []
+        for item in raw:
+            if not isinstance(item, dict):
+                raise ValueError("类型配置项必须是对象")
+            result.append(GenreProfile(
+                value=str(item["value"]),
+                label=str(item["label"]),
+                description=str(item.get("description", "")),
+                subgenres=tuple(GenreOption(**option) for option in item.get("subgenres", [])),
+                reader_experiences=tuple(
+                    GenreOption(**option) for option in item.get("reader_experiences", [])
+                ),
+                pace_options=tuple(GenreOption(**option) for option in item.get("pace_options", PACE_OPTIONS)),
+                prompt_axes=dict(item.get("prompt_axes", {})),
+            ))
+        if not result:
+            raise ValueError("类型配置不能为空")
+        return tuple(result)
+    except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+        return GENRE_PROFILES
+
+
+def _profiles() -> tuple[GenreProfile, ...]:
+    return _load_external_profiles()
 
 
 def get_genre_profile(value: str) -> GenreProfile | None:
     """Resolve a profile by stored value or display label."""
     key = str(value or "").strip()
-    return _PROFILES_BY_VALUE.get(key) or _PROFILES_BY_LABEL.get(key)
+    profiles = _profiles()
+    return next((profile for profile in profiles if profile.value == key or profile.label == key), None)
 
 
 def get_genre_taxonomy() -> list[dict[str, Any]]:
     """Return serializable genre taxonomy in display order."""
-    return [profile.to_dict() for profile in GENRE_PROFILES]
+    return [profile.to_dict() for profile in _profiles()]

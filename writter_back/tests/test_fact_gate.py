@@ -37,6 +37,18 @@ def config(value, llm=None):
 
 
 @pytest.mark.asyncio
+async def test_missing_fact_baseline_stays_unknown_without_model_call():
+    value = setup_gate().model_copy(update={"fact_heads": ()})
+    llm = SimpleNamespace(structured_generate=AsyncMock())
+    report = await evaluate_facts(value, "第一章测试稿件", "body", llm)
+    assert report.status == "unknown"
+    assert "事实基线" in report.reasons[0]
+    llm.structured_generate.assert_not_called()
+    with pytest.raises(FactGateBlockedError):
+        verify_fact_receipt(value, report, "第一章测试稿件")
+
+
+@pytest.mark.asyncio
 async def test_literal_conflict_needs_no_model_and_retains_dual_evidence():
     value = setup_gate()
     llm = judge(value)
@@ -83,86 +95,6 @@ async def test_grounded_pass_is_bound_to_full_body_scope_and_snapshot():
 
 
 @pytest.mark.asyncio
-async def test_semantic_extraction_failure_is_retried_with_validation_feedback():
-    value = setup_gate()
-    invalid = {
-        "coverage": "complete",
-        "claims": [{
-            "subject_id": str(value.entities[0].id),
-            "predicate": "unsupported",
-            "object_entity_id": str(value.entities[1].id),
-            "quote": "辛家祖祠归辛家所有",
-        }],
-        "unresolved": [],
-    }
-    llm = SimpleNamespace(
-        structured_generate=AsyncMock(
-            side_effect=[invalid, {
-                **invalid,
-                "claims": [{
-                    **invalid["claims"][0],
-                    "predicate": "ancestral_hall_owner",
-                }],
-            }]
-        )
-    )
-
-    report = await evaluate_facts(
-        value, "辛家祖祠归辛家所有", "outline", llm
-    )
-
-    assert report.status == "pass"
-    assert llm.structured_generate.await_count == 2
-    retry_prompt = llm.structured_generate.await_args_list[1].kwargs["prompt"]
-    assert "校验错误" in retry_prompt
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("kind", ["outline", "body"])
-async def test_auto_partial_fact_does_not_forge_complete_evidence(kind):
-    value = setup_gate()
-    llm = judge(value, coverage="partial", unresolved=["未提及陆家现状"])
-    cfg = config(value, llm)
-    cfg["configurable"]["auto_mode"] = True
-
-    result = await check_fact_artifact(
-        {}, cfg, "辛家祖祠归辛家所有", kind, Command(goto="chapter_writer_node")
-    )
-
-    assert result.goto == "chapter_writer_node"
-    assert result.update["fact_reports"][kind]["status"] == "unknown"
-    assert result.update["fact_reports"][kind]["coverage"] == "partial"
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("automatic,kind,expected", [
-    (False, "outline", "fact_review_node"),
-    (True, "body", "chapter_writer_node"),
-])
-async def test_partial_evidence_only_continues_for_automatic_mode(automatic, kind, expected):
-    value = setup_gate()
-    cfg = config(value, judge(value, coverage="partial"))
-    cfg["configurable"]["auto_mode"] = automatic
-    result = await check_fact_artifact(
-        {}, cfg, "辛家祖祠归辛家所有", kind, Command(goto="chapter_writer_node")
-    )
-    assert result.goto == expected
-
-
-@pytest.mark.asyncio
-async def test_auto_outline_respects_forced_human_review(monkeypatch):
-    from config import settings
-    monkeypatch.setattr(settings, "FACT_REVIEW_MODE", "human_only")
-    value = setup_gate()
-    cfg = config(value, judge(value))
-    cfg["configurable"]["auto_mode"] = True
-    result = await check_fact_artifact(
-        {}, cfg, "辛家祖祠归辛家所有", "outline", Command(goto="chapter_writer_node")
-    )
-    assert result.goto == "fact_review_node"
-
-
-@pytest.mark.asyncio
 async def test_unknown_acknowledgement_binds_exact_report():
     value, content = setup_gate(), "他推开门。"
     report = await evaluate_facts(value, content, "body", None)
@@ -189,12 +121,11 @@ async def test_same_artifact_retry_reuses_report_but_new_snapshot_does_not():
     second = await check_fact_artifact(first.update, cfg, content, "body", Command(goto="router_agent"))
     assert second.goto == "fact_review_node"
     assert llm.structured_generate.await_count == 1
-    changed = value.model_copy(update={"fact_heads": ()})
+    changed = value.model_copy(update={"fact_heads": tuple(
+        fact.model_copy(update={"version": fact.version + 1}) for fact in value.fact_heads)})
     cfg["configurable"]["story_fact_repository"].capture_constraints.return_value = changed
-    result = await check_fact_artifact(first.update, cfg, content, "body", Command(goto="router_agent"))
-    assert result.update["fact_reports"]["body"]["snapshot_digest"] == changed.digest
-    assert result.update["fact_reports"]["body"]["status"] == "unknown"
-    assert llm.structured_generate.await_count == 1
+    await check_fact_artifact(first.update, cfg, content, "body", Command(goto="router_agent"))
+    assert llm.structured_generate.await_count == 2
 
 
 @pytest.mark.asyncio

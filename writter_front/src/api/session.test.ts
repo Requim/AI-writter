@@ -1,6 +1,6 @@
 import axios from 'axios'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { refreshSession } from './session'
+import { isSessionInvalid, refreshSession } from './session'
 import { useAuthStore } from '@/stores/authStore'
 import type { AuthSession } from '@/types/auth'
 
@@ -21,5 +21,20 @@ describe('refreshSession', () => {
     await expect(Promise.all([first, second])).resolves.toEqual([session, session])
     expect(post).toHaveBeenCalledTimes(1)
     expect(useAuthStore.getState().accessToken).toBe('fresh-access')
+  })
+
+  it.each([502, 503, 504, undefined])('keeps credentials on temporary refresh failure %s', async (status) => {
+    useAuthStore.setState({ accessToken: 'expired', refreshToken: 'old-refresh' })
+    const error = Object.assign(new Error('temporary'), {
+      isAxiosError: true, response: status ? { status } : undefined,
+    })
+    vi.spyOn(axios, 'post').mockRejectedValue(error)
+    await expect(refreshSession()).rejects.toBe(error)
+    expect(isSessionInvalid(error)).toBe(false)
+    expect(useAuthStore.getState().refreshToken).toBe('old-refresh')
+  })
+
+  it.each([401, 403])('recognizes an explicit invalid session %s', (status) => {
+    expect(isSessionInvalid({ isAxiosError: true, response: { status } })).toBe(true)
   })
 })

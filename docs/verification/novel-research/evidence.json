@@ -1,0 +1,63 @@
+{
+  "schema_version": 2,
+  "task_id": "novel-research-v1-20260920",
+  "contract_sha256": "9470daaf5f34489032298dffc07017dc1bf7f3061c0ef6f1c3f32b764f1ec926",
+  "observed_state": {
+    "source_snapshot": "biquge-structure-2026-09-20",
+    "implementation_scope": "novel-research-files-only",
+    "workspace_baseline": "pre-existing-dirty-worktree-preserved"
+  },
+  "checks": [
+    {
+      "criterion_id": "AC-1",
+      "status": "passed",
+      "environment": "local-review",
+      "observation": "合成目录、详情和首章 fixture 解析通过；17项定向测试中的解析和 UTF-8 断言通过。",
+      "verified_at": "2026-09-20T05:10:50.0672315Z",
+      "artifacts": [
+        {"path": "docs/verification/novel-research/targeted-tests.txt", "sha256": "6e2cad74c4acfc79d6b4e2ee85c162e6b095ce4529df48af3060847c34008395"}
+      ]
+    },
+    {
+      "criterion_id": "AC-2",
+      "status": "passed",
+      "environment": "local-review",
+      "observation": "外部主机、非白名单路径、429响应和未授权首章均被拒绝；请求策略测试通过。",
+      "verified_at": "2026-09-20T05:10:50.0672315Z",
+      "artifacts": [
+        {"path": "docs/verification/novel-research/targeted-tests.txt", "sha256": "6e2cad74c4acfc79d6b4e2ee85c162e6b095ce4529df48af3060847c34008395"}
+      ]
+    },
+    {
+      "criterion_id": "AC-3",
+      "status": "passed",
+      "environment": "local-review",
+      "observation": "分层抽样、去重、批次契约和类型汇总测试通过。",
+      "verified_at": "2026-09-20T05:10:50.0672315Z",
+      "artifacts": [
+        {"path": "docs/verification/novel-research/targeted-tests.txt", "sha256": "6e2cad74c4acfc79d6b4e2ee85c162e6b095ce4529df48af3060847c34008395"}
+      ]
+    },
+    {
+      "criterion_id": "AC-4",
+      "status": "passed",
+      "environment": "local-review",
+      "observation": "原文重合门禁通过；研究卡片和汇总模型无正文字段；新文件复杂度检查无违规。",
+      "verified_at": "2026-09-20T05:10:50.0672315Z",
+      "artifacts": [
+        {"path": "docs/verification/novel-research/code-quality.txt", "sha256": "2aaa4a7efa0635497f6896723212cffcff0a782be3e61f98951d85059b24462b"},
+        {"path": "docs/verification/novel-research/targeted-tests.txt", "sha256": "6e2cad74c4acfc79d6b4e2ee85c162e6b095ce4529df48af3060847c34008395"}
+      ]
+    },
+    {
+      "criterion_id": "AC-5",
+      "status": "passed",
+      "environment": "local-review",
+      "observation": "2026-09-20 对七个配置分类页执行只读 UTF-8 冒烟，共解析216条候选，未请求章节页。",
+      "verified_at": "2026-09-20T05:10:50.0672315Z",
+      "artifacts": [
+        {"path": "docs/verification/novel-research/live-catalog-smoke.txt", "sha256": "bb1f958005fa3e700b8d3072b5b1722ab2668d8e532b115028979b92e343d0c3"}
+      ]
+    }
+  ]
+}

@@ -7,14 +7,14 @@ import type {
 import { requiresHumanReview } from '@/workflowReviewPolicy'
 import {
   ChapterOutlineReview, CreativeBriefReview, MacroOutlineReview, QualityReview,
-  RevisionReview, SummaryReview, TitleReview,
+  RevisionReview, SummaryReview, TitleReview, GenreStrategyReview,
 } from './ReviewContents'
 import { CharacterDesignReview } from './CharacterDesignReview'
 import { FactReview } from './FactReview'
 import { ChapterPlanReview } from './ChapterPlanReview'
 import { NovelPlanProposalReview } from './NovelPlanProposalReview'
 import {
-  outlineFrom, proposalPayload, summaryReviewDetails, summaryTextsDistinct, titleCandidates,
+  asRecord, outlineFrom, proposalPayload, summaryReviewDetails, summaryTextsDistinct, titleCandidates,
 } from './valueHelpers'
 
 interface Props {
@@ -67,6 +67,7 @@ function decisionValue(
 }
 
 function primaryLabel(action: string): string {
+  if (action === 'review_or_modify_genre_strategy') return '确认题材策略'
   if (action === 'review_or_modify_creative_brief') return '确认创作简报'
   if (action === 'review_or_modify_character_design') return '确认角色设计'
   if (['review_or_modify_novel_plan', 'review_novel_plan'].includes(action)) return '确认整书规划'
@@ -83,6 +84,7 @@ function primaryLabel(action: string): string {
 interface TitleActions { confirm: (item: TitleSuggestion) => void; regenerate: () => void }
 
 function reviewContent(interrupt: InterruptInfo, title: TitleActions) {
+  if (interrupt.action === 'review_or_modify_genre_strategy') return <GenreStrategyReview interrupt={interrupt} />
   if (interrupt.action === 'review_or_modify_creative_brief') return <CreativeBriefReview interrupt={interrupt} />
   if (interrupt.action === 'confirm_or_provide_title') {
     return <TitleReview interrupt={interrupt} onConfirm={title.confirm} onRegenerate={title.regenerate} />
@@ -105,26 +107,30 @@ function reviewContent(interrupt: InterruptInfo, title: TitleActions) {
 }
 
 function QualityActions({ interrupt, onResume }: Omit<Props, 'autoMode' | 'onRetry' | 'interrupt'> & { interrupt: InterruptInfo }) {
+  const gate = asRecord(proposalPayload(interrupt)?.gate)
+  const blocked = gate?.goal_review_required === true
   const accept = () => onResume(decisionValue(interrupt, 'accept'))
   const revise = () => onResume(decisionValue(interrupt, 'revise', 'revise'))
   const regenerate = () => onResume(decisionValue(interrupt, 'regenerate'))
   return <div className="interrupt-actions">
     <Popconfirm title="仍要接受当前章节？" description="已发现的问题或未确认的结果不会因此变为通过。" okText="确认接受" cancelText="返回核对" onConfirm={accept}>
-      <Button type="primary">{primaryLabel(interrupt.action)}</Button>
+      <Button type="primary" disabled={blocked}>{primaryLabel(interrupt.action)}</Button>
     </Popconfirm>
     <Button onClick={revise}>按建议修订</Button>
+    {blocked && <Button onClick={() => onResume(decisionValue(interrupt, 'revise', 'retry'))}>重新审读目标</Button>}
     <Button onClick={regenerate}>重新生成正文</Button>
   </div>
 }
 
 function UnavailableActions({ interrupt, onResume }: Omit<Props, 'autoMode' | 'onRetry' | 'interrupt'> & { interrupt: InterruptInfo }) {
+  const blocked = proposalPayload(interrupt)?.goal_review_required === true
   const retry = () => onResume(decisionValue(interrupt, 'revise', 'retry'))
   const accept = () => onResume(decisionValue(interrupt, 'accept'))
   const rewrite = () => onResume(decisionValue(interrupt, 'regenerate'))
   return <div className="interrupt-actions">
     <Button type="primary" onClick={retry}>重新审读</Button>
     <Popconfirm title="接受未经审读的章节？" description="本章将保留未审读标记，不代表质量通过。" okText="确认接受" cancelText="返回核对" onConfirm={accept}>
-      <Button>接受并标记未审读</Button>
+      <Button disabled={blocked}>接受并标记未审读</Button>
     </Popconfirm>
     <Button onClick={rewrite}>重写正文</Button>
   </div>
@@ -215,6 +221,11 @@ function StandardActions({ interrupt, onResume, acceptDisabled }: StandardAction
 
 export function WorkflowReview({ interrupt, autoMode, onResume }: Props) {
   if (!interrupt) return null
+  if (interrupt.action === 'creative_paused') return <section className="interrupt-block">
+    <div className="interrupt-title"><PauseCircleOutlined /> 自主创作已暂停</div>
+    <p>{interrupt.message}</p>
+    <Button onClick={() => onResume({ action: 'retry' })}>重新检查并恢复</Button>
+  </section>
   if (interrupt.action === 'fact_review_required' || interrupt.proposal?.kind === 'fact_review') {
     return <FactReview key={proposalIdentity(interrupt)} interrupt={interrupt} onResume={onResume} />
   }

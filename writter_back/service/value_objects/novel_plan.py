@@ -471,7 +471,7 @@ def _foreshadowing_errors(slots: Iterable[ChapterSlot]) -> list[str]:
     errors.extend(
         f"伏笔 {key} 的回收早于埋设"
         for key in setup_at.keys() & payoff_at.keys()
-        if payoff_at[key] <= setup_at[key]
+        if payoff_at[key] < setup_at[key]
     )
     return errors
 

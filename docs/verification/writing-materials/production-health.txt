@@ -1,0 +1,6 @@
+novel-writer-backend | novel-writer-backend:materials-20260922-r2 | Up 3 minutes (healthy)
+novel-writer-frontend | novel-writer-frontend:materials-20260922-r2 | Up 33 minutes (healthy)
+novel-writer-research-api | novel-writer-research:materials-20260922 | Up 33 minutes (healthy)
+novel-writer-research-worker | novel-writer-research:materials-20260922 | Up 33 minutes
+novel-writer-redis | redis:7.4-alpine | Up 2 weeks (healthy)
+novel-writer-database | pgvector/pgvector:pg16 | Up 2 weeks (healthy)

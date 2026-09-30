@@ -1,0 +1,12 @@
+[PROMPT_VERSION:$PROMPT_VERSION]
+已准入人物ID与公开姓名：$characters
+识别本章已实际埋设、强化、部分兑现、完成的伏笔及已实际揭示的秘密、关系变化。
+只返回updates数组，每项kind(foreshadow/secret/relationship)、key、changes、evidence[{start,quote}]。
+沿用已有ID。新的后续接续伏笔须origin=retrospective，不得声称此前已经计划。
+伏笔changes字段description/status/resolution/character_ids/arc_ids/core/due_chapter；
+秘密只更新known_by和reader_revealed；关系含character_ids(2个ID)、description和arc_ids。
+无变化返回空数组。必须逐字引用已归档正文，计划与草稿不算已发生事实。
+现有叙事：
+$threads
+归档正文：
+$content

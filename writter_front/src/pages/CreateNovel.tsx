@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router'
 import type { FormInstance } from 'antd'
 import { AppShell } from '@/components/AppShell'
+import { AuthorModeFields } from '@/components/creative/AuthorModeFields'
 import { useUnsavedChangesGuard, type DiscardConfirmation } from '@/hooks/useUnsavedChangesGuard'
 import { novelApi } from '@/api/novel'
 import { useGenreTaxonomy } from '@/hooks/useGenreTaxonomy'
@@ -229,8 +230,7 @@ export default function CreateNovel() {
     <div className="creation-page page-enter">
       <Button type="text" icon={<ArrowLeftOutlined />} onClick={() => confirmDiscard(() => navigate('/'))}>返回书架</Button>
       <div className="creation-layout"><section className="creation-form">
-        <span className="eyebrow">新建选题</span><h1>为故事定下第一笔</h1>
-        <p className="section-lead">先给出故事方向；空白内容由 AI 提案，逐步确认模式会在关键节点等待你的决定。</p>
+        <h1>创建作品</h1>
         <Form form={form} layout="vertical" initialValues={INITIAL_CREATION_VALUES} onValuesChange={(changed) => {
           if ('total_chapters' in changed || 'target_total_words' in changed) form.setFieldValue('planning_preset', 'custom')
         }} onFinish={(values) => void submit(values)} requiredMark={false}>
@@ -238,6 +238,7 @@ export default function CreateNovel() {
             genreProfiles={genreState.profiles} selectedProfile={genreState.selectedProfile}
             onGenreChange={genreState.onGenreChange} onModeChange={setAutoMode} />
           <PlanningFields form={form} options={planning.options} loading={planning.loading} error={planning.error} />
+          <AuthorModeFields form={form} />
           <Collapse ghost className="advanced-settings" items={[{ key: 'advanced', label: <span><SettingOutlined /> 更多创作约束</span>, children: <AdvancedFields /> }]} />
           <div className="creation-submit-bar">
             <QuotaNotice quota={quota} loading={quotaLoading} chapters={chapters ?? DEFAULT_TOTAL_CHAPTERS} />

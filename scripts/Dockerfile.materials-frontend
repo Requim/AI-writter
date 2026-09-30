@@ -1,0 +1,10 @@
+FROM node:22-bookworm AS build
+WORKDIR /app
+COPY frontend-source/package*.json ./
+COPY npm-cache/ /root/.npm/
+COPY fontsource-*.tgz /tmp/fonts/
+RUN npm cache add /tmp/fonts/*.tgz --offline && npm ci --offline --no-audit --no-fund
+COPY frontend-source/ ./
+RUN npm run build
+FROM novel-writer-frontend:research-e2e-20260921-r3
+COPY --from=build /app/dist/ /usr/share/nginx/html/

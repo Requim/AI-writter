@@ -6,7 +6,7 @@ import json
 import logging
 from datetime import datetime
 from typing import Any, Literal
-from uuid import UUID, uuid4
+from uuid import UUID, uuid4, uuid5
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
@@ -38,7 +38,7 @@ logger = logging.getLogger("uvicorn")
 OUTLINE_FIELDS = frozenset({
     "story_background", "main_characters", "main_plot", "antagonist_plan",
     "truth_reveal_ladder", "cost_curve", "relationship_turns",
-    "writing_style", "total_chapters", "volumes", "scale", "creative_brief", "prompt_version",
+    "writing_style", "total_chapters", "volumes", "scale", "creative_brief", "prompt_version", "author_config",
 })
 STORY_STATE_FIELDS = {
     "timeline", "characters", "open_conflicts", "foreshadowing",
@@ -77,6 +77,8 @@ async def _persist_setup(
         updated = True
     outline, total = _outline_value(state.get("total_outline"))
     if outline is not None:
+        if novel.total_outline and novel.total_outline.author_config:
+            outline.author_config = novel.total_outline.author_config
         novel.total_outline = outline
         updated = True
     if total and novel.progress:
@@ -133,6 +135,8 @@ def _completed_chapter(state: NovelAgentState, content: str, index: int) -> dict
     outlines = state.get("chapter_outlines") or []
     outline = outlines[-1] if outlines and isinstance(outlines[-1], dict) else {}
     chapter_id = str(state.get("rewrite_chapter_id") or uuid4())
+    if state.get("author_mode") == "autonomous_v1" and state.get("creative_session_id"):
+        chapter_id = str(uuid5(UUID(state["creative_session_id"]), f"chapter:{index}"))
     prior_version = int(state.get("rewrite_chapter_version", 0) or 0)
     return {
         "id": chapter_id, "chapter_index": index,
@@ -357,6 +361,9 @@ def _writing_command(
         if int(state.get("workflow_schema_version") or 2) >= 5
         else "progress_check_node"
     )
+    if state.get("author_mode") == "autonomous_v1":
+        destination = "creative_postprocess_node"
+        is_completed = False
     return Command(
         goto=destination,
         update={
@@ -388,6 +395,11 @@ async def persist_node(
             values.get("novel_id", ""),
         )
         return Command(goto="progress_check_node")
+    from application.goal_contract import require_goal_acceptance
+    from application.errors import QualityGateReviewRequired
+
+    if not require_goal_acceptance(state, content):
+        raise QualityGateReviewRequired("目标验收未通过或正文版本已变化；请重新审读，不得以质量接受代替目标完成")
     checked = await check_fact_artifact(state, config, content, "body", Command(goto="persist_node"))
     if checked.goto == "fact_review_node":
         return checked

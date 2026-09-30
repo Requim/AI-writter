@@ -146,26 +146,6 @@ def validate_volume_slots(
     return slots, list(dict.fromkeys(errors))
 
 
-def _volume_foreshadowing_errors(
-    slots: list[dict[str, Any]], known_setup_ids: Iterable[str]
-) -> list[str]:
-    setup_ids = {str(item) for item in known_setup_ids if str(item).strip()}
-    errors: list[str] = []
-    for slot in sorted(slots, key=lambda item: int(item.get("chapter_number", 0) or 0)):
-        chapter = int(slot.get("chapter_number", 0) or 0)
-        current_setup_ids = {
-            str(item) for item in slot.get("setup_ids", []) if str(item).strip()
-        }
-        setup_ids.update(current_setup_ids)
-        for payoff_id in slot.get("payoff_ids", []) or []:
-            normalized = str(payoff_id).strip()
-            if normalized and normalized not in setup_ids:
-                errors.append(
-                    f"伏笔 {normalized} 在第 {chapter} 章回收前未安排埋设"
-                )
-    return errors
-
-
 def _raw_slot_errors(
     item: dict[str, Any], volume: VolumePlan, arcs: dict[str, StoryArc]
 ) -> list[str]:
@@ -187,6 +167,20 @@ def _raw_slot_errors(
             errors.append(f"第 {chapter} 章强度权重必须为正数")
     except (TypeError, ValueError):
         errors.append(f"第 {chapter} 章强度权重无效")
+    return errors
+
+
+def _volume_foreshadowing_errors(
+    slots: list[dict[str, Any]], known_setup_ids: Iterable[str],
+) -> list[str]:
+    setup_ids = set(map(str, known_setup_ids))
+    errors: list[str] = []
+    for slot in sorted(slots, key=lambda item: int(item.get("chapter_number", 0) or 0)):
+        chapter = int(slot.get("chapter_number", 0) or 0)
+        setup_ids.update(map(str, slot.get("setup_ids") or []))
+        for payoff_id in map(str, slot.get("payoff_ids") or []):
+            if payoff_id not in setup_ids:
+                errors.append(f"伏笔 {payoff_id} 在第 {chapter} 章回收前未安排埋设")
     return errors
 
 

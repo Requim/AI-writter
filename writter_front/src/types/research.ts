@@ -8,6 +8,8 @@ export interface ResearchCapabilities {
   retrieval_backend: 'keyword' | string
   vector_enabled: boolean
   raw_text_persistence: boolean
+  genre_labels: Record<string, string>
+  source_to_project_genres: Record<string, string[]>
 }
 
 export interface BatchAccepted {

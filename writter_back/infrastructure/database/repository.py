@@ -40,6 +40,7 @@ from .models import (
     NovelTacticalPlanVersionModel,
 )
 from infrastructure.database.runtime_guard import assert_execution_owner
+from infrastructure.database.creative_repository import create_creative_session
 
 
 async def _lock_novel(
@@ -832,9 +833,14 @@ class PostgresNovelRepository(
     async def aclose(self) -> None:
         await self.engine.dispose()
 
-    async def save(self, tenant_id: str, novel: Novel) -> Novel:
+    async def save(self, tenant_id: str, novel: Novel, *, creation_command=None) -> Novel:
         """保存小说"""
         async with self.async_session() as session:
+            from infrastructure.database.creative_commands import record_control, replay_creation
+            if creation_command and await replay_creation(
+                session, uuid.UUID(tenant_id), novel.id, creation_command["key"], creation_command["payload"],
+            ):
+                return novel
             novel_model = NovelModel(
                 id=novel.id,
                 tenant_id=uuid.UUID(tenant_id),
@@ -852,6 +858,18 @@ class PostgresNovelRepository(
                 updated_at=novel.updated_at,
             )
             session.add(novel_model)
+            if novel.total_outline and novel.total_outline.author_config:
+                await session.flush()
+                await create_creative_session(
+                    session, uuid.UUID(tenant_id), novel.id,
+                    novel.total_outline.author_config, novel.total_outline.total_chapters,
+                )
+                novel_model.total_outline = {**novel_model.total_outline, "author_config": {
+                    "author_mode": "autonomous_v1", "creative_schema_version": 1,
+                }}
+            if creation_command:
+                record_control(session, uuid.UUID(tenant_id), novel.id, creation_command["key"],
+                               creation_command["payload"], {"novel_id": str(novel.id)})
             await session.commit()
             return novel
 
@@ -1155,6 +1173,9 @@ class PostgresNovelRepository(
                 await fact_guard(session, chapter)
             elif (chapter.user_decision or {}).get("fact_gate"):
                 raise FactGateBlockedError("带事实回执的章节必须执行事务内复验")
+            from infrastructure.database.creative_archive import guard_creative_archive
+            if await guard_creative_archive(session, tenant_uuid, novel_uuid, chapter):
+                return chapter
             if discard_following:
                 progress.checkpoint_sync = _checkpoint_sync_request(
                     chapter.chapter_index + 1, chapter.chapter_index, progress.is_complete(),

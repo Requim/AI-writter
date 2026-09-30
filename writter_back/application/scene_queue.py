@@ -98,8 +98,9 @@ def _scene_prompt(context: SceneQueueContext, index: int, target: int) -> tuple[
         "pov_character": outline.get("pov_character", ""),
         "scene": context.scenes[index],
     }
+    visible_total = _scene_total(context, index)
     story_bible = (
-        build_story_bible(context.total_outline, related_context=related)
+        build_story_bible(visible_total, related_context=related)
         if context.total_outline
         else context.story_bible
     )
@@ -119,6 +120,8 @@ def _scene_prompt(context: SceneQueueContext, index: int, target: int) -> tuple[
         ), target
     previous_target = context.ledger[-1].get("target_character_count", context.targets[index - 1])
     adjusted, note = _calibrate_target(len(context.contents[-1]), previous_target, target)
+    if outline.get("creative_contract_version") == 1 and context.scenes[index].get("function") != "conflict":
+        note = "按本场景功能补齐认知、关系、情绪变化或后续作用，不强制增加反转或危机。"
     return build_next_scene_prompt(
         **common, scene_index=index + 1,
         prev_scene_digest=build_previous_scene_digest(context.scenes[index - 1], context.contents[-1]),
@@ -128,6 +131,18 @@ def _scene_prompt(context: SceneQueueContext, index: int, target: int) -> tuple[
     ), adjusted
 
 
+def _scene_total(context, index):
+    """自主模式进一步按当前场景投影，后续场景信息不提前进入正文请求。"""
+    if context.chapter_outline.get("creative_contract_version") != 1:
+        return context.total_outline
+    from application.creative.artifacts import json_text
+    scene = context.scenes[index]
+    ids = set(scene.get("character_ids") or [])
+    return {**context.total_outline,
+            "main_characters": [c for c in context.total_outline.get("main_characters", []) if c.get("character_id") in ids],
+            "story_background": json_text({"allowed_information": scene.get("allowed_information", [])})}
+
+
 async def _extend_short_scene(
     context: SceneQueueContext, content: str, target: int
 ) -> str:
@@ -135,8 +150,14 @@ async def _extend_short_scene(
         return content
     prompt = build_scene_continue_prompt(
         len(content), target, content,
-        "只补齐尚未完成的行动、反制、信息增量和不可逆代价。",
+        "只补齐本场景功能要求的状态变化，不额外制造危机。"
+        if context.chapter_outline.get("creative_contract_version") == 1
+        else "只补齐尚未完成的行动、反制、信息增量和不可逆代价。",
+        context.chapter_outline,
     )
+    from application.goal_contract import goal_prompt
+
+    prompt += goal_prompt(context.chapter_outline.get("goal_contract"))
     extra = await collect_streamed_text(
         context.llm, prompt, node="chapter_writer_node",
         chapter_index=context.chapter_index, temperature=CHAPTER_WRITER_TEMPERATURE,

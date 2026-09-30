@@ -18,6 +18,8 @@ export interface WorkflowViewState {
   qualityScore?: number
   qualityDecision?: string
   planResult?: { chapter: number; status: string; drift: string; version?: number }
+  creativeRevision?: number
+  creativeStatus?: { kind: string; status: string }
   interrupt?: InterruptInfo
   progress?: number
   retryable?: boolean
@@ -59,6 +61,7 @@ export const initialWorkflowState: WorkflowViewState = {
 
 const interruptNodes: Record<string, string> = {
   require_novel_type: 'type_confirmation',
+  review_or_modify_genre_strategy: 'genre_strategy_review_node',
   review_or_modify_creative_brief: 'creative_brief_review_node',
   review_or_modify_character_design: 'character_design_review_node',
   confirm_or_provide_title: 'title_review_node',
@@ -90,6 +93,7 @@ function startState(state: WorkflowViewState, action: Extract<WorkflowAction, { 
     draft: action.preserveDraft ? state.draft : '', activeNode: undefined,
     activeCommandId: action.commandId, stageStartedAt: undefined, reasoning: undefined,
     qualityScore: undefined, qualityDecision: undefined, planResult: undefined,
+    creativeRevision: undefined, creativeStatus: undefined,
     issues: [], interrupt: undefined, events: [], error: undefined,
     retryable: undefined, retryAfter: undefined, retryCount: undefined,
     errorCode: undefined, errorNode: undefined, isStale: false,
@@ -114,6 +118,7 @@ function snapshotStatus(
   hasPending: boolean,
   retainError: boolean,
 ) {
+  if (snapshot.interrupts?.some((item) => item.action === 'creative_paused')) return 'paused' as const
   if (snapshot.is_completed || snapshot.state?.is_completed === true) return 'completed' as const
   if (snapshot.status === 'running' && (snapshot.execution?.status === 'cancelling'
     || snapshot.execution?.cancel_requested === true)) return 'cancelling' as const
@@ -137,6 +142,13 @@ export function readPlanResult(value: unknown): WorkflowViewState['planResult'] 
   }
 }
 
+function factReviewBody(interrupt?: InterruptInfo): string | undefined {
+  const report = interrupt?.fact_report
+  if (interrupt?.action !== 'fact_review_required' || !report || typeof report !== 'object') return
+  if (!('artifact_kind' in report) || report.artifact_kind !== 'body') return
+  return typeof interrupt.artifact_content === 'string' ? interrupt.artifact_content : undefined
+}
+
 function reduceSnapshot(state: WorkflowViewState, snapshot: WorkflowSnapshot): WorkflowViewState {
   if (snapshot.status === 'unknown') return { ...state, syncState: 'unknown' }
   const execution = snapshot.execution
@@ -151,6 +163,7 @@ function reduceSnapshot(state: WorkflowViewState, snapshot: WorkflowSnapshot): W
   const stopped = execution?.status === 'cancelled'
   return {
     ...state, status, syncState: 'confirmed',
+    draft: completed ? '' : factReviewBody(interrupt) ?? state.draft,
     planResult: readPlanResult(snapshot.state?.last_plan_execution),
     connection: snapshot.status === 'running' && !completed ? 'detached' : 'idle',
     activeNode: completed ? undefined : nodeForInterrupt(interrupt) || execution?.active_node || snapshot.next_nodes?.[0],
@@ -206,6 +219,10 @@ function reduceChapterEvent(next: WorkflowViewState, event: WorkflowEvent): void
 }
 
 function reduceTypedEvent(next: WorkflowViewState, event: WorkflowEvent): void {
+  if (event.type === 'creative' && typeof event.data.kind === 'string' && typeof event.data.status === 'string') {
+    next.creativeRevision = event.id
+    next.creativeStatus = { kind: event.data.kind, status: event.data.status }
+  }
   if (event.type === 'status') reduceStatusEvent(next, event)
   if (event.type === 'chapter_persisted') reduceChapterEvent(next, event)
   if (event.type === 'reasoning') {
@@ -239,6 +256,7 @@ function reduceTerminalEvent(next: WorkflowViewState, event: WorkflowEvent): voi
   if (event.type === 'interrupt') {
     const interrupts = event.data.interrupts
     next.interrupt = Array.isArray(interrupts) ? interrupts[0] as InterruptInfo : undefined
+    next.draft = factReviewBody(next.interrupt) ?? next.draft
     next.activeNode = nodeForInterrupt(next.interrupt) || next.activeNode
     next.reasoning = next.interrupt?.message || next.reasoning
     next.status = 'paused'
@@ -264,6 +282,7 @@ function reduceTerminalEvent(next: WorkflowViewState, event: WorkflowEvent): voi
 }
 
 function reduceEvent(state: WorkflowViewState, event: WorkflowEvent): WorkflowViewState {
+  if (event.type === 'creative' && event.id <= (state.creativeRevision ?? -1)) return state
   if (!eventIsCurrent(state, event)) return state
   if (event.type === 'status' && event.data.status === 'measurement') return state
   const next = {
@@ -293,6 +312,11 @@ export function workflowReducer(state: WorkflowViewState, action: WorkflowAction
   if (action.type === 'sync_failed') {
     const failures = (state.consecutiveSyncFailures ?? 0) + 1
     return { ...state, consecutiveSyncFailures: failures, connectionRecovering: failures >= 2, syncState: 'unknown' }
+  }
+  if (action.type === 'failure' && action.code === 'workflow_transport_unavailable') return {
+    ...state, status: 'stalled', connection: 'detached', syncState: 'unknown',
+    connectionRecovering: true, isStale: true, error: action.message,
+    errorCode: action.code, retryable: false,
   }
   if (action.type === 'failure') return {
     ...state, status: 'error', connection: 'idle', error: action.message,

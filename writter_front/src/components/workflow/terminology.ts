@@ -21,6 +21,10 @@ export const planningFieldLabels: Record<string, string> = {
   tactical_goal_fulfilled: '章节目标已落实', approach_followed: '推进方式已落实',
   exit_hook_established: '章末悬念已建立', deviations: '偏差', notes: '备注',
   status: '状态', invalid_fields: '缺失或格式错误的项目',
+  goal_acceptance: '原始目标验收', contract_id: '目标版本指纹', content_hash: '正文版本指纹',
+  checks: '逐项验收', id: '要求编号', expected: '预期结果', reason: '判定依据',
+  evidence: '原文证据', evidence_valid: '引用与正文一致', range: '允许范围',
+  actual_chapter_words: '本章实际字符数', actual_total_words: '全书实际字符数',
 }
 
 export const reviewValueLabels: Record<string, string> = {
@@ -28,8 +32,9 @@ export const reviewValueLabels: Record<string, string> = {
   can_ignore: '可保留', logic: '逻辑', pacing: '节奏', character: '人物',
   consistency: '一致性', continuity: '连续性', causality: '因果',
   unknown: '尚未确认', reviewed: '已检查', pass: '通过', human_review: '需要人工审阅',
+  passed: '已通过', failed: '未满足', blocked: '尚不能归档',
   main: '主线', subplot: '支线', romance: '感情线', growth: '成长线',
-  mystery: '悬疑线', conflict: '冲突线', fulfilled: '已兑现', deferred: '部分延后', breached: '需要调整',
+  mystery: '悬疑线', conflict: '冲突线', fulfilled: '已兑现', deferred: '存在计划偏差', breached: '需要调整',
 }
 
 export function planningFieldLabel(key: string): string {

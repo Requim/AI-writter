@@ -13,10 +13,13 @@ $chunks_summary
 6. 每个问题必须引用正文中连续、可精确查找的 evidence；找不到原句就不要报。
 7. 对照章节细纲中的 plan_context 判断本章计划兑现；非结构性延后与结局、卷边界、核心弧、规模违约必须分开标记。
 8. 对照 tactical_context 独立判断近期战术兑现，输出 tactical_fulfillment；不能省略或用计划兑现报告代替。
+9. 网文追读检查：首章开头 500 字内是否让读者知道 POV 人物、地点、具体麻烦和一次可见动作；前 800 字是否形成明确追问和即时风险。若没有，必须引用连续原文，使用 tension_gap、padding、genre_promise 或 voice 问题记录，不得只写“节奏慢”。
 
 $editorial_checks
 
 $genre_strategy
+
+$reader_contract
 
 【题材专项检查】
 - 若整章没有兑现题材承诺、误用母题或违反禁用解法，可输出 issue.type 为 genre_promise、trope_misuse 或 genre_logic。

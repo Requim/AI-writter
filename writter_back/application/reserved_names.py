@@ -46,12 +46,24 @@ def hydrate_reserved_introductions(
         if isinstance(item, Mapping)
     }
     hydrated = [_hydrate_introduction(item, reserve, existing) for item in values]
+    if (total_outline.get("author_config") or {}).get("author_mode") == "autonomous_v1":
+        hydrated = [_autonomous_introduction(item, raw, result) for item, raw in zip(hydrated, values)]
     ids = [item["character_id"] for item in hydrated]
     candidate_ids = [item["candidate_id"] for item in hydrated]
     if len(ids) != len(set(ids)) or len(candidate_ids) != len(set(candidate_ids)):
         raise NamingValidationError(["新增长期角色重复使用 character_id 或保留姓名"])
     result["new_long_term_characters"] = hydrated
     return result
+
+
+def _autonomous_introduction(item, raw, chapter_outline):
+    from application.character_design import normalize_profile
+    reason = str(chapter_outline.get("existing_character_decision") or "").strip()
+    profile = normalize_profile(raw)
+    if not reason or any(not value for value in profile.values()):
+        raise NamingValidationError(["自主模式新人必须有完整人物卡和既有人物复用判断"])
+    return {**item, "profile": {**item["profile"], **profile},
+            "role_slot_id": raw.get("role_slot_id"), "existing_character_decision": reason}
 
 
 def _hydrate_introduction(

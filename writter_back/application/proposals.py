@@ -14,6 +14,7 @@ from application.schemas.agent_state import NovelAgentState, PendingProposal
 PROPOSAL_KINDS = {
     "fact_review",
     "creative_brief",
+    "genre_strategy",
     "character_design",
     "title",
     "summary",
@@ -43,6 +44,7 @@ class ReviewDecision:
 _REPLACEMENT_TYPES: dict[str, tuple[type, ...]] = {
     "fact_review": (str,),
     "creative_brief": (Mapping,),
+    "genre_strategy": (Mapping,),
     "character_design": (Mapping,),
     "title": (str, Mapping),
     "summary": (str, Mapping),

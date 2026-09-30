@@ -12,3 +12,7 @@ dist
 .codegraph/
 .playwright-cli/
 output/
+
+# Local release bundles, source snapshots, and temporary artifacts.
+/.release/
+/tmp/

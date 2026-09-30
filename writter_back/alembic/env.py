@@ -5,6 +5,7 @@ from sqlalchemy import engine_from_config, pool
 
 from config import settings
 from infrastructure.database.models import Base
+from infrastructure.database import runtime_models, creative_models
 
 config = context.config
 config.set_main_option("sqlalchemy.url", settings.DATABASE_URL.replace("+asyncpg", ""))

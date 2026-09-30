@@ -1,0 +1,5 @@
+FROM novel-writer-frontend:materials-build AS build
+COPY writter_front/src/pages/ResearchConsole.tsx /app/src/pages/ResearchConsole.tsx
+RUN npm run build -- --logLevel warn
+FROM novel-writer-frontend:materials-20260922-r2
+COPY --from=build /app/dist/ /usr/share/nginx/html/

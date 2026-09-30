@@ -1,0 +1,78 @@
+{
+  "schema_version": 2,
+  "task_id": "research-service-v2-20260920",
+  "contract_sha256": "8e036a55e09e4ebed69fec26911b828410decc1dd239186b7684c1f518a64aff",
+  "observed_state": {
+    "source_snapshot": "biquge-structure-2026-09-20",
+    "implementation_scope": "research-service-and-optional-writer-client",
+    "retrieval_policy": "keyword-first-no-vector",
+    "workspace_baseline": "pre-existing-dirty-worktree-preserved"
+  },
+  "checks": [
+    {
+      "criterion_id": "AC-1",
+      "status": "passed",
+      "environment": "local-review",
+      "observation": "本地独立服务启动后，能力接口报告 keyword 检索且 vector_enabled=false；样本插入、审核批准和 world_rule 关键词检索完成并返回 1 条命中。",
+      "verified_at": "2026-09-20T11:33:54.4773953Z",
+      "artifacts": [
+        {
+          "path": "research-service-checks.txt",
+          "sha256": "1a95a00d4e206c21bd3392d890749e19098fae351132962aaeed7cf9dbe699d5"
+        }
+      ]
+    },
+    {
+      "criterion_id": "AC-2",
+      "status": "passed",
+      "environment": "local-review",
+      "observation": "服务模型和采集运行器只落结构化卡片、哈希、目录索引和聚合知识包；sanitize 流程清空来源 summary，完整正文不进入研究库；首章采样由 authorized_opening 控制。",
+      "verified_at": "2026-09-20T11:33:54.4773953Z",
+      "artifacts": [
+        {
+          "path": "research-service-checks.txt",
+          "sha256": "1a95a00d4e206c21bd3392d890749e19098fae351132962aaeed7cf9dbe699d5"
+        }
+      ]
+    },
+    {
+      "criterion_id": "AC-3",
+      "status": "passed",
+      "environment": "local-review",
+      "observation": "批次接口入队、worker 认领任务、独立 research_service 迁移和 Compose 数据库配置均存在；Alembic 离线 SQL 和腾讯云在线迁移均生成 research_* 表、类型知识表、pg_trgm 和关键词 GIN 索引，未生成向量扩展或向量列。",
+      "verified_at": "2026-09-20T11:33:54.4773953Z",
+      "artifacts": [
+        {
+          "path": "research-service-checks.txt",
+          "sha256": "1a95a00d4e206c21bd3392d890749e19098fae351132962aaeed7cf9dbe699d5"
+        }
+      ]
+    },
+    {
+      "criterion_id": "AC-4",
+      "status": "passed",
+      "environment": "local-review",
+      "observation": "写作后端的 ResearchLibraryClient 默认关闭，只有配置开关、地址和令牌同时满足时才请求独立服务；客户端定向测试通过。",
+      "verified_at": "2026-09-20T11:33:54.4773953Z",
+      "artifacts": [
+        {
+          "path": "research-service-checks.txt",
+          "sha256": "1a95a00d4e206c21bd3392d890749e19098fae351132962aaeed7cf9dbe699d5"
+        }
+      ]
+    },
+    {
+      "criterion_id": "AC-5",
+      "status": "passed",
+      "environment": "local-review",
+      "observation": "研究服务和客户端定向测试 11 passed；Ruff、Mypy、Compileall、Python wheel、Alembic 离线 SQL、腾讯云镜像构建和 Compose config 均通过。后端全量测试 681 passed、64 skipped，剩余 2 项是工作区原有静态约束失败。",
+      "verified_at": "2026-09-20T11:33:54.4773953Z",
+      "artifacts": [
+        {
+          "path": "research-service-checks.txt",
+          "sha256": "1a95a00d4e206c21bd3392d890749e19098fae351132962aaeed7cf9dbe699d5"
+        }
+      ]
+    }
+  ]
+}

@@ -27,8 +27,7 @@ export default function Login() {
     <AuthLayout>
       <div className="auth-form page-enter">
         <span className="eyebrow">欢迎回来</span>
-        <h2>进入编辑部</h2>
-        <p>选择工作区后，只会看到属于该租户的创作资料。</p>
+        <h2>登录工作台</h2>
         <Form layout="vertical" onFinish={submit} requiredMark={false}>
           <Form.Item name="email" label="邮箱" rules={[{ required: true }, { type: 'email' }]}>
             <Input size="large" prefix={<MailOutlined />} autoComplete="email" />

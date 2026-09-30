@@ -6,7 +6,7 @@ import { reviewValueLabels } from './terminology'
 function PlanResult({ state }: { state: WorkflowViewState }) {
   const result = state.planResult
   if (!result) return null
-  const driftLabels: Record<string, string> = { none: '未发现计划偏差', minor: '部分内容延后', major: '需要调整后续规划' }
+  const driftLabels: Record<string, string> = { none: '未发现计划偏差', minor: '存在轻微计划偏差', major: '需要调整后续规划' }
   return <section className="workflow-plan-result" aria-label="计划兑现检查">
     <h3>计划兑现检查</h3>
     <p>{result.chapter > 0 ? '第 ' + result.chapter + ' 章：' : ''}{reviewValueLabels[result.status] || '尚未确认'}</p>

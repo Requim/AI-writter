@@ -9,6 +9,7 @@ from langgraph.types import Command
 from application.continuity import build_story_bible
 from application.errors import RetryableWorkflowError
 from application.feature_policy import require_planning_v1
+from application.goal_contract import current_goal_contract, fingerprint, goal_prompt
 from application.fact_workflow import attach_fact_input, bind_chapter_fact_input
 from application.fact_gate_workflow import check_fact_artifact
 from application.prompts.revision_prompts import (
@@ -80,6 +81,27 @@ def apply_structured_patch(content: str, payload: Any, allowed_ids: set[str]) ->
     return revised
 
 
+def _check_goal_patch_scope(payload: Any, issues: list[dict], content: str) -> None:
+    """局部修改必须包含对应证据且受范围限制，不能借问题ID重写全章。"""
+    evidence = {i["issue_id"]: str(i.get("evidence") or "") for i in issues if i.get("issue_id")}
+    edits = payload.get("edits", []) if isinstance(payload, dict) else []
+    if not isinstance(edits, list):
+        raise RetryableWorkflowError("局部修改范围无法验证")
+    changed = 0
+    for edit in edits:
+        if not isinstance(edit, dict):
+            raise RetryableWorkflowError("局部修改范围无法验证")
+        anchor, quote = edit.get("anchor"), evidence.get(edit.get("issue_id"), "")
+        if not isinstance(anchor, str) or not quote or quote not in anchor:
+            raise RetryableWorkflowError("局部修改锚点没有包含对应问题的原文证据")
+        replacement = edit.get("replacement")
+        if not isinstance(replacement, str) or max(len(anchor), len(replacement)) > 1500:
+            raise RetryableWorkflowError("单项局部修改超过1500字符范围")
+        changed += max(len(anchor), len(replacement))
+    if changed > len(content) * 0.3:
+        raise RetryableWorkflowError("局部修改超过正文30%，需明确授权全文重构")
+
+
 def _history_text(state: NovelAgentState) -> str:
     parts = []
     for entry in state.get("revision_history", []) or []:
@@ -91,6 +113,20 @@ def _history_text(state: NovelAgentState) -> str:
     return "\n".join(parts)
 
 
+def _revision_outline(state: NovelAgentState) -> tuple[dict, dict, str, str]:
+    content = state.get("current_chapter_content", "")
+    outline = state.get("chapter_outlines", [{}])[-1] if state.get("chapter_outlines") else {}
+    total = state.get("total_outline", {})
+    total = total if isinstance(total, dict) else {}
+    brief = state.get("creative_brief") or total.get("creative_brief") or {}
+    strategy = state.get("genre_strategy") or brief.get("genre_strategy")
+    if strategy:
+        outline = {**outline, "genre_strategy": strategy}
+    if current_goal_contract(state):
+        outline = {**outline, "goal_findings": (state.get("quality_gate") or {}).get("goal_acceptance")}
+    return outline, total, content, state.get("memory_context", "")
+
+
 def _full_revision_prompt(
     state: NovelAgentState, content: str, outline: dict, context: str, bible: str
 ) -> tuple[str, float, str]:
@@ -100,11 +136,11 @@ def _full_revision_prompt(
     if instructions:
         instructions += "\n【尚未解决的审读问题】\n" + format_issues_for_prompt(issues)
         prompt = build_user_instruction_revision_prompt(instructions, content, outline, context, bible)
-        return prompt, 0.5, "user_instruction"
+        return prompt + goal_prompt(outline.get("goal_contract")), 0.5, "user_instruction"
     prompt = build_refactor_revision_prompt(
         format_issues_for_prompt(issues), content, outline, _history_text(state), context, bible
     )
-    return prompt, REFACTOR_TEMPERATURE, "refactor"
+    return prompt + goal_prompt(outline.get("goal_contract")), REFACTOR_TEMPERATURE, "refactor"
 
 
 async def _generate_full(
@@ -137,15 +173,18 @@ async def _generate_patch(
     issues = [
         issue for issue in state.get("reflection_issues", []) or []
         if issue.get("priority_action") != "can_ignore" and issue.get("evidence_valid") is True
+        and not issue.get("issue_resolved")
     ]
     allowed_ids = {str(issue.get("issue_id", "")) for issue in issues if issue.get("issue_id")}
     prompt = build_patch_revision_prompt(
         format_issues_for_prompt(issues), content, outline, _history_text(state), context, bible
-    )
+    ) + goal_prompt(outline.get("goal_contract"))
     payload = await llm.structured_generate(
         prompt=prompt, schema=PATCH_SCHEMA, system_prompt=build_revision_system_prompt(),
         temperature=PATCH_TEMPERATURE,
     )
+    if outline.get("goal_contract"):
+        _check_goal_patch_scope(payload, issues, content)
     revised = apply_structured_patch(content, payload, allowed_ids)
     chapter_index = state.get("current_chapter_index", 0)
     emit_workflow_event(
@@ -166,6 +205,8 @@ async def _expand_if_needed(
     bible: str,
     index: int,
 ) -> str:
+    if outline.get("goal_contract"):
+        return revised
     if len(revised) >= len(original) * 0.8:
         return revised
     prompt = build_expansion_prompt(revised, outline, min(len(original), 7000), context, bible)
@@ -188,10 +229,13 @@ async def _generate_refactor(
 
 def _next_after_revision(state: NovelAgentState, revised: str) -> Command:
     chapter_number = state.get("current_chapter_index", 0) + 1
+    contract = current_goal_contract(state)
+    binding = {"source_hash": fingerprint(state.get("current_chapter_content", "")),
+               "contract_id": contract["id"]} if contract else {}
     update = proposal_update(
         state,
         "revision",
-        {"revised_content": revised, "preview": revised[:500]},
+        {"revised_content": revised, "preview": revised[:500], **binding},
         chapter_number,
     )
     return Command(goto="revision_review_node", update=update)
@@ -213,6 +257,11 @@ async def revision_review_node(
     """审核 checkpoint 中的修订提案，不再次调用模型。"""
     chapter_number = state.get("current_chapter_index", 0) + 1
     proposal = require_proposal(state, "revision", chapter_number)
+    contract = current_goal_contract(state)
+    payload = proposal.get("payload") or {}
+    if contract and (payload.get("contract_id") != contract["id"]
+                     or payload.get("source_hash") != fingerprint(state.get("current_chapter_content", ""))):
+        raise RetryableWorkflowError("修订提案基于旧正文或旧目标，请重新生成提案")
     decision = decide_proposal(
         state, proposal, config, **_revision_review_fields(proposal)
     )
@@ -240,13 +289,22 @@ def _revision_audit(state: NovelAgentState) -> dict[str, Any]:
 def _accept_revision(
     state: NovelAgentState, revised: str, *, auto_mode: bool = False,
 ) -> Command:
+    contract = current_goal_contract(state)
+    audit = _revision_audit(state)
+    if contract:
+        audit["revision_history"][-1].update({
+            "goal_contract_id": contract["id"],
+            "before_hash": fingerprint(state.get("current_chapter_content", "")),
+            "after_hash": fingerprint(revised),
+            "instruction": (state.get("user_decision") or {}).get("instructions"),
+        })
     common = {
         "current_chapter_content": revised,
         "pending_proposal": None,
         "pending_proposal_decision": None,
-        **_revision_audit(state),
+        **audit,
     }
-    if auto_mode:
+    if auto_mode or contract:
         return Command(goto="reflection_node", update=common)
     gate = {
         **(state.get("quality_gate") or {}),
@@ -297,6 +355,7 @@ async def revision_node(
         workflow_schema_version=int(state.get("workflow_schema_version") or 2),
     )
     chapter = state.get("current_chapter_index", 0) + 1
+    current_goal_contract(state)
     if proposal_matches(state, "revision", chapter):
         return Command(goto="revision_review_node")
     decision = state.get("user_decision", {}) or {}
@@ -312,11 +371,7 @@ async def revision_node(
         "status", {"status": "started", "message": "正在生成正文修订提案"},
         "revision_node",
     )
-    content = state.get("current_chapter_content", "")
-    outline = state.get("chapter_outlines", [{}])[-1] if state.get("chapter_outlines") else {}
-    total = state.get("total_outline", {})
-    total = total if isinstance(total, dict) else {}
-    context = state.get("memory_context", "")
+    outline, total, content, context = _revision_outline(state)
     related = {"chapter_outline": outline, "chapter_content": content}
     bible = build_story_bible(total, related_context=related)
     gate_mode = (state.get("quality_gate", {}) or {}).get("decision")

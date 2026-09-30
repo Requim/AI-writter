@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "task_id": "research-service-v2-20260920",
+  "goal": "交付独立的类型知识采集服务：从授权来源采集结构化研究样本，按项目题材沉淀可审核的知识包，并以关键词检索供后续创作使用。",
+  "state": {
+    "source_snapshot": "biquge-structure-2026-09-20",
+    "implementation_scope": "research-service-and-optional-writer-client",
+    "retrieval_policy": "keyword-first-no-vector",
+    "workspace_baseline": "pre-existing-dirty-worktree-preserved"
+  },
+  "criteria": [
+    {
+      "id": "AC-1",
+      "description": "采集服务可独立启动，样本按项目题材聚合成可审核的 GenreKnowledgePackage，并能通过关键词检索。",
+      "environment": "local-review"
+    },
+    {
+      "id": "AC-2",
+      "description": "持久化边界只保存结构化元数据、目录索引、摘要后的模式卡和哈希，不保存完整正文；首章采样受授权开关控制。",
+      "environment": "local-review"
+    },
+    {
+      "id": "AC-3",
+      "description": "批次接口只入队，后台 worker 负责采样和异步汇总；研究库有独立迁移、表和数据库配置，且当前未启用向量字段或扩展。",
+      "environment": "local-review"
+    },
+    {
+      "id": "AC-4",
+      "description": "写作后端通过可选的独立客户端查询研究库，功能关闭或服务未配置时不改变既有写作启动路径。",
+      "environment": "local-review"
+    },
+    {
+      "id": "AC-5",
+      "description": "研究服务、客户端和后端回归通过静态检查、类型检查、编译检查、定向测试，并且 Compose 与 Alembic 配置可解析。",
+      "environment": "local-review"
+    }
+  ]
+}

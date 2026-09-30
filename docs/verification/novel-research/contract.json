@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "task_id": "novel-research-v1-20260920",
+  "goal": "落地 biquge.pro 受限题材研究纵切，只保留结构化元数据、目录摘要和安全边界，不持久化整本正文。",
+  "state": {
+    "source_snapshot": "biquge-structure-2026-09-20",
+    "implementation_scope": "novel-research-files-only",
+    "workspace_baseline": "pre-existing-dirty-worktree-preserved"
+  },
+  "criteria": [
+    {
+      "id": "AC-1",
+      "description": "目录、详情和首章解析器能从合成 HTML 生成结构化结果，并保留 UTF-8 中文。",
+      "environment": "local-review"
+    },
+    {
+      "id": "AC-2",
+      "description": "URL 白名单、请求预算、限流停止和未授权首章门禁有效。",
+      "environment": "local-review"
+    },
+    {
+      "id": "AC-3",
+      "description": "分层抽样、去重、研究批次契约和类型汇总只处理结构化卡片。",
+      "environment": "local-review"
+    },
+    {
+      "id": "AC-4",
+      "description": "原文重合会被阻断，研究卡片和汇总模型不承载正文文本。",
+      "environment": "local-review"
+    },
+    {
+      "id": "AC-5",
+      "description": "对当前站点七个目录分类执行只读结构冒烟，且结果可用 UTF-8 正确读取。",
+      "environment": "local-review"
+    }
+  ]
+}

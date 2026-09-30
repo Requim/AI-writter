@@ -1,0 +1,6 @@
+FROM novel-writer-backend:research-auth-2cc0a31 AS production
+COPY backend/ /app/
+FROM production AS tests
+RUN uv pip install --python /app/.venv/bin/python pytest pytest-asyncio
+ENV PYTHONPATH=/app
+CMD ["/app/.venv/bin/python", "-m", "pytest", "tests/test_writing_materials.py", "tests/test_research_library_client.py", "tests/test_research_router.py", "tests/test_genre_strategy.py", "-q"]

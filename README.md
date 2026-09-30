@@ -171,6 +171,39 @@ OpenAI 兼容 Provider 的结构化输出使用流式接收，避免代理等待
 
 当前 PostgreSQL memory adapter 以结构化文本和元数据检索为主，虽然基础镜像包含 pgvector，但本项目尚未启用向量相似度检索。
 
+## 独立小说研究服务
+
+`research_service` 是与写作后端独立的采集和研究库服务。它将笔趣阁的目录、详情和授权首章分析转换为按 `project_genre` 累积的类型知识包，写作端只通过内部 API 检索已审核结果。
+
+- 研究库使用同一 PostgreSQL 实例中的独立 `novel_research` 数据库。
+- v1 使用关键词和 `pg_trgm`，不保存向量、不调用 embedding。
+- 单本样本用于去重、统计和证据追溯，不作为主要 RAG 文档。
+- 完整正文不落库；首章正文只有在明确授权时临时驻留内存。
+
+本地 Compose 会启动 `research-api`（8010）和 `research-worker`。首次创建数据库时，`scripts/init-research-db.sql` 会创建独立研究库；已有数据库卷需要手动创建该数据库后再执行研究服务迁移。
+
+腾讯云部署使用独立附加栈 `docker-compose.research.yml`，不会重启写作后端、前端或 Redis：
+
+```bash
+sudo docker compose --env-file .env --env-file .env.research \
+  -f docker-compose.research.yml build research-api research-worker
+sudo docker compose --env-file .env --env-file .env.research \
+  -f docker-compose.research.yml run --rm --no-deps research-api \
+  alembic -c /app/research_service/alembic.ini upgrade head
+sudo docker compose --env-file .env --env-file .env.research \
+  -f docker-compose.research.yml up -d --no-build
+```
+
+生产环境的研究 API 只绑定云主机 `127.0.0.1:8010`，外部访问应通过写作后端内网调用或 SSH 隧道；`RESEARCH_INTERNAL_TOKEN` 保存在服务器独立的 600 权限配置文件中，不提交到仓库。
+
+腾讯云现已通过 Nginx 代理到现有 HTTPS 域名：
+
+- API 文档页：`https://myunlimatedlife.top/research/docs`
+- OpenAPI JSON：`https://myunlimatedlife.top/research/openapi.json`
+- 健康检查：`https://myunlimatedlife.top/research/health/ready`
+
+这里是研究 API 的 Swagger 文档页，不是小说采集管理后台；直接访问研究 API 的写入、审核和检索接口仍需要 `X-Research-Token`。研究资料工作台不要求用户填写这个内部令牌，而是使用当前登录态访问写作后端，由写作后端在服务端注入内部令牌。
+
 ## SSE 协议
 
 统一入口：
@@ -413,6 +446,7 @@ docker compose ps
 
 - 前端：`http://localhost:5173`
 - 后端：`http://localhost:8000`
+- 研究服务：`http://localhost:8010`
 - OpenAPI：`http://localhost:8000/docs`
 - Liveness：`http://localhost:8000/health/live`
 - Readiness：`http://localhost:8000/health/ready`

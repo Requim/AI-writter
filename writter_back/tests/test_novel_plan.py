@@ -18,7 +18,6 @@ from infrastructure.database.models import (
     NovelPlanExecutionModel,
     NovelPlanVersionModel,
 )
-from application.planning import validate_volume_slots
 from service.value_objects.novel_plan import (
     ChapterSlot,
     NovelPlan,
@@ -32,47 +31,7 @@ from service.value_objects.novel_plan import (
     validate_novel_plan,
     validate_plan_transition,
 )
-
-
-def test_volume_validation_rejects_payoff_without_prior_setup() -> None:
-    volume = VolumePlan(
-        "vol-1", "第一卷", 1, 2, 8400,
-        opening_state="危机出现", midpoint_turn="线索浮现",
-        climax="冲突升级", ending_state="阶段结束",
-    )
-    arc = StoryArc(
-        "main", "main", 1, 2, "解决危机",
-        [{"chapter_number": 1, "change": "冲突升级"}],
-        "危机解除", True,
-    )
-    raw = {
-        "chapter_slots": [
-            {
-                "chapter_number": 1,
-                "arc_ids": ["main"],
-                "story_function": "回收伏笔",
-                "must_happen": ["回收 F1"],
-                "planned_state_delta": "真相揭开",
-                "intensity_weight": 1,
-                "setup_ids": [],
-                "payoff_ids": ["F1"],
-            },
-            {
-                "chapter_number": 2,
-                "arc_ids": ["main"],
-                "story_function": "补设伏笔",
-                "must_happen": ["埋设 F1"],
-                "planned_state_delta": "关系改变",
-                "intensity_weight": 1,
-                "setup_ids": ["F1"],
-                "payoff_ids": [],
-            },
-        ]
-    }
-
-    _, errors = validate_volume_slots(raw, volume, [arc], "skeleton")
-
-    assert "伏笔 F1 在第 1 章回收前未安排埋设" in errors
+from application.planning import validate_volume_slots
 
 
 def _plan(chapters: int = 12, words: int = 50_400) -> NovelPlan:
@@ -193,16 +152,52 @@ def test_plan_validation_reports_coverage_references_and_foreshadowing() -> None
     assert any("没有对应伏笔" in error for error in errors)
 
 
-def test_plan_validation_requires_final_core_arc_and_later_payoff() -> None:
+def test_plan_validation_requires_final_core_arc_and_no_earlier_payoff() -> None:
     plan = _plan()
     plan.arcs[0].end_chapter -= 1
     plan.chapter_slots[-1].arc_ids = []
     plan.chapter_slots[0].payoff_ids = ["F001"]
+    plan.chapter_slots[0].setup_ids = []
+    plan.chapter_slots[1].setup_ids = ["F001"]
 
     errors = validate_novel_plan(plan)
 
     assert any("核心剧情弧必须在最终章闭合" in error for error in errors)
     assert any("回收早于埋设" in error for error in errors)
+
+
+def test_plan_validation_allows_setup_and_payoff_in_same_chapter() -> None:
+    plan = _plan()
+    plan.chapter_slots[0].payoff_ids = ["F001"]
+    plan.chapter_slots[-1].payoff_ids = []
+    assert not any("回收早于埋设" in error for error in validate_novel_plan(plan))
+
+
+def test_volume_validation_rejects_payoff_without_prior_setup() -> None:
+    volume = VolumePlan(
+        volume_id="V1", title="第一卷", start_chapter=1, end_chapter=2,
+        target_words=8400, opening_state="开", midpoint_turn="转",
+        climax="高", ending_state="收",
+    )
+    arcs = [StoryArc(
+        arc_id="A1", arc_type="主线", goal="目标", start_chapter=1,
+        end_chapter=2, escalation_points=[{"chapter_number": 1}],
+        resolution_condition="完成", is_core=True,
+    )]
+    raw = {"chapter_slots": [
+        {
+            "chapter_number": 1, "arc_ids": ["A1"], "story_function": "推进",
+            "must_happen": ["事件"], "planned_state_delta": "变化",
+            "intensity_weight": 1, "payoff_ids": ["F1"],
+        },
+        {
+            "chapter_number": 2, "arc_ids": ["A1"], "story_function": "收束",
+            "must_happen": ["事件"], "planned_state_delta": "变化",
+            "intensity_weight": 1, "setup_ids": ["F1"],
+        },
+    ]}
+    _, errors = validate_volume_slots(raw, volume, arcs, "detailed")
+    assert any("回收前未安排埋设" in error for error in errors)
 
 
 def test_transition_preserves_completed_and_lock_window() -> None:

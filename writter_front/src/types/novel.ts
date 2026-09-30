@@ -27,6 +27,17 @@ export interface GenreContext {
   narrative_pace?: string
 }
 
+export interface GenreStrategy {
+  reader_promise: string
+  plot_engine: string
+  style_constraints: string[]
+  chapter_requirements: string[]
+  review_dimensions: string[]
+  avoid_solutions: string[]
+  tone_guidance: string
+  originality_hooks: string[]
+}
+
 export interface GenreOption {
   value: string
   label: string
@@ -93,6 +104,7 @@ export interface TitleSuggestion {
 }
 
 export interface NovelOutline {
+  author_config?: import('./creative').AuthorConfiguration
   story_background?: string
   main_characters?: Array<Record<string, JsonValue>>
   main_plot?: Record<string, JsonValue>
@@ -325,6 +337,7 @@ export interface PlanReplanRequest {
 }
 
 export interface NovelCreateRequest {
+  author_config?: import('./creative').AuthorConfiguration
   novel_type: string
   title?: string
   summary?: string
@@ -408,6 +421,7 @@ export interface ReflectionIssue {
 }
 
 export type WorkflowEventType =
+  | 'creative'
   | 'status'
   | 'reasoning'
   | 'content_delta'
@@ -447,7 +461,9 @@ export type ReviewDecision =
   | { proposal_id: string; decision: 'replace'; value: JsonValue }
 
 export type ReviewInterruptAction =
+  | 'creative_paused'
   | 'fact_review_required'
+  | 'review_or_modify_genre_strategy'
   | 'review_or_modify_creative_brief'
   | 'review_or_modify_character_design'
   | 'confirm_or_provide_title'
@@ -479,6 +495,7 @@ interface InterruptBase {
   ai_generated_summary?: string
   ai_generated_outline?: Record<string, JsonValue>
   ai_generated_creative_brief?: CreativeBrief
+  ai_generated_genre_strategy?: GenreStrategy
   ai_generated_character_design?: CharacterDesignProposal
   issues?: ReflectionIssue[]
   [key: string]: unknown

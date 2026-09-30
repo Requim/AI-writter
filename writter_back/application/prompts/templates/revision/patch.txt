@@ -19,6 +19,8 @@ $chapter_outline
 
 $continuity_block
 
+$reader_contract
+
 【输出要求】
 - 只输出 JSON，不输出整章正文、Markdown 或说明。
 - replacement 是 anchor 的完整替换文本，需自带前后衔接。

@@ -25,6 +25,8 @@ RouterDestination = Literal[
     "chapter_writer_node",
     "chapter_compaction_node",
     "reflection_node",
+    "creative_decision_node",
+    "creative_postprocess_node",
 ]
 
 
@@ -39,6 +41,10 @@ def _outline_for_current_chapter(
 
 def _route(state: NovelAgentState) -> tuple[str, str]:
     """Select the next node from trusted state, without another LLM request."""
+    if state.get("author_mode") == "autonomous_v1":
+        completed = int(state.get("current_chapter_index") or 0)
+        if completed > int(state.get("creative_postprocessed_through") or 0) and not state.get("current_chapter_content"):
+            return "creative_postprocess_node", "归档正文已保存，先恢复尚未完成的后处理"
     total_outline = state.get("total_outline")
     if not isinstance(total_outline, dict) or not total_outline:
         return "outline_node", "缺少宏观总纲，返回总纲节点"
@@ -64,6 +70,8 @@ def _route(state: NovelAgentState) -> tuple[str, str]:
         return "memory_retrieval_node", f"生成第{chapter_number}章前先检索前文记忆"
 
     plan = _valid_plan(state.get("novel_plan")) if schema_version >= 5 else None
+    if state.get("author_mode") == "autonomous_v1" and plan and state.get("creative_decision_for_chapter") != chapter_number:
+        return "creative_decision_node", "依据人物状态、主线职责及当前计划决定本章行动"
     if plan and state.get("chapter_quota_reserved_for_chapter") != current_index:
         return "chapter_quota_node", f"预占第{chapter_number}章唯一生成额度"
     window = _valid_window(state.get("tactical_window")) if plan else None

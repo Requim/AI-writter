@@ -135,6 +135,11 @@ async def creative_brief_review_node(
 
 
 def _accept_brief(state: NovelAgentState, brief: dict) -> Command:
+    brief = dict(brief)
+    material = (state.get("creative_brief") or {}).get("research_material")
+    brief.pop("research_material", None)
+    if material:
+        brief["research_material"] = material
     return Command(
         goto=_brief_next_node(state),
         update={

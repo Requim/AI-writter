@@ -12,7 +12,7 @@ export const researchApi = {
   capabilities: () => data<ResearchCapabilities>(apiClient.get('/v1/research/capabilities')),
   createBatch: (payload: unknown) => data<BatchAccepted>(apiClient.post('/v1/research/batches', payload)),
   job: (jobId: string) => data<ResearchJob>(apiClient.get(`/v1/research/jobs/${jobId}`)),
-  search: (params: Record<string, string | number | undefined>) => data<SearchResponse>(apiClient.get('/v1/research/knowledge/search', { params })),
+  search: (params: Record<string, string | number | boolean | undefined>) => data<SearchResponse>(apiClient.get('/v1/research/knowledge/search', { params })),
   current: (genre: string) => data<KnowledgePackage>(apiClient.get(`/v1/research/knowledge/${genre}`)),
   review: (versionId: string, payload: unknown) => data<KnowledgePackage>(apiClient.post(`/v1/research/knowledge/${versionId}/review`, payload)),
 }

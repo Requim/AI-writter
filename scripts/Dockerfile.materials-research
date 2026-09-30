@@ -1,0 +1,6 @@
+FROM novel-writer-research:research-e2e-20260921-r4 AS production
+COPY research_service/ /app/research_service/
+FROM production AS tests
+RUN pip install --no-cache-dir pytest pytest-asyncio
+ENV PYTHONPATH=/app
+CMD ["python", "-m", "pytest", "/app/research_service/tests", "-q"]

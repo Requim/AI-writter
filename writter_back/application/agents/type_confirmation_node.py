@@ -8,7 +8,7 @@ from application.schemas.agent_state import NovelAgentState
 
 def type_confirmation_node(
     state: NovelAgentState,
-) -> Command[Literal["creative_brief_node", "type_confirmation"]]:
+) -> Command[Literal["research_material_node", "type_confirmation"]]:
     """
     类型确认节点 - 强制用户输入小说类型
     使用 interrupt() 暂停，等待用户通过 API 提供 novel_type
@@ -19,7 +19,9 @@ def type_confirmation_node(
     if state.get("novel_type"):
         logger.info(f"【类型确认节点】跳过 -> 创作简报节点 | 类型已设置: {state['novel_type']}")
         logger.info(f"{'='*60}")
-        return Command(goto="creative_brief_node")
+        return Command(
+            goto="research_material_node"
+        )
     
     # 可选类型列表
     available_types = {
@@ -51,6 +53,6 @@ def type_confirmation_node(
     logger.info(f"【类型确认节点】用户选择了类型: {available_types.get(user_input, user_input)} -> 创作简报节点")
     logger.info(f"{'='*60}")
     return Command(
-        goto="creative_brief_node",
+        goto="research_material_node",
         update={"novel_type": user_input}
     )

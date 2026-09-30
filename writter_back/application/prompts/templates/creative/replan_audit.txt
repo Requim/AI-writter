@@ -1,0 +1,9 @@
+[PROMPT_VERSION:$PROMPT_VERSION]
+独立复验改纲，不能把用户硬设定、已完成正文、锁定窗口和规模当作可变项。
+分别返回hard_settings_pass、responsibilities_pass、foreshadow_pass、reader_promises_pass布尔值，以及reason和change_mapping数组。
+每条change_mapping明确原职责/伏笔/读者承诺ID、新计划的承接位置、为何未违约；无法承接则对应pass=false。
+不得只因新计划更刺激就忽略人物动机、核心伏笔和此前承诺。模型判断不能代替归档事实，来源不明标unknown并拒绝。
+用户配置：$config
+旧计划：$previous
+新计划：$proposed
+人物、伏笔与读者版本：$records

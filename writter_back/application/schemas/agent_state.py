@@ -11,6 +11,7 @@ class PendingProposal(TypedDict):
     kind: Literal[
         "fact_review",
         "creative_brief",
+        "genre_strategy",
         "character_design",
         "title",
         "summary",
@@ -29,6 +30,15 @@ class PendingProposal(TypedDict):
 
 class NovelAgentState(TypedDict):
     """LangGraph Agent 状态 - 整个小说创作流程的共享状态"""
+    author_mode: Optional[str]
+    author_config: Optional[Dict]
+    creative_session_id: Optional[str]
+    creative_schema_version: Optional[int]
+    creative_stage: Optional[str]
+    creative_selection_id: Optional[str]
+    creative_narrative_mode: Optional[str]
+    creative_decision_for_chapter: Optional[int]
+    creative_postprocessed_through: Optional[int]
     
     # ========== 用户输入区（由用户通过interrupt提供） ==========
     novel_type: str                          # 小说类型（强制用户输入，无AI fallback）
@@ -39,6 +49,10 @@ class NovelAgentState(TypedDict):
     scale_contract: Optional[Dict]             # 服务端确认的规模契约
     requested_writing_style: Optional[str]    # 用户指定写作风格（约束AI生成总纲）
     creative_brief: Optional[Dict]            # 创作简报（母题、冲突、读者承诺与内容边界）
+    genre_strategy: Optional[Dict]            # 本作品专属题材策略
+    genre_strategy_feedback: Optional[str]    # 题材策略修改要求
+    genre_strategy_version: Optional[int]     # 题材策略版本
+    genre_strategy_enabled: Optional[bool]   # 是否启用 AI 题材策略阶段
     creative_brief_feedback: Optional[str]    # 用户对创作简报的修改要求
     character_design: Optional[Dict]           # 已确认角色表、命名策略与关系轴
     character_fact_source: Optional[Dict]      # 真正人工确认的事实入账回执
@@ -120,6 +134,7 @@ class NovelAgentState(TypedDict):
     llm_config: Optional[Dict]                # LLM配置，用于节点中获取LLM实例
     workflow_run_id: Optional[str]            # 配额幂等键，恢复时沿用
     prompt_version: Optional[str]              # 本轮使用的提示词契约版本
+    prompt_snapshot: Optional[Dict[str, str]]  # 本轮绑定的不可变提示词内容
 
     # ========== 内部路由 ==========
     __next_node__: Optional[str]               # persist_node 设定阶段的目标节点

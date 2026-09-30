@@ -1,0 +1,39 @@
+Research service verification, 2026-09-20
+
+Targeted tests
+- Command: writter_back\\.venv\\Scripts\\pytest.exe -q research_service\\tests writter_back\\tests\\test_research_library_client.py
+- Result: 11 passed in 0.16s
+
+Backend regression
+- Command: writter_back\\.venv\\Scripts\\pytest.exe -q writter_back\\tests
+- Result: 681 passed, 64 skipped, 2 failed, 1 warning in 12.10s
+- Known pre-existing failures outside this change:
+  - api/routers/workflow_router.py:951 _produce_stream_events lines=53 nesting=5
+  - application/review_contract_rules.py:11 review_contract_rules chars=432
+
+Static and type checks
+- Ruff: All checks passed for research_service, research client, and api/main.py.
+- Mypy: Success: no issues found in 25 source files.
+- Compileall: passed for research_service, research client, and api/main.py.
+
+Database and packaging checks
+- Alembic offline SQL: passed; generated pg_trgm extension, research tables, current-version index, and GIN trigram retrieval index.
+- Docker Compose config: passed for development Compose.
+- Docker image build: passed on Tencent Cloud using the Aliyun PyPI mirror after the first public PyPI download timed out.
+- Python wheel build: passed for research_service.
+
+HTTP smoke
+- Local endpoint: http://127.0.0.1:8010
+- /health/live: {"status":"ok"}
+- /health/ready: {"status":"ready"}
+- /internal/v1/research/capabilities: retrieval_backend=keyword, vector_enabled=false, raw_text_persistence=false
+- Sample insert, review approval, and keyword search: approved version returned one hit.
+
+Scope notes
+- Tencent Cloud online PostgreSQL migration: passed; novel_research contains alembic_version, research_batches, research_jobs, research_samples, genre_knowledge_versions, and genre_terms, plus pg_trgm.
+- Tencent Cloud research-api: healthy on 127.0.0.1:8010; unauthenticated capability request returned 401 and token-authenticated request returned 200.
+- Tencent Cloud research-worker: running with no restart loop observed.
+- Nginx public proxy: /research/health/ready, /research/docs, and /research/openapi.json returned HTTP 200 on the existing HTTPS domain; token-authenticated /research/internal/v1/research/capabilities returned HTTP 200.
+- A logical backup of the existing novel_writer database was created before deployment; the recorded dump was 58M and its SHA-256 was captured on the host.
+- External model invocation and live source batch collection were not run; deployment stops before automatic collection.
+- The Tencent Cloud deployment uses the real PostgreSQL repository; the local smoke server uses the in-memory repository when RESEARCH_DATABASE_URL is unset.

@@ -15,6 +15,8 @@ $current_content
 
 $continuity_block
 
+$reader_contract
+
 【修正约束】
 1. 执行指令时保持原有叙事视角、角色声音与文笔水准。
 2. 同步修正受指令直接影响的上下文，例如角色改变后其他人物的即时反应；不得另起支线。

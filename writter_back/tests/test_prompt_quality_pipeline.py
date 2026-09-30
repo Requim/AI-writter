@@ -59,6 +59,9 @@ class _CreativeBriefLLM:
         self.brief_calls = 0
 
     async def structured_generate(self, prompt, schema, **kwargs):
+        if "plot_engine" in schema:
+            return {key: ["通过证据推进悬疑"] if kind == "array" else "通过证据推进悬疑"
+                    for key, kind in schema.items()}
         if "core_premise" in schema:
             self.brief_calls += 1
             return {
@@ -145,6 +148,8 @@ def test_chapter_contract_prompt_is_reproducible_and_allows_adaptive_scenes() ->
     assert first == second
     assert "2-5 个场景" in first
     assert "desire" in first and "price_paid" in first and "state_delta" in first
+    assert '"reader_contract"' in first
+    assert "800字内" in first
 
 
 def test_genre_strategy_falls_back_to_novel_type_and_renders_contract() -> None:
@@ -164,11 +169,21 @@ def test_genre_strategy_falls_back_to_novel_type_and_renders_contract() -> None:
         prev_scene_digest="上一场景发现旧信", prev_word_count=1000,
         correction_note="", target_words=1500, logic_hooks={},
         internal_monologue="", memory_context="",
+        creative_brief={
+            "tone": "冷峻克制",
+            "style_fingerprint": "短句，少形容词，动作先行",
+            "reader_promise": "每章都兑现一条可验证线索",
+            "originality_anchor": "广播会篡改人的记忆",
+        },
     )
 
     assert "【题材策略】" in outline_prompt and "悬疑" in outline_prompt
     assert "genre_contract" in outline_prompt
     assert "本章用线索推理兑现悬疑快感" in writer_prompt
+    assert "冷峻克制" in writer_prompt
+    assert "短句，少形容词，动作先行" in writer_prompt
+    assert "每章都兑现一条可验证线索" in writer_prompt
+    assert "广播会篡改人的记忆" in writer_prompt
 
 
 def test_scene_ledger_keeps_planned_delta_and_actual_generated_ending() -> None:
@@ -309,14 +324,21 @@ async def test_creative_brief_regeneration_stays_on_single_graph_branch() -> Non
             "auto_mode": False,
         }
     }
-    first = await workflow.ainvoke({"novel_type": "suspense"}, config)
-    assert first["__interrupt__"][0].value["action"] == "review_or_modify_creative_brief"
+    first = await workflow.ainvoke(
+        {"novel_type": "suspense", "genre_strategy_enabled": True}, config
+    )
+    assert first["__interrupt__"][0].value["action"] == "review_or_modify_genre_strategy"
 
     proposal_id = first["__interrupt__"][0].value["proposal_id"]
-    decision = {"proposal_id": proposal_id, "decision": "regenerate"}
-    second = await workflow.ainvoke(Command(resume=decision), config)
+    strategy_decision = {"proposal_id": proposal_id, "decision": "accept"}
+    second = await workflow.ainvoke(Command(resume=strategy_decision), config)
+    assert second["__interrupt__"][0].value["action"] == "review_or_modify_creative_brief"
 
-    actions = [item.value["action"] for item in second["__interrupt__"]]
+    proposal_id = second["__interrupt__"][0].value["proposal_id"]
+    decision = {"proposal_id": proposal_id, "decision": "regenerate"}
+    third = await workflow.ainvoke(Command(resume=decision), config)
+
+    actions = [item.value["action"] for item in third["__interrupt__"]]
     assert actions == ["review_or_modify_creative_brief"]
     # 审核节点不调用模型，regenerate 只进入一次生成节点。
     assert llm.brief_calls == 2
