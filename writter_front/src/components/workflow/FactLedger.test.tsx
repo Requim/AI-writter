@@ -26,9 +26,10 @@ describe('作者事实台账', () => {
       ? { token: 'signed-proposal', previous: fact, proposal: { fact: { ...fact, evidence: { quote: '已核对原始族谱' } }, expected_version: 1 } }
       : { ...fact, version: 2 } }))
     setup()
-    fireEvent.click(await screen.findByRole('button', { name: '纠错' }))
+    const correct = await screen.findByLabelText('纠错')
+    fireEvent.click(correct)
     fireEvent.change(screen.getByLabelText('确认依据或纠错原因'), { target: { value: '已核对原始族谱' } })
-    fireEvent.click(screen.getByRole('button', { name: '预览事实变更' }))
+    fireEvent.click(screen.getByLabelText('预览事实变更'))
     await waitFor(() => expect(post).toHaveBeenCalledTimes(1), { timeout: 5000 })
     // 组件库测试模式复用 test-id；以标题定位所属弹窗，浏览器验收另查可访问名称。
     await waitFor(() => expect(screen.getByText('确认事实变更').closest('[role="dialog"]')).toBeVisible(), { timeout: 5000 })

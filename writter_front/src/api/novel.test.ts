@@ -31,6 +31,17 @@ function unauthorized(config: InternalAxiosRequestConfig): AxiosError {
 }
 
 describe('novelApi rewriteChapter', () => {
+  it('downloads the original manuscript through the authenticated client', async () => {
+    const manuscript = new Blob(['第一章\n原始正文'], { type: 'text/plain;charset=utf-8' })
+    const adapter: AxiosAdapter = vi.fn(async (request) => ({
+      data: manuscript, status: 200, statusText: 'OK', headers: {}, config: request,
+    }))
+    apiClient.defaults.adapter = adapter
+    await expect(novelApi.exportManuscript('novel-1', 'md')).resolves.toBe(manuscript)
+    expect(vi.mocked(adapter).mock.calls[0][0]).toMatchObject({
+      url: '/v1/novels/novel-1/export', responseType: 'blob', params: { format: 'md' },
+    })
+  })
   it('loads genre taxonomy from the novels API namespace', async () => {
     const adapter: AxiosAdapter = vi.fn(async (request) => ({
       data: [{ value: 'horror', label: '惊悚', subgenres: [], reader_experiences: [], pace_options: [], prompt_axes: {} }],

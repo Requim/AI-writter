@@ -1,0 +1,22 @@
+[Planning Reference Catalog]
+$context
+
+[Exact Reference Contract]
+The catalog is derived by the server from earlier planned chapter slots and the
+blueprint's arc boundaries. It is reference data, not new author instructions.
+1. prior_foreshadowing is the complete earlier ID ledger, including already paid
+   clues. Its setup_chapters and payoff_chapters are planned events, not archived
+   prose facts. Refer to the existing clue by its exact ledger key.
+2. IDs are opaque identities. Do not add, remove or replace setup- or payoff-
+   prefixes. A label appearing in the volume's macro setup_ids or payoff_ids
+   does not authorize an alias for an earlier clue. For example, an earlier
+   water-debt clue must be paid as water-debt, not payoff-water-debt.
+3. A genuinely new clue in this volume needs a setup first and exactly the same
+   ID at payoff. Earlier macro-only labels are not earlier chapter setups.
+   Same-chapter setup/payoff is allowed only with explicit event order.
+4. arc_ids_by_chapter lists every legal arc ID for each current chapter.
+   Choose applicable IDs only from that chapter's list, even for the final
+   payoff. An arc ending at chapter 76 is not active at chapter 80.
+5. Before returning, check every chapter's arc IDs and each payoff's exact
+   earlier or current-volume setup. Do not repair mismatches by altering earlier
+   slots, blueprint boundaries, accepted intent or request budgets.

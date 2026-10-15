@@ -4,9 +4,12 @@ import hashlib
 import json
 import math
 from copy import deepcopy
+from contextvars import ContextVar
 from typing import Any
 
 from application.errors import QualityGateReviewRequired
+
+active_goal_source: ContextVar[dict | None] = ContextVar("goal_source", default=None)
 
 
 def _json(value: Any) -> str:
@@ -69,6 +72,11 @@ def compile_goal_contract(state: dict) -> dict | None:
 
 def current_goal_contract(state: dict) -> dict | None:
     """校验已绑定来源，禁止同章修订时重新生成或悄悄放宽目标。"""
+    source = active_goal_source.get()
+    if source is not None:
+        if state.get("current_chapter_index", 0) != source.get("current_chapter_index", 0):
+            raise QualityGateReviewRequired("目标校验章节不匹配")
+        state = source
     outlines = state.get("chapter_outlines") or []
     contract = outlines[-1].get("goal_contract") if outlines else None
     if contract is None:
@@ -77,6 +85,13 @@ def current_goal_contract(state: dict) -> dict | None:
     if not expected or contract != expected:
         raise QualityGateReviewRequired("本章目标来源已变化，请重新确认章节计划，不能沿用旧验收")
     return contract
+
+
+def prose_goal_contract(contract: dict) -> dict:
+    """模型仅看到当前计划要求和硬约束；完整作者来源留在服务端。"""
+    return {"id": contract["id"], "source": {"scale": deepcopy(contract["source"]["scale"])},
+        "requirements": [deepcopy(item) for item in contract["requirements"]
+            if item["source"] in {"accepted_plan", "author_config"}]}
 
 
 def goal_prompt(contract: dict | None) -> str:
@@ -110,7 +125,9 @@ def _semantic_checks(contract: dict, raw: Any, content: str) -> list[dict]:
             status = "unknown"
         checks.append({"id": goal["id"], "expected": goal["expected"], "status": status,
                        "evidence": quote if valid else "", "reason": row.get("reason", ""),
-                       "evidence_valid": valid})
+                       "evidence_valid": valid,
+                       "evidence_format_only": row.get("status") == "passed" and not valid
+                           and isinstance(row.get("reason"), str) and bool(row["reason"].strip())})
     return checks
 
 

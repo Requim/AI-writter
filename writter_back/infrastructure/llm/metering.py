@@ -1,6 +1,8 @@
 """在SDK实际发请求的位置记账；旧模式保留原客户端与重试行为。"""
 
 from contextlib import asynccontextmanager
+import logging
+import time
 from typing import Any
 
 from service.ports.model_meter import active_model_meter
@@ -22,22 +24,31 @@ async def completion(client: Any, *, provider: str = "openai", **kwargs: Any) ->
     create = selected.messages.create if provider == "anthropic" else selected.chat.completions.create
     kwargs = unique_creative_rules(kwargs, provider) if meter else kwargs
     annotations = applied_style_annotations(kwargs) if meter else {}
-    response = await create(**kwargs)
+    started = time.monotonic()
+    try:
+        response = await create(**kwargs)
+    except BaseException as error:
+        await _record_unknown(meter, request_id, error, started)
+        raise
     if not meter:
         return response
     if kwargs.get("stream"):
-        return _metered_stream(response, meter, request_id, annotations)
-    await meter.finish(request_id, {**usage_dict(response), **annotations})
+        return _metered_stream(response, meter, request_id, annotations, started)
+    await meter.finish(request_id, {**usage_dict(response), **annotations, "elapsed_ms": _elapsed(started)})
     return response
 
 
-async def _metered_stream(stream: Any, meter: Any, request_id: str, annotations=None):
+async def _metered_stream(stream: Any, meter: Any, request_id: str, annotations=None, started=None):
     usage = {}
+    started = started if started is not None else time.monotonic()
     try:
         async for chunk in stream:
             usage = usage_dict(chunk) or usage
             yield chunk
-        await meter.finish(request_id, {**usage, **(annotations or {})})
+        await meter.finish(request_id, {**usage, **(annotations or {}), "elapsed_ms": _elapsed(started)})
+    except BaseException as error:
+        await _record_unknown(meter, request_id, error, started)
+        raise
     finally:
         close = getattr(stream, "close", None)
         if close:
@@ -51,11 +62,31 @@ async def anthropic_stream(client: Any, **kwargs: Any):
     request_id = await meter.reserve() if meter else None
     selected = client.with_options(max_retries=0) if meter else client
     kwargs = unique_creative_rules(kwargs, "anthropic") if meter else kwargs
-    async with selected.messages.stream(**kwargs) as stream:
-        yield stream
-        if meter:
-            message = await stream.get_final_message()
-            await meter.finish(request_id, {**usage_dict(message), **applied_style_annotations(kwargs)})
+    started = time.monotonic()
+    try:
+        async with selected.messages.stream(**kwargs) as stream:
+            yield stream
+            if meter:
+                message = await stream.get_final_message()
+                await meter.finish(request_id, {**usage_dict(message),
+                    **applied_style_annotations(kwargs), "elapsed_ms": _elapsed(started)})
+    except BaseException as error:
+        await _record_unknown(meter, request_id, error, started)
+        raise
+
+
+def _elapsed(started):
+    return max(0, round((time.monotonic() - started) * 1000))
+
+
+async def _record_unknown(meter, request_id, error, started):
+    record = getattr(meter, "unknown", None)
+    if not callable(record):
+        return
+    try:
+        await record(request_id, {"error_type": type(error).__name__, "elapsed_ms": _elapsed(started)})
+    except BaseException:
+        logging.getLogger("uvicorn").warning("模型结果未知；失败回执未写入，预记账保留且不退款")
 
 
 def unique_creative_rules(kwargs, provider):

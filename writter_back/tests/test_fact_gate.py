@@ -1,5 +1,6 @@
 """事实门禁的证据、失败关闭与人工确认边界。"""
 import asyncio
+from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -11,6 +12,7 @@ from application.fact_evaluation import evaluate_facts
 from application.fact_archive_guard import verify_fact_receipt, archive_fact_guard
 from application.fact_gate_workflow import check_fact_artifact
 from application.errors import QualityGateReviewRequired
+from application.creative.errors import CreativePause
 from service.value_objects.fact_gate import FactGateBlockedError
 from service.value_objects.story_fact import StoryEntity
 from tests.test_chapter_constraints import snapshot
@@ -110,6 +112,36 @@ async def test_cancellation_propagates():
     llm = SimpleNamespace(structured_generate=AsyncMock(side_effect=asyncio.CancelledError))
     with pytest.raises(asyncio.CancelledError):
         await evaluate_facts(value, "他推开门。", "body", llm)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["budget_exhausted", "feature_disabled", "session_mismatch"])
+async def test_creative_control_pause_is_not_reported_as_unknown_evidence(reason):
+    value = setup_gate()
+    pause = CreativePause(reason, "请求被可信创作控制拒绝")
+    llm = SimpleNamespace(structured_generate=AsyncMock(side_effect=pause))
+    with pytest.raises(CreativePause) as captured:
+        await evaluate_facts(value, "他推开门。", "body", llm)
+    assert captured.value is pause
+
+
+@pytest.mark.asyncio
+async def test_fact_recheck_budget_pause_preserves_checkpoint_without_consuming_recovery():
+    from application.fact_gate_workflow import fact_review_node
+    value, content = setup_gate(), "他推开门。"
+    cfg = config(value)
+    first = await check_fact_artifact({}, cfg, content, "body", Command(goto="reflection_node"))
+    state = {**first.update, "current_chapter_index": 0, "automatic_recovery": {
+        "chapter": 0, "attempts": {"事实提取:body": 1}}}
+    before = deepcopy(state)
+    cfg["configurable"]["auto_mode"] = True
+    cfg["configurable"]["llm_config"]["llm_instance"] = SimpleNamespace(
+        structured_generate=AsyncMock(side_effect=CreativePause("budget_exhausted", "单章预算已用完")))
+    with pytest.raises(CreativePause):
+        await fact_review_node(state, cfg)
+    assert state == before
+    assert state["fact_artifact"]["content"] == content
+    assert state["automatic_recovery"]["attempts"]["事实提取:body"] == 1
 
 
 @pytest.mark.asyncio

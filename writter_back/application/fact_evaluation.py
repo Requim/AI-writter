@@ -8,13 +8,15 @@ from uuid import UUID
 from pydantic import Field
 from config import settings
 from application.fact_prompt_binding import FactBoundLLM
+from application.creative.errors import CreativePause
 
 from application.fact_deterministic import deterministic_assertions
+from application.fact_evidence import draft_evidence, outline_mention_catalog, validate_mentions
 from application.prompts.template_loader import render_prompt
 from application.story_facts import source_digest, validate_assertions
 from service.value_objects.chapter_constraints import ChapterConstraintSet
-from service.value_objects.fact_gate import FACT_EXTRACTION_VERSION, FactGateReport
-from service.value_objects.story_fact import FactContract, FactEvidence, FactStatement, StoryFactAssertion
+from service.value_objects.fact_gate import FACT_EXTRACTION_VERSION, FactEntityMention, FactGateReport
+from service.value_objects.story_fact import FactContract, FactStatement, StoryFactAssertion
 
 
 class ExtractedClaim(FactContract):
@@ -23,12 +25,20 @@ class ExtractedClaim(FactContract):
     object_entity_id: UUID | None = None
     value_text: str | None = None
     quote: str = Field(min_length=1, max_length=2000)
+    quote_path: str | None = Field(default=None, min_length=1, max_length=512)
+
+
+class ExtractedMention(FactContract):
+    entity_id: UUID
+    quote: str = Field(min_length=1, max_length=2000)
+    quote_path: str | None = Field(default=None, min_length=1, max_length=512)
 
 
 class FactExtraction(FactContract):
     coverage: Literal["complete", "partial", "unknown"]
     claims: tuple[ExtractedClaim, ...] = Field(max_length=100)
     unresolved: tuple[str, ...] = Field(max_length=50)
+    mentions: tuple[ExtractedMention, ...] = Field(default=(), max_length=100)
 
 
 FACT_EXTRACTION_SHAPE = {"coverage": "string", "claims": "array", "unresolved": "array"}
@@ -37,8 +47,12 @@ FACT_EXTRACTION_SHAPE = {"coverage": "string", "claims": "array", "unresolved": 
 def _extraction_prompt(snapshot: ChapterConstraintSet, content: str, kind: str) -> str:
     constraints = json.dumps({"snapshot_digest": snapshot.digest, "snapshot": snapshot.model_dump(mode="json")},
                              ensure_ascii=False)
-    prompt = render_prompt("fact_judge.txt", constraints=constraints, kind=kind, content=content)
-    return prompt + "\n只输出符合以下 JSON Schema 的业务数据，不要输出 Schema 本身：\n" + json.dumps(
+    prompt = render_prompt("fact_judge_v2.txt", include_active_rules=False,
+        constraints=constraints, kind=kind, content=content)
+    protocol = render_prompt("fact_extraction_contract_v4.txt", include_active_rules=False)
+    catalog = render_prompt("fact_evidence_catalog.txt", include_active_rules=False,
+        catalog=json.dumps(outline_mention_catalog(snapshot, content), ensure_ascii=False)) if kind == "outline" else ""
+    return prompt + "\n" + protocol + "\n" + catalog + "\n以下仅为字段校验参考，不是输出数据；不要输出 type、properties、required 等 Schema 键：\n" + json.dumps(
         FactExtraction.model_json_schema(), ensure_ascii=False)
 
 
@@ -49,21 +63,21 @@ def _base(snapshot: ChapterConstraintSet, content: str, kind: str) -> dict[str, 
         "extraction_version": FACT_EXTRACTION_VERSION}
 
 
-def _assertion(claim: ExtractedClaim, snapshot: ChapterConstraintSet, content: str) -> StoryFactAssertion:
-    if content.count(claim.quote) != 1:
-        raise ValueError("断言引用原文不存在或不唯一")
+def _assertion(claim: ExtractedClaim, snapshot: ChapterConstraintSet, content: str, kind: str) -> StoryFactAssertion:
     ids = {item.id for item in snapshot.entities}
     if claim.subject_id not in ids or (claim.object_entity_id and claim.object_entity_id not in ids):
         raise ValueError("断言引用未知实体")
-    evidence = FactEvidence(source_kind="chapter_draft", source_ref="artifact:" + source_digest(content)[:24],
-        source_version=1, quote=claim.quote, source_hash=source_digest(content))
-    statement = FactStatement(**claim.model_dump(exclude={"quote"}), evidence=evidence)
+    evidence = draft_evidence(content, kind, claim.quote, claim.quote_path)
+    statement = FactStatement(**claim.model_dump(exclude={"quote", "quote_path"}), evidence=evidence)
     return StoryFactAssertion(**statement.model_dump(), chapter_number=snapshot.chapter_number)
 
 
 def _merge(snapshot: ChapterConstraintSet, content: str, kind: str, extraction: FactExtraction,
            literals: list[StoryFactAssertion]) -> FactGateReport:
-    claims = [_assertion(claim, snapshot, content) for claim in extraction.claims]
+    claims = [_assertion(claim, snapshot, content, kind) for claim in extraction.claims]
+    mentions = tuple(FactEntityMention(entity_id=item.entity_id, quote_path=item.quote_path,
+        evidence=draft_evidence(content, kind, item.quote, item.quote_path)) for item in extraction.mentions)
+    validate_mentions(snapshot, content, kind, mentions)
     checked = validate_assertions(claims + literals, list(snapshot.fact_heads), draft=content)
     findings = tuple(item.model_copy(update={"severity": "unknown", "code": "semantic_conflict"})
         if item.severity == "hard_conflict" else item for item in checked.findings)
@@ -72,11 +86,11 @@ def _merge(snapshot: ChapterConstraintSet, content: str, kind: str, extraction: 
         reasons.append("全文事实覆盖尚未确认")
     if not snapshot.active_facts:
         reasons.append("本章没有适用的已确认事实")
-    if not claims and not literals:
-        reasons.append("没有获得可核对的明确事实断言")
+    if not claims and not literals and not mentions:
+        reasons.append("没有获得可核对的事实断言或已登记实体提及")
     return FactGateReport(**_base(snapshot, content, kind),
         status="unknown" if findings or reasons else "pass", coverage=extraction.coverage,
-        assertions=tuple(claims + literals), findings=findings, reasons=tuple(reasons))
+        assertions=tuple(claims + literals), mentions=mentions, findings=findings, reasons=tuple(reasons))
 
 
 async def evaluate_facts(snapshot: ChapterConstraintSet, content: str, kind: str, llm: Any) -> FactGateReport:
@@ -103,6 +117,8 @@ async def evaluate_facts(snapshot: ChapterConstraintSet, content: str, kind: str
         raw = await llm.structured_generate(prompt=prompt, schema=FACT_EXTRACTION_SHAPE,
             temperature=0.0, max_attempts=1)
         return _merge(snapshot, content, kind, FactExtraction.model_validate(raw), literals)
+    except CreativePause:
+        raise
     except Exception as exc:
         logging.getLogger("uvicorn").warning("事实提取失败 | kind=%s exception=%s", kind, type(exc).__name__)
         return FactGateReport(**_base(snapshot, content, kind), status="unknown", coverage="unknown",

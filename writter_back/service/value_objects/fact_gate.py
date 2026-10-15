@@ -2,20 +2,29 @@
 
 import hashlib
 import json
-from typing import Literal
+from typing import Literal, Self
 from uuid import UUID
 
-from pydantic import Field, StrictInt
+from pydantic import Field, StrictInt, model_validator
 
-from service.value_objects.story_fact import FactContract, StoryFactAssertion, ValidationFinding
+from service.value_objects.story_fact import FactContract, FactEvidence, StoryFactAssertion, ValidationFinding
 
 FACT_GATE_VERSION = "fact-gate-v1"
-FACT_EXTRACTION_VERSION = "fact-extraction-v2"
+FACT_EXTRACTION_VERSION = "fact-extraction-v5"
+
+
+class FactEntityMention(FactContract):
+    entity_id: UUID
+    evidence: FactEvidence
+    quote_path: str | None = Field(default=None, min_length=1, max_length=512)
 
 
 class FactGateReport(FactContract):
     rule_version: Literal["fact-gate-v1"] = "fact-gate-v1"
-    extraction_version: Literal["fact-extraction-v1", "fact-extraction-v2"] = "fact-extraction-v1"
+    extraction_version: Literal[
+        "fact-extraction-v1", "fact-extraction-v2", "fact-extraction-v3", "fact-extraction-v4",
+        "fact-extraction-v5"
+    ] = "fact-extraction-v1"
     tenant_id: UUID
     novel_id: UUID
     chapter_number: StrictInt = Field(ge=1)
@@ -25,13 +34,22 @@ class FactGateReport(FactContract):
     status: Literal["pass", "blocked", "unknown"]
     coverage: Literal["complete", "partial", "unknown"]
     assertions: tuple[StoryFactAssertion, ...] = ()
+    mentions: tuple[FactEntityMention, ...] = Field(default=(), max_length=100)
     findings: tuple[ValidationFinding, ...] = ()
     reasons: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_mention_version(self) -> Self:
+        if self.mentions and self.extraction_version not in {"fact-extraction-v4", "fact-extraction-v5"}:
+            raise ValueError("旧版事实回执不能承载实体提及证据")
+        return self
 
     @property
     def digest(self) -> str:
         """人工确认只对本份回执生效，内容或版本变化后必须重新审核。"""
         payload = self.model_dump(mode="json")
+        if self.extraction_version not in {"fact-extraction-v4", "fact-extraction-v5"}:
+            payload.pop("mentions")
         if self.extraction_version == "fact-extraction-v1":
             payload.pop("extraction_version")
         raw = json.dumps(payload, sort_keys=True, ensure_ascii=False)

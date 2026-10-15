@@ -10,14 +10,16 @@ from application.execution_fence import ExecutionFence, execution_fence
 from infrastructure.database.models import NovelModel
 from infrastructure.database.runtime_models import WorkflowLeaseModel, WorkflowRunModel
 from service.ports.workflow_command_store import WorkflowCommandStore, WorkflowCommandClaim, WorkflowCommandClaimStatus as Status, WorkflowCommandStoreUnavailable
+from infrastructure.command_store.recovery import RecoveryIntent
 
 
-class PostgresWorkflowCommandStore(WorkflowCommandStore):
+class PostgresWorkflowCommandStore(RecoveryIntent, WorkflowCommandStore):
     def __init__(self, session_factory: Any) -> None:
         self.sessions = session_factory
         self.owners: dict[str, ExecutionFence] = {}
         self.tasks: dict[str, asyncio.Task[Any]] = {}
         self.renewers: dict[str, asyncio.Task[Any]] = {}
+        self.stopping = False
 
     async def _lock(self, session: Any, tenant: str, novel: str) -> WorkflowLeaseModel:
         found = await session.scalar(select(NovelModel.id).where(NovelModel.tenant_id == UUID(tenant), NovelModel.id == UUID(novel)).with_for_update())
@@ -29,11 +31,14 @@ class PostgresWorkflowCommandStore(WorkflowCommandStore):
             session.add(lease)
         return lease
 
-    async def claim(self, tenant_id: str, novel_id: str, command_id: str, ttl_seconds: float) -> WorkflowCommandClaim:
+    async def claim(self, tenant_id: str, novel_id: str, command_id: str, ttl_seconds: float,
+                    *, expected_run_id: UUID | None = None) -> WorkflowCommandClaim:
         try:
             async with self.sessions() as session, session.begin():
                 lease = await self._lock(session, tenant_id, novel_id)
                 now = await session.scalar(select(func.clock_timestamp()))
+                if expected_run_id is not None and not await self._recovery_claimable(session, lease, expected_run_id, now):
+                    return WorkflowCommandClaim(Status.IN_PROGRESS)
                 digest = hashlib.sha256(command_id.encode()).hexdigest()
                 runs = (await session.scalars(select(WorkflowRunModel).where(WorkflowRunModel.tenant_id == UUID(tenant_id),
                     WorkflowRunModel.novel_id == UUID(novel_id), WorkflowRunModel.command_hash == digest))).all()
@@ -107,6 +112,8 @@ class PostgresWorkflowCommandStore(WorkflowCommandStore):
                     return False
                 run = await session.get(WorkflowRunModel, lease.run_id)
                 run.status, run.finished_at = status, now
+                if status != "orphaned" or run.cancel_requested:
+                    run.recovery_payload = None
                 lease.token, lease.expires_at = None, None
                 return True
         except SQLAlchemyError as exc:
@@ -128,10 +135,12 @@ class PostgresWorkflowCommandStore(WorkflowCommandStore):
         async with self.sessions() as session, session.begin():
             lease = await self._lock(session, tenant, novel)
             now = await session.scalar(select(func.clock_timestamp()))
-            if not lease.token or lease.expires_at <= now:
+            run = await session.get(WorkflowRunModel, lease.run_id) if lease.run_id else None
+            active = bool(lease.token and lease.expires_at > now)
+            if not run or (not active and not run.recovery_payload):
                 return False
-            run = await session.get(WorkflowRunModel, lease.run_id)
             run.cancel_requested = True
+            run.recovery_payload = None
             return True
 
     async def recover_expired(self) -> int:

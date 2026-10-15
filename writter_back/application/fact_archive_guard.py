@@ -3,6 +3,7 @@
 from typing import Any
 
 from application.fact_deterministic import deterministic_report
+from application.fact_evidence import validate_mentions
 from application.story_facts import source_digest, validate_assertions
 from service.value_objects.chapter_constraints import ChapterConstraintSet
 from service.value_objects.fact_gate import FactGateBlockedError, FactGateReport
@@ -20,6 +21,10 @@ def verify_fact_receipt(snapshot: ChapterConstraintSet, report: FactGateReport, 
         raise FactGateBlockedError("存在明确事实冲突，不能归档或接受")
     if any(item.severity == "hard_conflict" for item in report.findings):
         raise FactGateBlockedError("事实回执包含硬冲突")
+    try:
+        validate_mentions(snapshot, content, report.artifact_kind, report.mentions)
+    except (ValueError, KeyError, IndexError) as exc:
+        raise FactGateBlockedError("实体提及证据无效，不能归档") from exc
     if allow_partial_automatic and report.status == "unknown":
         checked = validate_assertions(list(report.assertions), list(snapshot.fact_heads), draft=content)
         if report.findings or report.coverage != "partial" or checked.status == "blocked":
@@ -27,7 +32,8 @@ def verify_fact_receipt(snapshot: ChapterConstraintSet, report: FactGateReport, 
         return
     if report.status == "pass":
         checked = validate_assertions(list(report.assertions), list(snapshot.fact_heads), draft=content)
-        if report.coverage != "complete" or report.findings or report.reasons or checked.status != "pass":
+        verified = checked.status == "pass" if report.assertions else bool(report.mentions)
+        if report.coverage != "complete" or report.findings or report.reasons or not verified:
             raise FactGateBlockedError("事实回执不完整，不能判定通过")
         return
     ack = acknowledgement or {}

@@ -95,8 +95,10 @@ async def _generate_brief(
             state.get("summary", ""),
             seed,
             state.get("creative_brief_feedback", ""),
+            reader_quality_version=state.get("reader_quality_version", 0),
         ),
-        schema=CREATIVE_BRIEF_SCHEMA,
+        schema={**CREATIVE_BRIEF_SCHEMA, "reader_entry": "object"}
+        if state.get("reader_quality_version") == 1 else CREATIVE_BRIEF_SCHEMA,
         temperature=0.65,
         top_p=0.9,
     )

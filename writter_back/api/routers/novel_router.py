@@ -140,6 +140,7 @@ class ChapterResponse(BaseModel):
         "passed", "accepted_with_issues", "accepted_unreviewed", "unknown"
     ] = Field(default="unknown", description="章节质量审读状态")
     quality_score: float | None = Field(default=None, description="章节质量综合分")
+    reader_comprehension: dict[str, Any] | None = None
 
 
 class ChapterUpdateRequest(BaseModel):
@@ -182,7 +183,7 @@ def _novel_response(novel: Novel) -> NovelResponse:
 
 
 def _chapter_response(
-    chapter: Any, checkpoint_status: str | None = None
+    chapter: Any, checkpoint_status: str | None = None, *, reader_history: list | None = None
 ) -> ChapterDetailResponse:
     return ChapterDetailResponse(
         id=str(chapter.id),
@@ -194,11 +195,11 @@ def _chapter_response(
         version=chapter.version,
         updated_at=chapter.updated_at,
         checkpoint_status=checkpoint_status,
-        **_chapter_review_fields(chapter),
+        **_chapter_review_fields(chapter, reader_history=reader_history),
     )
 
 
-def _chapter_review_fields(chapter: Any) -> dict[str, Any]:
+def _chapter_review_fields(chapter: Any, *, reader_history: list | None = None) -> dict[str, Any]:
     decision = chapter.user_decision if isinstance(chapter.user_decision, dict) else {}
     valid_statuses = {
         "passed", "accepted_with_issues", "accepted_unreviewed", "unknown",
@@ -207,6 +208,14 @@ def _chapter_review_fields(chapter: Any) -> dict[str, Any]:
     if status == "pass":
         status = "passed"
     score = decision.get("quality_score")
+    receipt = decision.get("reader_comprehension")
+    from application.reader_comprehension import archived_reader_receipt_valid
+    index = getattr(chapter, "chapter_index", (receipt or {}).get("chapter_number", 1) - 1) if isinstance(receipt, dict) else 0
+    state = {"reader_quality_version": 1, "current_chapter_index": index,
+             "reader_history": reader_history or []}
+    if ((index > 0 and reader_history is None) or not archived_reader_receipt_valid(
+        receipt, state, str(getattr(chapter, "content", "") or ""))):
+        receipt = None
     return {
         "review_status": status if status in valid_statuses else "unknown",
         "quality_score": (
@@ -214,6 +223,7 @@ def _chapter_review_fields(chapter: Any) -> dict[str, Any]:
             if isinstance(score, (int, float)) and not isinstance(score, bool)
             else None
         ),
+        "reader_comprehension": receipt,
     }
 
 
@@ -439,7 +449,13 @@ async def get_chapter(
     chapter = await repo.find_chapter_by_id(_tenant_id(context), chapter_id)
     if chapter is None or str(chapter.novel_id) != novel_id:
         raise HTTPException(status_code=404, detail="章节不存在")
-    return _chapter_response(chapter)
+    history = None
+    if chapter.chapter_index in (1, 2) and (chapter.user_decision or {}).get("reader_comprehension"):
+        novel = await repo.find_by_id_with_chapters(_tenant_id(context), novel_id)
+        if novel is not None:
+            history = [{"chapter_index": row.chapter_index, "content": row.content, "status": row.status}
+                       for row in novel.chapters if row.chapter_index < chapter.chapter_index]
+    return _chapter_response(chapter, reader_history=history)
 
 
 @router.put("/{novel_id}/chapters/{chapter_id}", response_model=ChapterDetailResponse)
@@ -552,6 +568,7 @@ def _rewrite_state(
         "current_chapter_index": chapter.chapter_index,
         "chapter_outlines": [chapter.outline or {}],
         "total_outline": total_outline,
+        "reader_quality_version": total_outline.get("reader_quality_version", 0),
         "memory_context": memory_context,
         "current_chapter_content": "",
         "workflow_run_id": workflow_run_id,
@@ -572,7 +589,9 @@ async def _generate_rewritten_chapter(
         raise HTTPException(status_code=500, detail="章节内容生成失败")
 
     node_name = "reflection_node"
-    for _ in range(REWRITE_MAX_NODE_STEPS):
+    steps = REWRITE_MAX_NODE_STEPS + (
+        REWRITE_MAX_REVISION_ATTEMPTS + 1 if state.get("reader_quality_version") == 1 else 0)
+    for _ in range(steps):
         if node_name == "persist_node":
             state[_REWRITE_PERSISTENCE_STARTED] = True
         try:
@@ -582,14 +601,15 @@ async def _generate_rewritten_chapter(
                 status_code=422,
                 detail={"code": "quality_gate_not_met", "message": str(exc)},
             ) from exc
-        if node_name == "persist_node":
+        if node_name == "persist_node" and goto in {"progress_check_node", "plan_reconciliation_node"}:
             if state.get("novel_plan"):
                 await _run_rewrite_node("plan_reconciliation_node", state, config)
                 await _mark_rewrite_continuity_stale(config)
             return state
         allowed = {
-            "reflection_node": {"persist_node", "revision_node"},
+            "reflection_node": {"persist_node", "revision_node", "reflection_node"},
             "revision_node": {"reflection_node"},
+            "persist_node": {"reflection_node"},
         }
         if goto not in allowed[node_name]:
             raise HTTPException(status_code=500, detail="章节重写流程返回了无效状态")
@@ -787,6 +807,7 @@ def _creation_outline_and_progress(
     payload: NovelCreateRequest,
 ) -> tuple[Outline | None, Progress]:
     outline_data = dict(payload.total_outline or {})
+    outline_data["reader_quality_version"] = 1
     contract = payload.planning.to_contract() if payload.planning else None
     if contract is None:
         total = int(outline_data.get("total_chapters", 0) or 0)

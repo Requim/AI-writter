@@ -28,10 +28,21 @@ TITLE_SCORE_WEIGHTS = {
     "literary_quality": 4, "specificity": 2.5,
     "audience_fit": 2, "memorability": 1.5,
 }
+READER_TITLE_WEIGHTS = {
+    "hook_strength": 3, "promise_clarity": 3, "audience_fit": 2,
+    "memorability": 1, "naturalness": 1,
+}
 
 
 def _score(candidate: dict[str, Any]) -> float:
     try:
+        if candidate.get("score_version") == "reader-first-v1":
+            if any(isinstance(candidate.get(key), bool) for key in READER_TITLE_WEIGHTS):
+                return 0.0
+            scores = {key: float(candidate[key]) for key in READER_TITLE_WEIGHTS}
+            if not all(math.isfinite(value) and 0 <= value <= 10 for value in scores.values()):
+                return 0.0
+            return round(sum(scores[key] * weight for key, weight in READER_TITLE_WEIGHTS.items()), 2)
         if any(key in candidate for key in ("literary_quality", "memorability")):
             scores = {key: float(candidate[key]) for key in TITLE_SCORE_WEIGHTS}
             if not all(math.isfinite(value) and 0 <= value <= 10 for value in scores.values()):
@@ -44,7 +55,7 @@ def _score(candidate: dict[str, Any]) -> float:
         return 0.0
 
 
-def _normalize_candidates(value: Any) -> list[dict[str, Any]]:
+def _normalize_candidates(value: Any, *, reader_quality_version: int = 0) -> list[dict[str, Any]]:
     raw = value.get("candidates", []) if isinstance(value, dict) else []
     candidates = []
     seen = set()
@@ -56,11 +67,18 @@ def _normalize_candidates(value: Any) -> list[dict[str, Any]]:
             continue
         title = title.strip().removeprefix("《").removesuffix("》").strip()
         identity = "".join(title.split()).casefold()
-        if not 2 <= len(title) <= 16 or "\n" in title or "\r" in title or identity in seen:
+        if not 2 <= len(title) <= (30 if reader_quality_version == 1 else 16) or "\n" in title or "\r" in title or identity in seen:
             continue
         seen.add(identity)
-        candidates.append({**item, "title": title, "hint": str(item.get("hint", "") or "").strip(),
-                           "total_score": _score(item)})
+        candidate = {**item, "title": title, "hint": str(item.get("hint", "") or "").strip()}
+        if reader_quality_version == 1:
+            candidate["score_version"] = "reader-first-v1"
+        candidate["total_score"] = _score(candidate)
+        if candidate.get("score_version") == "reader-first-v1" or "literary_quality" in candidate:
+            candidate["score_max"] = 100
+        else:
+            candidate.pop("score_max", None)
+        candidates.append(candidate)
     return sorted(candidates, key=_score, reverse=True)[:8]
 
 
@@ -100,6 +118,7 @@ async def title_generator_node(
             state.get("novel_type", ""),
             state.get("creative_brief"),
             _confirmed_characters(state),
+            reader_quality_version=state.get("reader_quality_version", 0),
         )
     result = await llm.structured_generate(
         append_review_feedback(prompt, state.get("title_feedback")),
@@ -107,7 +126,7 @@ async def title_generator_node(
         temperature=TITLE_TEMPERATURE,
         top_p=TITLE_TOP_P,
     )
-    candidates = _normalize_candidates(result)
+    candidates = _normalize_candidates(result, reader_quality_version=state.get("reader_quality_version", 0))
     if not candidates:
         raise RuntimeError("书名生成失败：模型未返回有效候选")
     return Command(

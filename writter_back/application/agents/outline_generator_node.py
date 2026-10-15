@@ -87,6 +87,7 @@ def _prepare_outline(state: NovelAgentState, generated: dict[str, Any]) -> dict[
     if isinstance(design.get("naming_policy"), dict):
         brief["naming_policy"] = design["naming_policy"]
     outline["creative_brief"] = brief
+    outline["reader_quality_version"] = state.get("reader_quality_version", 0)
     outline["prompt_version"] = PROMPT_VERSION
     try:
         outline["total_chapters"] = int(outline.get("total_chapters", 0))

@@ -79,6 +79,14 @@ def _validated_outline(
     if autonomous:
         from application.creative.scenes import validate_scene_identities
         validate_scene_identities(outline, total_outline or {})
+    version = (total_outline or {}).get("reader_quality_version", 0)
+    outline["reader_quality_version"] = version
+    if version == 1 and chapter_number <= 3:
+        from application.reader_entry import validate_reader_entry
+        outline["reader_entry"] = validate_reader_entry(outline, chapter_number)
+    if version == 1:
+        for scene in outline.get("scenes") or []:
+            scene["reader_quality_version"] = 1
     if plan is not None and window is not None:
         outline = _attach_execution_contract(outline, plan, window, chapter_number)
     issues = validate_chapter_contract(outline, chapter_number, autonomous=autonomous)
@@ -145,7 +153,10 @@ def _attach_execution_contract(
     return result
 
 
-async def _creative_plan_context(state, config, chapter_number, plan, plan_context):
+async def _creative_plan_context(
+    state: NovelAgentState, config: RunnableConfig, chapter_number: int,
+    plan: NovelPlan | None, plan_context: dict[str, Any] | None,
+) -> dict[str, Any] | None:
     if state.get("author_mode") != "autonomous_v1":
         return plan_context
     from application.creative.artifacts import workspace
@@ -166,7 +177,7 @@ async def _generate_outline(
     )
     plan = _novel_plan(state) if _schema5(state) else None
     window = _tactical_window(state) if plan else None
-    plan_context = _plan_context(state, chapter_number)
+    plan_context: dict[str, Any] | None = _plan_context(state, chapter_number)
     plan_context = await _creative_plan_context(state, config, chapter_number, plan, plan_context)
     tactical_context = hydrate_tactical_window(window, plan) if window and plan else {}
     requirements = _execution_requirements(plan, chapter_number) if plan else {}
@@ -187,7 +198,7 @@ async def _generate_outline(
         )
         generated = await llm.structured_generate(
             prompt=append_review_feedback(prompt, state.get("chapter_outline_feedback")),
-            schema=AUTONOMOUS_CHAPTER_OUTLINE_SCHEMA if state.get("author_mode") == "autonomous_v1" else CHAPTER_OUTLINE_SCHEMA,
+            schema=_outline_schema(state, chapter_number),
             temperature=0.45,
         )
         try:
@@ -201,9 +212,14 @@ async def _generate_outline(
             return _attach_plan_contract(
                 outline, plan_context, tactical_context=tactical_context
             )
-        except RuntimeError as exc:
+        except (RuntimeError, ValueError) as exc:
             errors = [str(exc)]
     raise RetryableWorkflowError("章节细纲执行契约校验失败：" + "；".join(errors))
+
+
+def _outline_schema(state: dict, chapter_number: int) -> dict:
+    schema = AUTONOMOUS_CHAPTER_OUTLINE_SCHEMA if state.get("author_mode") == "autonomous_v1" else CHAPTER_OUTLINE_SCHEMA
+    return {**schema, "reader_entry": "object"} if state.get("reader_quality_version") == 1 and chapter_number <= 3 else schema
 
 
 def _schema5(state: NovelAgentState) -> bool:
@@ -245,7 +261,7 @@ def _plan_context(
 
 def _attach_plan_contract(
     outline: dict[str, Any],
-    context: dict[str, Any],
+    context: dict[str, Any] | None,
     *,
     tactical_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -397,6 +413,7 @@ async def _accept_tactical_window(
         int(state.get("tactical_window_expected_version", 0) or 0),
         idempotency_key=idempotency_key,
         created_by_user_id=str(user_id) if user_id else None,
+        reuse_unchanged=True,
     )
 
 
@@ -477,15 +494,19 @@ async def chapter_plan_review_node(
         config,
     )
     outline = _accepted_outline(state, payload, accepted, chapter_number)
-    return await _gate_outline(state, config, outline, Command(goto="router_agent", update={
-        **_accept_outline_update(state, outline, clear_proposal=True),
+    committed = {
         "tactical_window": accepted.to_dict(),
         "tactical_window_expected_version": accepted.version,
         "tactical_window_persisted": True,
+    }
+    command = await _gate_outline(state, config, outline, Command(goto="router_agent", update={
+        **_accept_outline_update(state, outline, clear_proposal=True),
+        **committed,
         "tactical_plan_feedback": None,
         "chapter_outline_feedback": None,
         "chapter_plan_revision_scope": None,
     }))
+    return Command(goto=command.goto, update={**(command.update or {}), **committed})
 
 
 async def chapter_outline_review_node(

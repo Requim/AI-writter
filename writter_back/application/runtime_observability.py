@@ -5,6 +5,7 @@ import time
 import asyncio
 from functools import wraps
 from typing import Any
+from langchain_core.runnables import RunnableConfig
 from langgraph.errors import GraphInterrupt
 from application.streaming import emit_workflow_event
 from application.errors import WorkflowNodeTimeoutError
@@ -59,6 +60,9 @@ def measured_node(name: str, node: Any) -> Any:
         finally:
             reset_prompt_snapshot(token)
             _record_measurement(name, outcome, time.perf_counter() - started)
+    # Expose the wrapper's runtime argument while preserving Command return metadata.
+    measured.__annotations__ = {**measured.__annotations__, "config": RunnableConfig | None}
+    setattr(measured, "__signature__", inspect.signature(measured, follow_wrapped=False))
     return measured
 
 

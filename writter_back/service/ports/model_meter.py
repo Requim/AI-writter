@@ -26,3 +26,6 @@ class CreativeRequestMeter:
 
     async def finish(self, request_id: str, usage: dict[str, Any]) -> None:
         await self.repository.finish_request(self.tenant_id, self.novel_id, request_id, usage)
+
+    async def unknown(self, request_id: str, detail: dict[str, Any]) -> None:
+        await self.repository.unknown_request(self.tenant_id, self.novel_id, request_id, detail)

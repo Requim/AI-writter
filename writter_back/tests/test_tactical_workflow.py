@@ -178,6 +178,23 @@ async def test_tactical_generation_retries_validation_and_stays_bounded() -> Non
 
 
 @pytest.mark.asyncio
+async def test_tactical_generation_uses_current_confirmed_fact_snapshot():
+    from tests.test_fact_gate import setup_gate
+    snapshot = setup_gate()
+    llm, repository = TacticalWorkflowLLM(), TacticalRepository()
+    cfg = _config(llm, repository)
+    cfg["configurable"].update(
+        tenant_id=str(snapshot.tenant_id), novel_id=str(snapshot.novel_id),
+        story_fact_repository=SimpleNamespace(capture_constraints=AsyncMock(return_value=snapshot)),
+    )
+    result = await tactical_plan_node(_state(_plan()), cfg)
+    assert snapshot.digest in llm.prompts[-1]
+    assert '"ancestral_hall_owner"' in llm.prompts[-1]
+    assert result.update["chapter_fact_input"]["snapshot_digest"] == snapshot.digest
+    assert result.update["chapter_fact_input"]["validation_status"] == "not_checked"
+
+
+@pytest.mark.asyncio
 async def test_schema_five_accepts_one_combined_chapter_plan() -> None:
     plan, llm, repository = _plan(), TacticalWorkflowLLM(), TacticalRepository()
     state = _state(plan)
@@ -198,6 +215,26 @@ async def test_schema_five_accepts_one_combined_chapter_plan() -> None:
     assert repository.idempotency_keys == [proposal_id]
     assert outline["chapter_execution_contract"]["tactical_version"] == 1
     assert [beat["chapter_number"] for beat in outline["rolling_plan"]] == [1, 2, 3]
+
+
+@pytest.mark.asyncio
+async def test_fact_pause_keeps_committed_tactics_but_not_unaccepted_outline(monkeypatch):
+    from importlib import import_module
+    from langgraph.types import Command
+    module = import_module("application.agents.chapter_outline_node")
+    plan, llm, repository = _plan(), TacticalWorkflowLLM(), TacticalRepository()
+    state, cfg = _state(plan), _config(llm, repository, auto=True)
+    state.update((await tactical_plan_node(state, cfg)).update)
+    state.update((await chapter_outline_node(state, cfg)).update)
+    monkeypatch.setattr(module, "_gate_outline", AsyncMock(return_value=Command(
+        goto="fact_review_node", update={"pending_proposal": {"kind": "fact_review"}},
+    )))
+    paused = await chapter_plan_review_node(state, cfg)
+    assert paused.goto == "fact_review_node"
+    assert paused.update["tactical_window"] == repository.latest.to_dict()
+    assert paused.update["tactical_window_expected_version"] == repository.latest.version
+    assert paused.update["tactical_window_persisted"] is True
+    assert "chapter_outlines" not in paused.update
 
 
 @pytest.mark.asyncio

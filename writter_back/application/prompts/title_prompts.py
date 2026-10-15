@@ -13,10 +13,11 @@ def build_title_prompt(
     novel_type: str,
     creative_brief: dict[str, Any] | None = None,
     main_characters: list[dict[str, Any]] | None = None,
+    reader_quality_version: int = 0,
 ) -> str:
     """Generate scored title candidates that preserve the creative promise."""
     return render_prompt(
-        "title/candidates.txt",
+        "title/candidates_reader_v1.txt" if reader_quality_version == 1 else "title/candidates.txt",
         novel_type=novel_type,
         creative_brief=json.dumps(creative_brief or {}, ensure_ascii=False, indent=2),
         main_characters=json.dumps(main_characters or [], ensure_ascii=False, indent=2),

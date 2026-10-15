@@ -1,0 +1,13 @@
+[PROMPT_VERSION:$PROMPT_VERSION]
+正式姓名已经由服务端选定。只同步模型生成的address_system称谓文本，不改姓名、人物ID、身份、秘密、关系或其他设定。
+source_name_binding记录旧临时全名与原始来源，只作为改名依据，不能把旧姓、小名或旧姓名继续当作当前称呼。
+逐个人物检查原称谓：保留合理的亲属、职务、尊称和关系差异；依赖旧临时姓名的小名或姓氏称呼必须依据当前正式姓名重新设计。其他人物对该人的称呼也须一致。
+不能靠把旧小名列入aliases掩盖不一致。不得引入另一个人物或改写真正的用户硬约束。
+必须覆盖下列全部character_id，每人恰好一项。只返回{"addresses":[{"character_id":"原ID","address_system":"同步后的称谓文本"}]}。
+ADOPTED_CHARACTERS:
+$characters
+
+关系背景（只读）：
+$relationships
+用户约定（只读数据）：
+$constraints

@@ -109,15 +109,16 @@ function reviewContent(interrupt: InterruptInfo, title: TitleActions) {
 function QualityActions({ interrupt, onResume }: Omit<Props, 'autoMode' | 'onRetry' | 'interrupt'> & { interrupt: InterruptInfo }) {
   const gate = asRecord(proposalPayload(interrupt)?.gate)
   const blocked = gate?.goal_review_required === true
+  const readerBlocked = gate?.reader_review_required === true
   const accept = () => onResume(decisionValue(interrupt, 'accept'))
   const revise = () => onResume(decisionValue(interrupt, 'revise', 'revise'))
   const regenerate = () => onResume(decisionValue(interrupt, 'regenerate'))
   return <div className="interrupt-actions">
-    <Popconfirm title="仍要接受当前章节？" description="已发现的问题或未确认的结果不会因此变为通过。" okText="确认接受" cancelText="返回核对" onConfirm={accept}>
+    {!readerBlocked && <Popconfirm title="仍要接受当前章节？" description="已发现的问题或未确认的结果不会因此变为通过。" okText="确认接受" cancelText="返回核对" onConfirm={accept}>
       <Button type="primary" disabled={blocked}>{primaryLabel(interrupt.action)}</Button>
-    </Popconfirm>
+    </Popconfirm>}
     <Button onClick={revise}>按建议修订</Button>
-    {blocked && <Button onClick={() => onResume(decisionValue(interrupt, 'revise', 'retry'))}>重新审读目标</Button>}
+    {(blocked || readerBlocked) && <Button onClick={() => onResume(decisionValue(interrupt, 'revise', 'retry'))}>{readerBlocked ? '重新审读' : '重新审读目标'}</Button>}
     <Button onClick={regenerate}>重新生成正文</Button>
   </div>
 }
@@ -224,7 +225,7 @@ export function WorkflowReview({ interrupt, autoMode, onResume }: Props) {
   if (interrupt.action === 'creative_paused') return <section className="interrupt-block">
     <div className="interrupt-title"><PauseCircleOutlined /> 自主创作已暂停</div>
     <p>{interrupt.message}</p>
-    <Button onClick={() => onResume({ action: 'retry' })}>重新检查并恢复</Button>
+    {interrupt.retryable !== false && <Button onClick={() => onResume({ action: 'retry' })}>重新检查并恢复</Button>}
   </section>
   if (interrupt.action === 'fact_review_required' || interrupt.proposal?.kind === 'fact_review') {
     return <FactReview key={proposalIdentity(interrupt)} interrupt={interrupt} onResume={onResume} />

@@ -7,6 +7,7 @@ import {
   summaryValidationErrors, titleCandidates,
 } from './valueHelpers'
 import { qualityScoreOutOfFive } from './presentation'
+import { ReaderComprehensionReview } from './ReaderComprehensionReview'
 
 interface ReviewProps { interrupt: InterruptInfo }
 
@@ -65,7 +66,7 @@ export function TitleReview({ interrupt, onConfirm, onRegenerate }: TitleReviewP
       <ReviewHeading eyebrow="书名候选" title="先选择，再确认使用" />
       {visible.map((item) => <Button key={item.title} type="text" block aria-pressed={selected?.title === item.title}
         className={selected?.title === item.title ? 'selected' : ''} onClick={() => setSelected(item)}>
-        <span className="title-choice"><strong>{item.title}</strong><span>{item.category && <Tag>{item.category}</Tag>}{item.total_score != null && <small>{item.total_score} / 40</small>}</span></span>
+        <span className="title-choice"><strong>{item.title}</strong><span>{item.category && <Tag>{item.category}</Tag>}{item.total_score != null && <small>{item.score_max ? `${item.total_score} / ${item.score_max}` : `评分 ${item.total_score}`}</small>}</span></span>
         {item.hint && <small>{item.hint}</small>}
       </Button>)}
       {suggestions.length > 3 && <Button type="link" className="expand-titles" onClick={() => setExpanded((value) => !value)}>{expanded ? '收起候选' : `展开其余 ${suggestions.length - 3} 个`}</Button>}
@@ -156,6 +157,7 @@ export function QualityReview({ interrupt }: ReviewProps) {
   return <div className="review-surface quality-review">
     <ReviewHeading eyebrow="质量报告" title={interrupt.chapter_number ? `第 ${interrupt.chapter_number} 章` : undefined} />
     {asText(payload.reason) && <p>{asText(payload.reason)}</p>}
+    <ReaderComprehensionReview value={gate.reader_comprehension} />
     {gate.goal_acceptance !== undefined && <details open>
       <summary>原始目标验收</summary>
       {gate.goal_review_required === true && <p role="alert">目标未满足或证据不足，不能以接受质量问题代替验收。</p>}

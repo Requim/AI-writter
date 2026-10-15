@@ -41,6 +41,10 @@ export const novelApi = {
     data<ChapterSummary[]>(apiClient.get(`/v1/novels/${novelId}/chapters`)),
   chapter: (novelId: string, chapterId: string) =>
     data<ChapterDetail>(apiClient.get(`/v1/novels/${novelId}/chapters/${chapterId}`)),
+  exportManuscript: (novelId: string, format: 'txt' | 'md' = 'txt') =>
+    data<Blob>(apiClient.get(`/v1/novels/${novelId}/export`, {
+      responseType: 'blob', params: { format },
+    })),
   updateChapter: (
     novelId: string,
     chapterId: string,

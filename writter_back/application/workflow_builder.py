@@ -104,9 +104,10 @@ def _add_nodes(workflow: StateGraph) -> None:
         "chapter_outline_node", "chapter_writer_node", "reflection_node", "revision_node",
     }
     for name, node in WORKFLOW_NODES.items():
+        node = measured_node(name, node)
         if name in material_stages:
             node = with_research_material(node)
-        workflow.add_node(name, measured_node(name, node))
+        workflow.add_node(name, node)
 
 
 def _add_deterministic_edges(workflow: StateGraph) -> None:

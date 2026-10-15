@@ -35,7 +35,7 @@ async def test_real_adapter_accepts_data_instead_of_demanding_schema_keywords():
     raw = response(snapshot)
     assert "properties 缺失" in structured_result_errors(raw, FactExtraction.model_json_schema())
     llm = adapter(raw)
-    token = set_prompt_snapshot({"fact_judge.txt": "旧快照：$constraints $content $kind"})
+    token = set_prompt_snapshot({"fact_judge_v2.txt": "旧快照：$constraints $content $kind"})
     try:
         report = await evaluate_facts(snapshot, "辛家祖祠归辛家所有。", "outline", llm)
     finally:

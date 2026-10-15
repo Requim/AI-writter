@@ -45,6 +45,23 @@ describe('自主作家事件与工作台边界', () => {
     expect(resume).not.toHaveBeenCalled()
   })
 
+  it('does not offer recovery for a nonretryable creative pause', () => {
+    render(<WorkflowReview interrupt={{ action: 'creative_paused', reason: 'budget_exhausted',
+      message: 'chapter:2 调用预算已耗尽（32/32）', retryable: false }}
+      autoMode onResume={vi.fn()} onRetry={vi.fn()} />)
+    expect(screen.getByText(/32\/32/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '重新检查并恢复' })).not.toBeInTheDocument()
+  })
+
+  it('keeps normal recovery for a retryable creative pause', () => {
+    const resume = vi.fn()
+    render(<WorkflowReview interrupt={{ action: 'creative_paused',
+      message: '后处理待恢复', retryable: true }}
+      autoMode onResume={resume} onRetry={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: '重新检查并恢复' }))
+    expect(resume).toHaveBeenCalledWith({ action: 'retry' })
+  })
+
   it('shows isolated variants but never labels a model trial as human support', () => {
     render(<CreativeRecords records={[experimentRecord('model_supported_trial')]} />)
     expect(screen.getByText('模型支持试用')).toBeInTheDocument()

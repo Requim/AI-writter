@@ -39,6 +39,10 @@ class NovelAgentState(TypedDict):
     creative_narrative_mode: Optional[str]
     creative_decision_for_chapter: Optional[int]
     creative_postprocessed_through: Optional[int]
+    creative_editorial_review: Optional[Dict]  # 可信正文及提示词版本绑定的审读回执
+    reader_quality_version: Optional[int]
+    reader_comprehension_receipt: Optional[Dict]
+    reader_history: Optional[List[Dict]]
     
     # ========== 用户输入区（由用户通过interrupt提供） ==========
     novel_type: str                          # 小说类型（强制用户输入，无AI fallback）

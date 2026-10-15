@@ -117,6 +117,9 @@ def related_character_cards(
 
 
 def _global_story_rules(total_outline: dict[str, Any]) -> dict[str, Any]:
+    from application.reader_entry import prose_reader_material
+    total_outline = prose_reader_material(
+        total_outline, enabled=total_outline.get("reader_quality_version") == 1)
     return {
         "source_title": total_outline.get("source_title", ""),
         "source_summary": total_outline.get("source_summary", ""),

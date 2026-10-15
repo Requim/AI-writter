@@ -91,10 +91,14 @@ async def _get_prev_chapter_tail(
 
 
 def _draft_context(state: NovelAgentState, previous_tail: str) -> ChapterDraftContext:
+    from application.reader_entry import prose_reader_context
     outline = (state.get("chapter_outlines") or [{}])[-1]
     total = state.get("total_outline")
     outline = outline if isinstance(outline, dict) else {}
     total = total if isinstance(total, dict) else {}
+    enabled = state.get("reader_quality_version", total.get("reader_quality_version")) == 1
+    outline, total = prose_reader_context(outline, total, enabled=enabled,
+                                         chapter_number=int(state.get("current_chapter_index") or 0) + 1)
     return ChapterDraftContext(
         outline=outline,
         novel_type=str(state.get("novel_type") or ""),

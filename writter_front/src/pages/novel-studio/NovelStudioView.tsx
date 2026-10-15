@@ -1,9 +1,11 @@
-import { Button, Dropdown, Input, Progress, Segmented, Tooltip, type MenuProps } from 'antd'
+import { App, Button, Dropdown, Input, Progress, Segmented, Tooltip, type MenuProps } from 'antd'
+import { useState } from 'react'
 import {
-  EditOutlined, FileDoneOutlined, FileTextOutlined, HistoryOutlined, LeftOutlined, MoreOutlined, PauseCircleOutlined,
+  DownloadOutlined, EditOutlined, FileDoneOutlined, FileTextOutlined, HistoryOutlined, LeftOutlined, MoreOutlined, PauseCircleOutlined,
   PlayCircleOutlined, ProjectOutlined, ReloadOutlined, SaveOutlined, StopOutlined, UnorderedListOutlined,
 } from '@ant-design/icons'
 import { MarkdownManuscript } from '@/components/MarkdownManuscript'
+import { ReaderComprehensionReview } from '@/components/workflow/ReaderComprehensionReview'
 import { CreativeWorkspace } from '@/components/creative/CreativeWorkspace'
 import { NovelPlanView } from '@/components/novel-plan/NovelPlanView'
 import { PlanReplanDialog } from '@/components/novel-plan/PlanReplanDialog'
@@ -12,6 +14,40 @@ import { FactLedger } from '@/components/workflow/FactLedger'
 import { qualityScoreOutOfFive } from '@/components/workflow/presentation'
 import type { ChapterSummary } from '@/types/novel'
 import type { NovelStudioController } from './useNovelStudioController'
+import { novelApi } from '@/api/novel'
+
+function ManuscriptDownload({ controller }: { controller: NovelStudioController }) {
+  const { message } = App.useApp()
+  const [downloading, setDownloading] = useState(false)
+  const available = controller.document.chapters.some((chapter) => chapter.status === 'completed')
+  const download = async (format: 'txt' | 'md') => {
+    setDownloading(true)
+    let url: string | undefined
+    try {
+      const blob = await novelApi.exportManuscript(controller.novelId, format)
+      url = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      const title = controller.document.novel?.title || 'manuscript'
+      const safeTitle = Array.from(title).map((char) => char.charCodeAt(0) < 32 ? '_' : char)
+        .join('').replace(/[<>:"/\\|?*]/g, '_').slice(0, 100).replace(/^[. ]+|[. ]+$/g, '') || 'manuscript'
+      anchor.download = `${safeTitle}.${format}`
+      document.body.appendChild(anchor)
+      anchor.click()
+      anchor.remove()
+    } catch {
+      message.error('整书导出失败，请重试')
+    } finally {
+      if (url) URL.revokeObjectURL(url)
+      setDownloading(false)
+    }
+  }
+  return <Dropdown disabled={!available || downloading} trigger={['click']} menu={{
+    items: [{ key: 'txt', label: 'TXT' }, { key: 'md', label: 'Markdown' }],
+    onClick: ({ key }) => { if (key === 'txt' || key === 'md') void download(key) },
+  }}><Tooltip title="导出整书"><Button aria-label="导出整书" icon={<DownloadOutlined />}
+    disabled={!available || downloading} loading={downloading} /></Tooltip></Dropdown>
+}
 
 function WorkflowAction({ controller }: { controller: NovelStudioController }) {
   const { workflow, autoMode } = controller
@@ -27,6 +63,10 @@ function WorkflowAction({ controller }: { controller: NovelStudioController }) {
   if (workflow.state.syncState === 'syncing') return <Button loading disabled>正在读取进度</Button>
   if (busy) return (
     <Button danger icon={<StopOutlined />} loading={status === 'cancelling'} onClick={controller.stopWriting}>停止</Button>
+  )
+  if ((status === 'error' && workflow.state.retryable === false)
+    || (status === 'paused' && interrupt?.retryable === false)) return (
+    <Button aria-label="查看暂停原因" icon={<PauseCircleOutlined />} onClick={() => controller.setEditor({ mobilePanel: 'workflow' })}>查看暂停原因</Button>
   )
   if (status === 'paused' && autoMode && interrupt?.action !== 'creative_paused') return (
     <Button type="primary" icon={<PlayCircleOutlined />} onClick={controller.continueAutoWriting}>继续自动创作</Button>
@@ -50,6 +90,7 @@ function StudioHeader({ controller }: { controller: NovelStudioController }) {
         <h1>{novel?.title || '未命名作品'}</h1>
       </div>
       <div className="studio-actions">
+        <ManuscriptDownload controller={controller} />
         {novel?.total_outline?.author_config?.author_mode === 'autonomous_v1' && <CreativeWorkspace key={controller.novelId} novelId={controller.novelId}
           chapter={controller.document.selectedChapter} revision={controller.workflow.state.creativeRevision} />}
         <FactLedger novelId={controller.novelId} activeReview={controller.workflow.state.interrupt} onResume={controller.resumeWriting} />
@@ -319,6 +360,9 @@ function ChapterEditor({ controller }: { controller: NovelStudioController }) {
   return (
     <section className={`editor-panel studio-pane ${active}`}>
       <EditorToolbar controller={controller} live={live} />
+      {!live && controller.document.selectedChapter?.reader_comprehension && <ReaderComprehensionReview
+        expanded={false}
+        value={{ ...controller.document.selectedChapter.reader_comprehension, status: 'passed' }} />}
       <EditorBody controller={controller} live={live} />
     </section>
   )

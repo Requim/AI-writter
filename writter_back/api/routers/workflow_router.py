@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any, NoReturn, TypeAlias
-from uuid import NAMESPACE_URL, uuid4, uuid5
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -92,6 +92,8 @@ class PreparedWorkflow:
     is_retry: bool
     command: ClaimedWorkflowCommand
     auto_mode: bool = False
+    deadline: datetime | None = None
+    is_restart: bool = False
 
 
 StreamItem: TypeAlias = WorkflowEvent | Exception | None
@@ -171,6 +173,9 @@ def _seed_initial_input(input_data: dict[str, Any], novel: Novel) -> None:
         input_data.setdefault("summary", novel.summary)
 
     outline = novel.total_outline
+    input_data["reader_quality_version"] = getattr(outline, "reader_quality_version", 0)
+    if isinstance(input_data.get("total_outline"), dict):
+        input_data["total_outline"]["reader_quality_version"] = input_data["reader_quality_version"]
     if outline is None:
         input_data.setdefault("prompt_version", prompt_manifest()["version"])
         return
@@ -193,11 +198,8 @@ def _seed_initial_input(input_data: dict[str, Any], novel: Novel) -> None:
     if outline.prompt_version:
         input_data.setdefault("prompt_version", outline.prompt_version)
     if outline.story_background and outline.main_plot and outline.volumes:
-        outline_data = asdict(outline)
-        if novel.title:
-            outline_data["source_title"] = novel.title
-        if novel.summary:
-            outline_data["source_summary"] = novel.summary
+        outline_data = {**asdict(outline), **({"source_title": novel.title} if novel.title else {}),
+                        **({"source_summary": novel.summary} if novel.summary else {})}
         input_data.setdefault("total_outline", outline_data)
         return
     if outline.total_chapters:
@@ -230,9 +232,23 @@ def _plan_replan_command(raw: Any) -> dict[str, Any] | None:
         expected = int(expected_value)
     except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=422, detail="expected_version 无效") from exc
-    if scope not in {"future", "volume", "scale"} or expected < 1 or not instruction:
+    mode = raw.get("repair_mode")
+    initial = mode == "cross_layer" and expected == 0 and bool(raw.get("repair_proposal_id"))
+    if (scope not in {"future", "volume", "scale"} or expected < (0 if initial else 1)
+            or not instruction or mode not in (None, "cross_layer")
+            or (mode == "cross_layer" and not initial)):
         raise HTTPException(status_code=422, detail="重规划范围、版本或修改指令无效")
-    return {"expected_version": expected, "scope": scope, "instruction": instruction}
+    result = {"expected_version": expected, "scope": scope, "instruction": instruction}
+    if initial:
+        result["repair_mode"] = mode
+    if "repair_proposal_id" in raw:
+        try:
+            if scope != "future" or not isinstance(raw["repair_proposal_id"], str):
+                raise ValueError("invalid repair intent")
+            result["repair_proposal_id"] = str(UUID(raw["repair_proposal_id"]))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="节点修复必须引用有效提案且保持未来范围") from exc
+    return result
 
 
 async def _seed_plan_input(
@@ -256,7 +272,10 @@ async def _seed_creative_input(
 ) -> None:
     """创作身份只从已持久化会话注入，拒绝客户端伪造模式或成果引用。"""
     for key in list(input_data):
-        if key.startswith("creative_") or key in {"author_mode", "author_config"}:
+        if key.startswith("creative_") or key in {
+            "author_mode", "author_config", "reader_quality_version", "reader_comprehension_receipt",
+            "reader_history",
+        }:
             input_data.pop(key)
     outline = getattr(novel, "total_outline", None)
     if not outline or not getattr(outline, "author_config", None):
@@ -282,6 +301,33 @@ def _planning_run_id(
     return str(uuid5(NAMESPACE_URL, f"novel-plan:{identity}"))
 
 
+def _seed_explicit_replan(
+    input_data: dict[str, Any], replan: dict[str, Any], latest_plan: Any,
+) -> None:
+    from application.creative.plan_cross_layer_repair import initial_cross_layer_intent
+    initial = initial_cross_layer_intent(replan)
+    if ((initial and latest_plan is not None) or
+            (not initial and (latest_plan is None or latest_plan.version != replan["expected_version"]))):
+        raise _command_error(409, "plan_version_conflict", "计划版本已更新，请刷新后重试")
+    input_data.update(
+        plan_replan_request=replan, plan_generation=None, plan_feedback=None,
+        pending_proposal=None, pending_proposal_decision=None,
+    )
+
+
+async def _seed_milestone_repair(
+    input_data: dict[str, Any], replan: dict[str, Any], orchestrator: NovelOrchestrator,
+    context: TenantContext, thread_id: str,
+) -> None:
+    if not replan.get("repair_proposal_id"):
+        return
+    try:
+        trusted = await orchestrator.get_plan_repair_input(context, thread_id, replan)
+    except StaleWorkflowDecisionError as exc:
+        raise _command_error(409, "stale_plan_repair", str(exc)) from exc
+    input_data.update(trusted)
+
+
 async def _prepare_fresh_input(
     input_data: dict[str, Any], replan: dict[str, Any] | None,
     context: TenantContext, thread_id: str, orchestrator: NovelOrchestrator,
@@ -304,9 +350,8 @@ async def _prepare_fresh_input(
     input_data.setdefault("prompt_snapshot", prompt_manifest(include_content=True)["snapshot"])
     latest_plan = await _seed_plan_input(input_data, orchestrator, context, thread_id)
     if replan is not None:
-        if latest_plan is None or latest_plan.version != replan["expected_version"]:
-            raise _command_error(409, "plan_version_conflict", "计划版本已更新，请刷新后重试")
-        input_data["plan_replan_request"] = replan
+        _seed_explicit_replan(input_data, replan, latest_plan)
+        await _seed_milestone_repair(input_data, replan, orchestrator, context, thread_id)
     elif (
         latest_plan is not None
         and novel is not None
@@ -401,6 +446,8 @@ async def _prepare_request(
     command.pop("tenant_id", None)
     auto_mode = command.pop("_auto_mode", input_data.pop("_auto_mode", False))
     replan = _plan_replan_command(command.pop("plan_replan", None))
+    if replan and replan.get("repair_proposal_id") and input_data:
+        raise HTTPException(status_code=422, detail="受限节点修复不接受自定义工作流输入")
     await _ensure_planning_available(
         orchestrator, context, thread_id, replan
     )
@@ -656,6 +703,7 @@ async def _auto_interrupt_command(
             resume_value=value,
             is_resume=True,
             is_retry=False,
+            is_restart=False,
         )
     return _retry_prepared(prepared)
 
@@ -689,6 +737,7 @@ def _retry_prepared(prepared: PreparedWorkflow) -> PreparedWorkflow:
         resume_value=None,
         is_resume=False,
         is_retry=True,
+        is_restart=False,
     )
 
 
@@ -736,11 +785,12 @@ async def _prepare_execution(
     quota: QuotaService,
     command_store: WorkflowCommandStore,
     background: bool = False,
+    claimed_command: ClaimedWorkflowCommand | None = None,
 ) -> PreparedWorkflow:
     novel = await _authorize_thread(context, thread_id, repository)
     ensure_generation_enabled()
     timeout = settings.WORKFLOW_BACKGROUND_TIMEOUT_SECONDS if background else settings.WORKFLOW_TIMEOUT_SECONDS
-    command = await _claim_command(
+    command = claimed_command or await _claim_command(
         command_store, context, thread_id, idempotency_key, ttl_seconds=timeout,
     )
     acquired = False
@@ -960,31 +1010,9 @@ async def _produce_stream_events(
     current = prepared
     while True:
         try:
-            auto_resume: PreparedWorkflow | None = None
-            async for event in _stream_attempt(
-                orchestrator, context, thread_id, current
-            ):
-                if current.auto_mode and event.type == "interrupt":
-                    auto_resume = await _auto_interrupt_command(
-                        orchestrator, context, thread_id, current, event
-                    )
-                    if auto_resume is not None:
-                        sequence += 1
-                        await channel.emit(
-                            WorkflowEvent(
-                                id=sequence,
-                                type="status",
-                                thread_id=thread_id,
-                                command_id=current.command.command_id,
-                                data={
-                                    "status": "auto_continuing",
-                                    "message": "自动模式正在处理当前中断并继续创作",
-                                },
-                            )
-                        )
-                        continue
-                sequence += 1
-                await channel.emit(event.model_copy(update={"id": sequence}))
+            auto_resume, sequence = await _consume_stream_attempt(
+                channel, orchestrator, context, thread_id, current, sequence
+            )
             if auto_resume is not None:
                 current = auto_resume
                 continue
@@ -1003,12 +1031,39 @@ async def _produce_stream_events(
             await _wait_for_auto_retry(exc)
 
 
+async def _consume_stream_attempt(
+    channel: StreamChannel,
+    orchestrator: NovelOrchestrator,
+    context: TenantContext,
+    thread_id: str,
+    prepared: PreparedWorkflow,
+    sequence: int,
+) -> tuple[PreparedWorkflow | None, int]:
+    auto_resume = None
+    async for event in _stream_attempt(orchestrator, context, thread_id, prepared):
+        sequence += 1
+        if prepared.auto_mode and event.type == "interrupt":
+            auto_resume = await _auto_interrupt_command(
+                orchestrator, context, thread_id, prepared, event
+            )
+            if auto_resume is not None:
+                event = WorkflowEvent(
+                    id=sequence, type="status", thread_id=thread_id,
+                    command_id=prepared.command.command_id,
+                    data={"status": "auto_continuing",
+                          "message": "自动模式正在处理当前中断并继续创作"},
+                )
+        await channel.emit(event.model_copy(update={"id": sequence}))
+    return auto_resume, sequence
+
+
 def _stream_attempt(
     orchestrator: NovelOrchestrator,
     context: TenantContext,
     thread_id: str,
     prepared: PreparedWorkflow,
 ) -> AsyncIterator[WorkflowEvent]:
+    restart_options = {"is_restart": True} if prepared.is_restart else {}
     return orchestrator.stream_events(
         context,
         thread_id,
@@ -1017,6 +1072,7 @@ def _stream_attempt(
         is_resume=prepared.is_resume,
         is_retry=prepared.is_retry,
         command_id=prepared.command.command_id,
+        **restart_options,
     )
 
 
@@ -1135,8 +1191,12 @@ async def _settle_stream_command(
     applied: bool,
 ) -> None:
     try:
+        restart = getattr(command_store, "release_for_restart", None)
         if applied:
             await _finalize_command(command_store, context, thread_id, prepared.command)
+        elif prepared.auto_mode and getattr(command_store, "stopping", False) is True and callable(restart):
+            await restart(str(context.tenant_id), thread_id, prepared.command.command_id,
+                          prepared.command.lease_token)
         else:
             await _release_command(command_store, context, thread_id, prepared.command)
     except WorkflowCommandStoreUnavailable:
@@ -1155,7 +1215,10 @@ async def _run_stream_execution(
     prepared: PreparedWorkflow,
 ) -> None:
     applied = False
-    deadline = asyncio.timeout(settings.WORKFLOW_BACKGROUND_TIMEOUT_SECONDS)
+    seconds = settings.WORKFLOW_BACKGROUND_TIMEOUT_SECONDS
+    if prepared.deadline is not None:
+        seconds = max(0.0, min(seconds, (prepared.deadline - datetime.now(timezone.utc)).total_seconds()))
+    deadline = asyncio.timeout(seconds)
     try:
         async with deadline:
             await _produce_stream_events(
@@ -1243,6 +1306,13 @@ async def _stream_response(
         command_store,
         background=True,
     )
+    from application.automatic_restart import remember_automatic_run
+    try:
+        await remember_automatic_run(command_store, context, prepared)
+    except (Exception, asyncio.CancelledError):
+        orchestrator.finish(context, thread_id)
+        await _release_command_or_http(command_store, context, thread_id, prepared.command)
+        raise
     channel, _producer = _start_stream_execution(
         orchestrator, command_store, context, thread_id, prepared
     )

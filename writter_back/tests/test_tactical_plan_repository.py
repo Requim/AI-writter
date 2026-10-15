@@ -88,6 +88,61 @@ async def test_tactical_accept_is_append_only_and_retry_idempotent(
 
 
 @pytest.mark.asyncio
+async def test_workflow_can_recover_exact_committed_window_after_fact_pause(
+    repository, tenant_context, sample_novel
+) -> None:
+    tenant_id, novel_id = str(tenant_context.tenant_id), str(sample_novel.id)
+    plan = await _prepare(repository, tenant_id, sample_novel)
+    candidate = replace(_window(plan.version), version=1)
+    first = await repository.accept_tactical_plan(
+        tenant_id, novel_id, candidate, 0, idempotency_key="before-fact-pause",
+    )
+    recovered = await repository.accept_tactical_plan(
+        tenant_id, novel_id, candidate, 0, idempotency_key="repaired-outline",
+        reuse_unchanged=True,
+    )
+    assert recovered.to_dict() == first.to_dict()
+    assert len(await repository.list_tactical_plan_versions(tenant_id, novel_id)) == 1
+    with pytest.raises(TacticalPlanVersionConflictError):
+        await repository.accept_tactical_plan(
+            tenant_id, novel_id, candidate, 0, idempotency_key="ordinary-stale-request",
+        )
+    with pytest.raises(TacticalPlanVersionConflictError):
+        await repository.accept_tactical_plan(
+            tenant_id, novel_id, replace(candidate, window_objective="修改后的不同战术"), 0,
+            idempotency_key="different-after-fact-pause", reuse_unchanged=True,
+        )
+    await repository.accept_plan(
+        tenant_id, novel_id, _plan("replan"), 1, idempotency_key="new-plan",
+    )
+    with pytest.raises(TacticalPlanVersionConflictError, match="整书计划"):
+        await repository.accept_tactical_plan(
+            tenant_id, novel_id, first, 0, idempotency_key="invalidated-plan-recovery",
+            reuse_unchanged=True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_exact_window_recovery_does_not_reuse_older_version(
+    repository, tenant_context, sample_novel
+) -> None:
+    tenant_id, novel_id = str(tenant_context.tenant_id), str(sample_novel.id)
+    plan = await _prepare(repository, tenant_id, sample_novel)
+    first = await repository.accept_tactical_plan(
+        tenant_id, novel_id, _window(plan.version), 0, idempotency_key="first-window",
+    )
+    await repository.accept_tactical_plan(
+        tenant_id, novel_id, replace(first, window_objective="已接受的新战术"), 1,
+        idempotency_key="newer-window",
+    )
+    with pytest.raises(TacticalPlanVersionConflictError):
+        await repository.accept_tactical_plan(
+            tenant_id, novel_id, first, 0, idempotency_key="stale-window-recovery",
+            reuse_unchanged=True,
+        )
+
+
+@pytest.mark.asyncio
 async def test_rewind_can_append_same_revision_with_new_proposal_key(
     repository, tenant_context, sample_novel
 ) -> None:

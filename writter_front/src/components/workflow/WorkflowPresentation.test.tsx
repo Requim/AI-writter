@@ -46,6 +46,36 @@ describe('阶段耗时提示', () => {
   })
 })
 
+describe('自主创作阶段', () => {
+  it.each([
+    ['creative_development_node', '自主立项'],
+    ['creative_decision_node', '人物行动决策'],
+    ['creative_postprocess_node', '更新角色与伏笔'],
+    ['creative_recap_node', '章节复盘'],
+    ['creative_experiment_node', '评估创作策略'],
+  ])('identifies autonomous stage %s without exposing an internal fallback', (activeNode, label) => {
+    show({ status: 'running', activeNode })
+    expect(screen.getAllByText(label).length).toBeGreaterThan(0)
+    expect(screen.queryByText('其他创作步骤')).not.toBeInTheDocument()
+    expect(screen.getByText(activeNode).closest('details')).not.toHaveAttribute('open')
+  })
+})
+
+describe('草稿保留与重试权限', () => {
+  it.each([false, true])('matches retained-draft advice to retry permission %s', (retryable) => {
+    show({ status: 'error', error: '调用预算已耗尽', retryable, hasCheckpointDraft: true })
+    const alert = screen.getByRole('alert')
+    if (retryable) {
+      expect(alert).toHaveTextContent('服务端已保留本章草稿，可从已保存进度重试。')
+      expect(screen.getByRole('button', { name: /重试当前步骤/ })).toBeVisible()
+    } else {
+      expect(alert).toHaveTextContent('服务端已保留本章草稿。')
+      expect(alert).not.toHaveTextContent(/可从已保存进度重试/)
+      expect(screen.queryByRole('button', { name: /重试当前步骤/ })).not.toBeInTheDocument()
+    }
+  })
+})
+
 describe('创作进度的展示边界', () => {
   it('folds internal nodes and reasoning away from the current task', () => {
     show({ status: 'running', activeNode: 'chapter_writer_node', reasoning: 'router_debug_only' })

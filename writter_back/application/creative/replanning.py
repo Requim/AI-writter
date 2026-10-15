@@ -3,19 +3,21 @@
 from application.creative.artifacts import workspace
 from application.creative.policy import validate_replan, window_number
 from application.creative.replan_audit import audit_replan
+from application.creative.plan_consistency import audit_plan_consistency
 
 
 async def validate_autonomous_plan(state, config, proposed, proposal_id):
     """只有受约束的新模式可自动接受改纲，旧模式人工门禁不改变。"""
     if state.get("author_mode") != "autonomous_v1":
         return
+    work = await workspace(config)
+    await audit_plan_consistency(work, state, proposed, proposal_id, config)
     previous = state.get("novel_plan")
     if not previous:
         return
     generation = state.get("plan_generation") or {}
     if generation.get("mode") == "volume_detail" and not state.get("plan_replan_request"):
         return
-    work = await workspace(config)
     records = await work.records("replan")
     accepted = [r for r in records if r["status"] == "accepted" and r["key"] != str(proposal_id)]
     chapter = int(state.get("current_chapter_index") or 0) + 1

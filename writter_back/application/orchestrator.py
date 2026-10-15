@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from copy import deepcopy
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -15,6 +16,7 @@ from psycopg_pool import AsyncConnectionPool
 from application.events import WorkflowEvent
 from application.feature_policy import TenantPlanningLoader, feature_policy
 from application.quota_service import QuotaService
+from application.checkpoint_budget import budget_pause_interrupts, checkpoint_budget_blocker
 from application.errors import (
     WorkflowCheckpointUnavailableError,
     StaleWorkflowDecisionError,
@@ -592,6 +594,8 @@ class NovelOrchestrator(AgentOrchestrator):
     def _reset_fact_retry_budget(
         values: dict[str, Any], next_node: str,
     ) -> dict[str, Any]:
+        if values.get("author_mode") == "autonomous_v1":
+            return {}
         if next_node in {"reflection_node", "reflection_review_node", "revision_node"}:
             from application.automatic_recovery import quality_retry_update
 
@@ -601,6 +605,15 @@ class NovelOrchestrator(AgentOrchestrator):
         artifact = values.get("fact_artifact")
         if not isinstance(artifact, dict) or not artifact.get("kind"):
             return {}
+        raw_report = ((values.get("pending_proposal") or {}).get("payload") or {}).get("report")
+        if raw_report:
+            from application.fact_gate_workflow import _outdated_extraction_failure
+            from service.value_objects.fact_gate import FactGateReport
+            try:
+                if _outdated_extraction_failure(FactGateReport.model_validate(raw_report)):
+                    return {}
+            except (ValueError, TypeError):
+                return {}
         recovery = values.get("automatic_recovery")
         if not isinstance(recovery, dict):
             return {}
@@ -609,6 +622,7 @@ class NovelOrchestrator(AgentOrchestrator):
         attempts.pop(f"事实审校:{kind}", None)
         attempts.pop(f"事实提取:{kind}", None)
         return {"automatic_recovery": {
+            **recovery,
             "chapter": int(values.get("current_chapter_index") or 0),
             "attempts": attempts,
         }}
@@ -624,6 +638,14 @@ class NovelOrchestrator(AgentOrchestrator):
         next_nodes = tuple(getattr(state, "next", ()) or ())
         failed_node = self._failed_task_node(state)
         automatic_review = self._automatic_review_node(state, config)
+        missing_repair = (values.get("plan_replan_request") or {}).get("repair_proposal_id") and not values.get("pending_proposal")
+        if missing_repair and (failed_node == "novel_plan_initialize_node" or "novel_plan_initialize_node" in next_nodes):
+            next_node = "novel_plan_initialize_node"
+            reasoning = "从同一运行的可信检查点恢复待修复计划提案"
+            extra = await self._recover_plan_repair_proposal(config, values)
+            await self._route_retry_node(config, next_node, reasoning, extra)
+            self.record_activity(context, thread_id, active_node=next_node, message=reasoning)
+            return next_node
         if automatic_review:
             extra = self._reset_fact_retry_budget(values, automatic_review)
             await self._route_retry_node(
@@ -651,13 +673,32 @@ class NovelOrchestrator(AgentOrchestrator):
                 "当前没有可重试的工作流 checkpoint"
             )
 
-        self.record_activity(
-            context,
-            thread_id,
-            active_node=next_node,
-            message=reasoning,
-        )
+        self.record_activity(context, thread_id, active_node=next_node, message=reasoning)
         return next_node
+
+    async def _recover_plan_repair_proposal(
+        self, config: dict[str, Any], values: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Recover metadata lost during setup, never resurrect an older author decision."""
+        run_id = values.get("workflow_run_id")
+        source = (values.get("plan_replan_request") or {}).get("repair_proposal_id")
+        protected = (
+            "author_mode", "novel_plan", "plan_generation", "plan_replan_request",
+            "current_chapter_index", "current_chapter_content", "proposal_versions",
+        )
+        if not run_id or not source:
+            raise StaleWorkflowDecisionError("节点修复缺少原运行或原提案标识")
+        async for snapshot in self._workflow.aget_state_history(config, limit=16):
+            prior = snapshot.values
+            if prior.get("workflow_run_id") != run_id:
+                break
+            proposal = prior.get("pending_proposal") or {}
+            if proposal.get("kind") != "novel_plan" or proposal.get("proposal_id") != source:
+                continue
+            if all(prior.get(key) == values.get(key) for key in protected):
+                return {"pending_proposal": deepcopy(proposal), "pending_proposal_decision": None}
+            break
+        raise StaleWorkflowDecisionError("原节点修复提案已变化或无法从同一运行恢复")
 
     @staticmethod
     def _automatic_review_node(state: Any, config: dict) -> str | None:
@@ -731,7 +772,19 @@ class NovelOrchestrator(AgentOrchestrator):
         resume_value: Any,
         is_resume: bool,
         is_retry: bool,
+        is_restart: bool = False,
     ) -> Any:
+        if is_restart:
+            state = await self._workflow.aget_state(
+                self._make_config(context, thread_id, include_llm=False))
+            # Durable task writes can precede the next full checkpoint after a crash.
+            if not getattr(state, "values", {}) or not (
+                getattr(state, "next", ()) or getattr(state, "tasks", ())
+            ):
+                raise WorkflowCheckpointUnavailableError("No pending workflow checkpoint for restart")
+            if any(getattr(task, "interrupts", ()) for task in getattr(state, "tasks", ())):
+                raise WorkflowCheckpointUnavailableError("Interrupted checkpoint requires explicit review")
+            return None
         if is_retry:
             await self.prepare_retry_checkpoint(context, thread_id)
             return None
@@ -853,12 +906,13 @@ class NovelOrchestrator(AgentOrchestrator):
         is_resume: bool = False,
         is_retry: bool = False,
         command_id: str | None = None,
+        is_restart: bool = False,
     ) -> AsyncIterator[WorkflowEvent]:
         await self._ensure_workflow()
         message = "正在重试失败步骤" if is_retry else "正在恢复创作现场" if is_resume else "正在启动创作流程"
         self.record_activity(context, thread_id, message=message)
         payload = await self._stream_payload(
-            context, thread_id, input_data, resume_value, is_resume, is_retry
+            context, thread_id, input_data, resume_value, is_resume, is_retry, is_restart
         )
         sequence = 0
         async for mode, chunk in self._workflow.astream(
@@ -906,9 +960,8 @@ class NovelOrchestrator(AgentOrchestrator):
         self, context: TenantContext, thread_id: str
     ) -> dict[str, Any]:
         await self._ensure_workflow()
-        state = await self._workflow.aget_state(
-            self._make_config(context, thread_id, include_llm=False)
-        )
+        config = self._make_config(context, thread_id, include_llm=False)
+        state = await self._workflow.aget_state(config)
         values = getattr(state, "values", {}) or {}
         safe_values = {
             key: value for key, value in values.items() if key not in LARGE_STATE_FIELDS
@@ -916,6 +969,9 @@ class NovelOrchestrator(AgentOrchestrator):
         safe_values["has_current_chapter_content"] = bool(
             values.get("current_chapter_content")
         )
+        safe_values["reader_comprehension"] = (values.get("quality_gate") or {}).get("reader_comprehension")
+        # Prior prose is private review context and need not travel in UI snapshots.
+        safe_values.pop("reader_history", None)
         interrupts = []
         for task in getattr(state, "tasks", []) or []:
             interrupts.extend(
@@ -925,28 +981,48 @@ class NovelOrchestrator(AgentOrchestrator):
         execution = self.get_execution_snapshot(context, thread_id)
         if not execution.get("active_node") and next_nodes:
             execution["active_node"] = next_nodes[0]
-        last_activity = execution.get("last_activity_at")
-        stale = False
-        if self.is_executing(context, thread_id) and isinstance(last_activity, str):
-            try:
-                elapsed = datetime.now(timezone.utc) - datetime.fromisoformat(last_activity)
-                stale = elapsed.total_seconds() > settings.WORKFLOW_TIMEOUT_SECONDS
-            except ValueError:
-                pass
-        execution["is_stale"] = stale
+        execution["is_stale"] = self._execution_is_stale(context, thread_id, execution)
         status = "running" if self.is_executing(context, thread_id) else "idle"
         if interrupts and status == "idle":
             status = "paused"
+        blocked_node = self._budget_pause_task_node(state) if status == "paused" else self._failed_task_node(state)
+        blocker = await checkpoint_budget_blocker(values, config, blocked_node) if status != "running" else None
+        interrupts = budget_pause_interrupts(interrupts, blocker)
+        if status != "running" and self.is_executing(context, thread_id):
+            status, blocker = "running", None
+            interrupts = []
+            execution = self.get_execution_snapshot(context, thread_id)
         return {
             "thread_id": thread_id,
             "status": status,
             "has_interrupt": bool(interrupts),
             "interrupts": interrupts,
             "next_nodes": next_nodes,
+            "has_pending_checkpoint": bool(getattr(state, "tasks", ())),
             "execution": execution,
             "server_time": datetime.now(timezone.utc).isoformat(),
             "state": safe_values,
+            "blocker": blocker,
         }
+
+    def _execution_is_stale(self, context: TenantContext, thread_id: str, execution: dict) -> bool:
+        last_activity = execution.get("last_activity_at")
+        if not self.is_executing(context, thread_id) or not isinstance(last_activity, str):
+            return False
+        try:
+            elapsed = datetime.now(timezone.utc) - datetime.fromisoformat(last_activity)
+            return elapsed.total_seconds() > settings.WORKFLOW_TIMEOUT_SECONDS
+        except ValueError:
+            return False
+
+    @classmethod
+    def _budget_pause_task_node(cls, state: Any) -> str | None:
+        for task in getattr(state, "tasks", ()) or ():
+            values = cls._interrupt_values(getattr(task, "interrupts", ()))
+            if any(isinstance(value, dict) and value.get("action") == "creative_paused"
+                   and value.get("reason") == "budget_exhausted" for value in values):
+                return getattr(task, "name", None)
+        return None
 
     async def get_workflow_run_id(
         self, context: TenantContext, thread_id: str
@@ -958,6 +1034,41 @@ class NovelOrchestrator(AgentOrchestrator):
         )
         value = (getattr(state, "values", {}) or {}).get("workflow_run_id")
         return str(value) if value else None
+
+    async def get_plan_repair_input(
+        self, context: TenantContext, thread_id: str, request: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Only the current tenant-scoped checkpoint may supply a repair base."""
+        await self._ensure_workflow()
+        snapshot = await self._workflow.aget_state(
+            self._make_config(context, thread_id, include_llm=False)
+        )
+        values = getattr(snapshot, "values", {}) or {}
+        proposal = values.get("pending_proposal") or {}
+        plan = values.get("novel_plan") or {}
+        generation = values.get("plan_generation") or {}
+        from application.creative.plan_cross_layer_repair import initial_cross_layer_base, initial_cross_layer_intent
+        if initial_cross_layer_intent(request):
+            if not initial_cross_layer_base(values, request):
+                raise StaleWorkflowDecisionError("初始跨层修复提案或完成范围已变化，请刷新后重试")
+            return deepcopy({
+                "pending_proposal": proposal, "pending_proposal_decision": None,
+                "plan_generation": generation, "novel_plan": {},
+                "scale_contract": values.get("scale_contract"),
+                "current_chapter_index": 0,
+                "proposal_versions": values.get("proposal_versions") or {},
+            })
+        if (values.get("author_mode") != "autonomous_v1" or proposal.get("kind") != "novel_plan"
+                or proposal.get("proposal_id") != request["repair_proposal_id"]
+                or plan.get("version") != request["expected_version"]
+                or generation.get("expected_version") != request["expected_version"]):
+            raise StaleWorkflowDecisionError("节点修复提案或接受版本已变化，请刷新后重试")
+        return deepcopy({
+            "pending_proposal": proposal, "pending_proposal_decision": None,
+            "plan_generation": generation, "novel_plan": plan,
+            "current_chapter_index": values.get("current_chapter_index", 0),
+            "proposal_versions": values.get("proposal_versions") or {},
+        })
 
     async def get_workflow_schema_version(
         self, context: TenantContext, thread_id: str

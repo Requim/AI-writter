@@ -6,6 +6,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
 
 from application.creative.artifacts import json_text, workspace
+from application.character_source_names import engine_name_view
 from application.creative.errors import CreativePause
 from application.creative.postprocess import _proofs
 
@@ -24,12 +25,13 @@ async def creative_recap_node(state: dict, config: RunnableConfig) -> Command[Li
     if not review:
         chapters = await work.repository.chapters(work.tenant_id, work.novel_id, completed)
         engine = await work.latest("engine", "main")
+        engine_context = await engine_name_view(work, state, engine["payload"] if engine else {})
         result = await work.generate(
             "复查最近实际正文中的重复解法、无代价升级、临时追加设定、支线失控、读者承诺拖延。"
             "每条issues包含chapter_number/start/quote和problem，不得编造铺垫。"
             "无问题或已经合理收束时needs_replan=false；不得为了维持冲突强行续写。"
             "如需调整只给未来局部修改假设，不改硬设定、规模、归档正文和锁定窗口。"
-            "\n发动机：" + json_text(engine["payload"] if engine else {})
+            "\n发动机：" + json_text(engine_context)
             + "\n正文：" + json_text(chapters[-5:]) + "\n返回：" + json_text(REVIEW_SCHEMA), REVIEW_SCHEMA,
         )
         proofs = []

@@ -1,0 +1,9 @@
+writter_front
+research_service
+**/__pycache__
+**/.pytest_cache
+**/.mypy_cache
+**/.venv
+**/.env
+**/.env.*
+!**/.env.example

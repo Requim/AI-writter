@@ -13,6 +13,9 @@ from application.character_design import (
     resolve_character_design,
 )
 from application.errors import RetryableWorkflowError
+from application.character_source_names import (
+    align_source_names, reconcile_address_forms, validate_source_name_bindings,
+)
 from application.fact_workflow import attach_fact_input, record_character_confirmation
 from application.naming import NamingValidationError, build_candidate_pool
 from application.prompts.character_design_prompts import (
@@ -52,13 +55,17 @@ def _existing_design(state: NovelAgentState) -> dict[str, Any] | None:
 
 
 def _accept_design(state: NovelAgentState, design: dict[str, Any]) -> Command:
+    proposal = state.get("pending_proposal") or {}
+    clear_proposal = {} if proposal and proposal.get("kind") != "character_design" else {
+        "pending_proposal": None, "pending_proposal_decision": None,
+    }
     return Command(
         goto=_return_target(state),
         update={
-            "character_design": design, "pending_proposal": None,
-            "pending_proposal_decision": None, "character_design_return_to": None,
+            "character_design": design, **clear_proposal, "character_design_return_to": None,
             "character_design_feedback": None,
             "prompt_version": PROMPT_VERSION,
+            **align_source_names(state, design),
         },
     )
 
@@ -125,6 +132,7 @@ async def _generate_valid_proposal(
         )
         try:
             _validate_autonomous_roles(state, generated)
+            validate_source_name_bindings(generated, state)
             return build_character_design_proposal(
                 generated, pool, proposal_version=version, prompt_version=PROMPT_VERSION,
             )
@@ -133,7 +141,9 @@ async def _generate_valid_proposal(
     raise RetryableWorkflowError(f"角色设计生成失败：{feedback or '模型输出无效'}")
 
 
-def _validate_autonomous_roles(state, generated):
+def _validate_autonomous_roles(
+    state: NovelAgentState, generated: dict[str, Any],
+) -> None:
     if state.get("author_mode") != "autonomous_v1":
         return
     roles = [*generated.get("core_roles", []), *generated.get("supporting_characters", [])]
@@ -200,6 +210,8 @@ async def character_design_review_node(
         return _regenerate_design(str(selection or "请生成不同角色方案"))
     recent_names = await _recent_character_names(config)
     design = resolve_character_design(proposal["payload"], selection, recent_names=recent_names)
+    llm = config.get("configurable", {}).get("llm_config", {}).get("llm_instance")
+    design = await reconcile_address_forms(state, design, llm)
     fact_update = await record_character_confirmation(state, config, proposal, design)
     return attach_fact_input(_accept_design(state, design), fact_update)
 

@@ -80,6 +80,13 @@ def _build_scene_block(scene_num: int, scene: dict) -> str:
     )
     dialogue = _fmt_dialogue(scene.get("dialogue_targets"))
     purpose = scene.get("purpose", "未指定")
+    if scene.get("reader_quality_version") == 1:
+        return (
+            f"  【场景{scene_num}】{loc}\n人物：{chars}\n眼前要做的事：{scene.get('scene_goal') or purpose}\n"
+            f"已确认的情节：\n{events}\n对方回应：{scene.get('counteraction') or '按本场实际功能展开'}\n"
+            f"结果与变化：{scene.get('state_change') or scene.get('state_delta') or '见本章委托'}\n"
+            f"对话意图：{dialogue}\n可用细节：{sensory}"
+        )
     dramatic = {
         "function": scene.get("function", "conflict"),
         "state_change": scene.get("state_change", ""),
@@ -105,8 +112,12 @@ def _build_scene_block(scene_num: int, scene: dict) -> str:
     )
 
 
-def _build_contract_block(chapter_outline: dict) -> str:
+def _build_contract_block(chapter_outline: dict, scene: dict | None = None) -> str:
     """Format the continuity-critical subset of the chapter contract."""
+    if chapter_outline.get("reader_quality_version") == 1:
+        from application.goal_contract import goal_prompt
+        from application.reader_entry import writing_assignment
+        return writing_assignment(chapter_outline, scene) + goal_prompt(chapter_outline.get("goal_contract"))
     contract = {
         "chapter_intent": chapter_outline.get("chapter_intent", {}),
         "reader_contract": chapter_outline.get("reader_contract", {}),
@@ -141,6 +152,8 @@ def _writing_principles(chapter_outline: dict | None = None) -> str:
         base = render_prompt("chapter/writing_principles.txt", include_active_rules=False)
     if not isinstance(chapter_outline, dict):
         return base
+    if chapter_outline.get("reader_quality_version") == 1:
+        base += "\n" + render_prompt("chapter/reader_style_v1.txt", include_active_rules=False)
     try:
         chapter_number = int(chapter_outline.get("chapter_number") or 0)
     except (TypeError, ValueError):
@@ -171,7 +184,7 @@ def build_first_scene_prompt(
     """生成章节第一个场景的提示词——全量上下文"""
     scene_block = _build_scene_block(1, scene)
     ctx = build_budgeted_context(memory_context, max_chars=3800)
-    contract = _build_contract_block(chapter_outline)
+    contract = _build_contract_block(chapter_outline, scene)
     callback_str = logic_hooks.get("callback", "无")
     setup_str = logic_hooks.get("setup", "无")
     prev_tail_block = (
@@ -224,7 +237,7 @@ def build_next_scene_prompt(
     """生成后续场景的提示词（带前文摘要和动态校准）"""
     scene_block = _build_scene_block(scene_index, scene)
     ctx = build_budgeted_context(memory_context, max_chars=3200)
-    contract = _build_contract_block(chapter_outline)
+    contract = _build_contract_block(chapter_outline, scene)
     callback_str = logic_hooks.get("callback", "无")
     setup_str = logic_hooks.get("setup", "无")
     correction = f"\n【动态校准】{correction_note}" if correction_note else ""

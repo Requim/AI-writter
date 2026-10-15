@@ -11,6 +11,7 @@ from application.automatic_recovery import recovery_update
 from application.fact_archive_guard import verify_fact_receipt
 from application.fact_evaluation import evaluate_facts
 from application.fact_workflow import _repository, capture_fact_constraints
+from application.prompts.template_loader import render_prompt
 from application.proposals import ReviewDecision, decide_proposal, proposal_update, require_proposal
 from application.story_facts import source_digest
 from service.value_objects.fact_gate import FACT_EXTRACTION_VERSION, FactGateReport
@@ -130,13 +131,20 @@ async def _automatic_fact_review(
     snapshot = await capture_fact_constraints(state, config)
     if snapshot.digest != report.snapshot_digest:
         return await _recheck_changed_snapshot(state, config, artifact, continuation)
+    if _outdated_extraction_failure(report):
+        previous = state.get("automatic_recovery") or {}
+        attempts = (previous.get("attempts") or {}) if previous.get("chapter") == snapshot.chapter_number - 1 else {}
+        if int(attempts.get(f"事实提取:{artifact['kind']}") or 0) >= 3:
+            # One protocol migration recheck; the new report prevents repeated upgrades.
+            return await _recheck_fact(state, config, artifact, continuation)
     if _retryable_extraction_failure(report):
         budget = recovery_update(state, f"事实提取:{artifact['kind']}", maximum=3)
         command = await _recheck_fact(state, config, artifact, continuation)
         return Command(goto=command.goto, update={**command.update, **budget})
     budget = recovery_update(state, f"事实审校:{artifact['kind']}")
-    if report.status == "blocked" or report.findings:
-        instruction = "依据已确认事实修复以下问题，不得改写事实台账：" + report.model_dump_json()
+    if report.status == "blocked" or report.findings or report.coverage == "partial":
+        instruction = render_prompt("fact_draft_repair_v1.txt", include_active_rules=False,
+            report=report.model_dump_json(), content=artifact["content"])
         command = _fact_retry(state, ReviewDecision("revise", instruction=instruction))
     else:
         command = await _recheck_fact(state, config, artifact, continuation)
@@ -145,7 +153,7 @@ async def _automatic_fact_review(
 
 def _outdated_extraction_failure(report: FactGateReport) -> bool:
     return (report.extraction_version != FACT_EXTRACTION_VERSION
-            and report.status == "unknown" and report.coverage == "unknown"
+            and report.status == "unknown"
             and not report.findings)
 
 

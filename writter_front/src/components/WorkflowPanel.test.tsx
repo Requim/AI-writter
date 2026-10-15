@@ -259,7 +259,7 @@ describe('WorkflowPanel titles', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /死者请于雨夜回信/ }))
     expect(onResume).not.toHaveBeenCalled()
-    expect(screen.getByText('35 / 40')).toBeInTheDocument()
+    expect(screen.getByText('评分 35')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '确认使用《死者请于雨夜回信》' }))
     expect(onResume).toHaveBeenCalledWith(expect.objectContaining({ title: '死者请于雨夜回信' }))
   })

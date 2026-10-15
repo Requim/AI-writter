@@ -7,14 +7,16 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
 
 from application.creative.artifacts import json_text, workspace
+from application.character_source_names import engine_name_view
 from application.creative.errors import CreativePause
 from application.creative.policy import choose_route, window_number
 from application.creative.runtime import active_creative_rules
 from application.creative.names import refill_name_pool
+from application.creative.role_slots import planned_role_slots
 from application.creative.threads import initialize_plan_threads
 from application.creative.cast import align_cast_to_plan, bind_introduced_slot
 from application.creative.direct_feedback import dispatch_author_feedback, file_fact_feedback
-from service.value_objects.creative import CharacterNarrative, RoleSlot
+from service.value_objects.creative import CharacterNarrative
 
 DECISION_SCHEMA = {
     "critical_turn": "boolean", "routes": "array", "current_action": "object",
@@ -58,7 +60,7 @@ async def initialize_cast(work, state):
         await bind_introduced_slot(work, raw)
     selection = await work.latest("selection", "accepted")
     if selection:
-        await _initialize_slots(work, selection["payload"])
+        await _initialize_slots(work, selection["payload"], state)
 
 
 def _initial_character(raw, novel_id):
@@ -78,11 +80,12 @@ def _strings(value):
     return [str(item) for item in value] if isinstance(value, list) else [str(value)] if value else []
 
 
-async def _initialize_slots(work, selection):
+async def _initialize_slots(work, selection, state=None):
+    slots = planned_role_slots(selection.get("future_roles", []), work.session["limits"]["chapters"])
     if not await work.latest("engine", "main"):
-        await work.save("engine", "main", selection["engine"], status="accepted", source="system")
-    for raw in selection.get("future_roles", []):
-        slot = RoleSlot.model_validate(raw)
+        engine = await engine_name_view(work, state or {}, selection["engine"])
+        await work.save("engine", "main", engine, status="accepted", source="system")
+    for slot in slots:
         if not await work.latest("role_slot", slot.slot_id):
             await work.save("role_slot", slot.slot_id, slot.model_dump(mode="json"), status="planned", source="system")
 

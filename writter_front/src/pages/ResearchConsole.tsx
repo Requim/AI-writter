@@ -143,9 +143,8 @@ function RetrievalPanel({ onPackage, capabilities, currentPackage }: { onPackage
   const [loading, setLoading] = useState(false)
   const [searched, setSearched] = useState(false)
   const options = capabilities?.genre_labels ? Object.entries(capabilities.genre_labels).map(([value, label]) => ({ value, label })) : genres
-  useEffect(() => {
-    if (currentPackage) setHits((items) => items.map((item) => item.knowledge_version_id === currentPackage.knowledge_version_id ? { ...item, status: currentPackage.status, content: { ...currentPackage } } : item))
-  }, [currentPackage])
+  const displayedHits = hits.map((item) => currentPackage?.knowledge_version_id === item.knowledge_version_id
+    ? { ...item, status: currentPackage.status, content: { ...currentPackage } } : item)
   const search = async (values: Record<string, unknown>) => {
     setLoading(true)
     try { const result = await researchApi.search({ project_genre: String(values.project_genre), q: String(values.q || ''), opening_pattern: values.opening_pattern as string | undefined, approved_only: Boolean(values.approved_only), limit: 8 }); setHits(result.items); setSearched(true) } catch (error) { setHits([]); message.error(researchErrorMessage(error)) } finally { setLoading(false) }
@@ -161,7 +160,7 @@ function RetrievalPanel({ onPackage, capabilities, currentPackage }: { onPackage
       <details className="research-filter-toggle"><summary>更多筛选</summary><Form.Item name="opening_pattern" label="开局模式"><Select allowClear options={openingPatterns} placeholder="不限定开局模式" /></Form.Item></details>
       <Button type="link" onClick={() => void loadCurrent()}>查看当前版本</Button>
     </Form>
-    <div className="research-results" aria-live="polite">{hits.length ? hits.map((hit) => <details className="research-result" key={`${hit.knowledge_version_id}-${hit.version}`}><summary className="research-result-heading"><strong>版本 {hit.version}</strong><Tag>{statusLabels[hit.status] || hit.status}</Tag><span>{String(hit.content.sample_count || 0)} 个样本</span></summary><div className="research-result-terms">{hit.matched_terms.map((term) => <Tag key={term}>{term}</Tag>)}</div><PackageView value={hit.content as unknown as KnowledgePackage} /><Button icon={<SafetyCertificateOutlined />} onClick={() => onPackage(hit.content as unknown as KnowledgePackage)}>选择此版本审核</Button></details>) : <div className="research-empty">{searched ? '没有匹配素材。' : '暂无检索结果。'}</div>}</div>
+    <div className="research-results" aria-live="polite">{displayedHits.length ? displayedHits.map((hit) => <details className="research-result" key={`${hit.knowledge_version_id}-${hit.version}`}><summary className="research-result-heading"><strong>版本 {hit.version}</strong><Tag>{statusLabels[hit.status] || hit.status}</Tag><span>{String(hit.content.sample_count || 0)} 个样本</span></summary><div className="research-result-terms">{hit.matched_terms.map((term) => <Tag key={term}>{term}</Tag>)}</div><PackageView value={hit.content as unknown as KnowledgePackage} /><Button icon={<SafetyCertificateOutlined />} onClick={() => onPackage(hit.content as unknown as KnowledgePackage)}>选择此版本审核</Button></details>) : <div className="research-empty">{searched ? '没有匹配素材。' : '暂无检索结果。'}</div>}</div>
   </section>
 }
 

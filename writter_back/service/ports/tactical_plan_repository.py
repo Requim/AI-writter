@@ -32,5 +32,6 @@ class TacticalPlanRepository(ABC):
         *,
         idempotency_key: str,
         created_by_user_id: str | None = None,
+        reuse_unchanged: bool = False,
     ) -> TacticalWindow:
         pass

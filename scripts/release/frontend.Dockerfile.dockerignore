@@ -1,0 +1,7 @@
+writter_back
+research_service
+**/node_modules
+**/__pycache__
+**/.env
+**/.env.*
+!**/.env.example

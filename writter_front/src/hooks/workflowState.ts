@@ -1,4 +1,4 @@
-import type { InterruptInfo, ReflectionIssue, WorkflowEvent, WorkflowSnapshot } from '@/types/novel'
+import type { InterruptInfo, JsonValue, ReflectionIssue, WorkflowEvent, WorkflowSnapshot } from '@/types/novel'
 
 export interface WorkflowViewState {
   status: 'idle' | 'running' | 'paused' | 'recoverable' | 'error' | 'stalled' | 'cancelling' | 'completed'
@@ -17,6 +17,7 @@ export interface WorkflowViewState {
   reasoning?: string
   qualityScore?: number
   qualityDecision?: string
+  readerComprehension?: JsonValue
   planResult?: { chapter: number; status: string; drift: string; version?: number }
   creativeRevision?: number
   creativeStatus?: { kind: string; status: string }
@@ -92,7 +93,7 @@ function startState(state: WorkflowViewState, action: Extract<WorkflowAction, { 
     isSubmitting: true,
     draft: action.preserveDraft ? state.draft : '', activeNode: undefined,
     activeCommandId: action.commandId, stageStartedAt: undefined, reasoning: undefined,
-    qualityScore: undefined, qualityDecision: undefined, planResult: undefined,
+    qualityScore: undefined, qualityDecision: undefined, readerComprehension: undefined, planResult: undefined,
     creativeRevision: undefined, creativeStatus: undefined,
     issues: [], interrupt: undefined, events: [], error: undefined,
     retryable: undefined, retryAfter: undefined, retryCount: undefined,
@@ -125,6 +126,7 @@ function snapshotStatus(
   if (snapshot.interrupts?.[0]) return 'paused' as const
   if (snapshot.status === 'running' && snapshot.execution?.is_stale) return 'stalled' as const
   if (snapshot.status === 'running') return 'running' as const
+  if (snapshot.blocker) return 'error' as const
   if (retainError) return 'error' as const
   return hasDraft || hasPending ? 'recoverable' as const : 'idle' as const
 }
@@ -165,6 +167,7 @@ function reduceSnapshot(state: WorkflowViewState, snapshot: WorkflowSnapshot): W
     ...state, status, syncState: 'confirmed',
     draft: completed ? '' : factReviewBody(interrupt) ?? state.draft,
     planResult: readPlanResult(snapshot.state?.last_plan_execution),
+    readerComprehension: snapshot.state?.reader_comprehension as JsonValue | undefined,
     connection: snapshot.status === 'running' && !completed ? 'detached' : 'idle',
     activeNode: completed ? undefined : nodeForInterrupt(interrupt) || execution?.active_node || snapshot.next_nodes?.[0],
     activeCommandId: completed ? undefined : execution?.command_id || state.activeCommandId,
@@ -177,11 +180,11 @@ function reduceSnapshot(state: WorkflowViewState, snapshot: WorkflowSnapshot): W
     isStale: status === 'stalled',
     error: status === 'stalled'
       ? '任务已长时间没有产生新进展，可能因页面断线或模型请求异常而停滞。'
-      : status === 'error' ? state.error : undefined,
-    errorCode: status === 'error' ? state.errorCode : undefined,
-    errorNode: status === 'error' ? state.errorNode : undefined,
+      : status === 'error' ? snapshot.blocker?.message ?? state.error : undefined,
+    errorCode: status === 'error' ? snapshot.blocker?.code ?? state.errorCode : undefined,
+    errorNode: status === 'error' ? snapshot.blocker?.node ?? state.errorNode : undefined,
     retryCount: status === 'error' ? state.retryCount : undefined,
-    retryable: status === 'stalled' || (status === 'error' && state.retryable),
+    retryable: status === 'stalled' || (status === 'error' && (snapshot.blocker?.retryable ?? state.retryable)),
     hasCheckpointDraft: !completed && hasDraft, hasPendingCheckpoint: !completed && hasPending,
     checkpointChapterIndex: typeof checkpointIndex === 'number' ? checkpointIndex : undefined,
     currentChapter: typeof checkpointIndex === 'number' ? checkpointIndex : state.currentChapter,
@@ -232,6 +235,7 @@ function reduceTypedEvent(next: WorkflowViewState, event: WorkflowEvent): void {
   if (event.type === 'quality') {
     next.qualityScore = typeof event.data.score === 'number' ? event.data.score : undefined
     next.qualityDecision = typeof event.data.decision === 'string' ? event.data.decision : undefined
+    next.readerComprehension = event.data.reader_comprehension as JsonValue | undefined
     next.issues = Array.isArray(event.data.issues) ? event.data.issues as ReflectionIssue[] : []
   }
   if (event.type === 'plan_reconciled') {

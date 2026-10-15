@@ -12,6 +12,7 @@ import { PlatformAdminRoute, ProtectedRoute } from '@/components/ProtectedRoute'
 import BookShelf from '@/pages/BookShelf'
 import CreateNovel from '@/pages/CreateNovel'
 import NovelStudio from '@/pages/NovelStudio'
+import { conversationWorkbenchEnabled } from '@/pages/workbench/routeMode'
 import { workbenchTheme } from '@/theme'
 
 const Login = lazy(() => import('@/pages/Login'))
@@ -20,6 +21,9 @@ const AcceptInvite = lazy(() => import('@/pages/AcceptInvite'))
 const TenantSettings = lazy(() => import('@/pages/TenantSettings'))
 const PlatformAdmin = lazy(() => import('@/pages/PlatformAdmin'))
 const ResearchConsole = lazy(() => import('@/pages/ResearchConsole'))
+const SimpleCreateNovel = lazy(() => import('@/pages/SimpleCreateNovel'))
+const ConversationWorkbench = lazy(() => import('@/pages/workbench/ConversationWorkbench'))
+const useConversationWorkbench = conversationWorkbenchEnabled(import.meta.env.VITE_CONVERSATION_WORKBENCH)
 
 function LegacyStudioRedirect() {
   const { novelId } = useParams<{ novelId: string }>()
@@ -39,8 +43,10 @@ const router = createBrowserRouter([{
     { path: '/register', element: <Register /> },
     { path: '/invite/:token', element: <AcceptInvite /> },
     { path: '/', element: protect(<BookShelf />) },
-    { path: '/novels/new', element: protect(<CreateNovel />) },
-    { path: '/novels/:novelId', element: protect(<NovelStudio />) },
+    { path: '/novels/new', element: protect(<SimpleCreateNovel />) },
+    { path: '/novels/new/advanced', element: protect(<CreateNovel />) },
+    { path: '/novels/:novelId', element: protect(useConversationWorkbench ? <ConversationWorkbench /> : <NovelStudio />) },
+    { path: '/novels/:novelId/studio', element: protect(<NovelStudio />) },
     { path: '/settings/members', element: protect(<TenantSettings />) },
     { path: '/research-workbench', element: protect(<ResearchConsole />) },
     { path: '/admin', element: protect(<PlatformAdminRoute><PlatformAdmin /></PlatformAdminRoute>) },

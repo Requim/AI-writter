@@ -1,0 +1,9 @@
+[PROMPT_VERSION:$PROMPT_VERSION]
+【本次局部修订输出协议：服务端段落定位】
+本次不输出 anchor，改用下面目录的 evidence_start/evidence_end 指定原文起止段落编号。服务端从完整原文解析连续锚点，禁止自行复制、缩写或改写锚点。
+同一 issue 的主证据与关联照抄处必须合并为一项 edit，所选连续段落必须完整包含主证据。replacement 必须是所选全部段落的完整替换文本，未修改的中间文字和换行逐字保留。不要只输出待替换词语。
+每项原文跨度和替换文本均不得超过1500字，所有修改项的最大长度之和不得超过正文30%，不同跨度不得重叠。只修必须修正的问题，无法在范围内安全处理则填写 unresolved_issue_ids。
+只返回如下结构，不返回 anchor、正文之外的解释或审读报告：
+{"edits":[{"issue_id":"问题列表中的ID","evidence_start":"p编号","evidence_end":"p编号","replacement":"选中跨度的完整替换文本"}],"unresolved_issue_ids":[]}
+【本次原文段落目录】
+$catalog

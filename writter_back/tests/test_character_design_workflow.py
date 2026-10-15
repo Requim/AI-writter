@@ -36,6 +36,12 @@ def _reference(candidate: dict, index: int) -> dict[str, str]:
 
 
 def _model_design(pool: list[dict]) -> dict:
+    # Random tenant UUIDs change pool order; keep this valid-model fixture valid.
+    pool = list(pool)
+    other = next(index for index in range(3, len(pool))
+        if pool[index]["name"][-1] != pool[0]["name"][-1]
+        and pool[index]["source"]["pinyin"] != pool[0]["source"]["pinyin"])
+    pool[3], pool[other] = pool[other], pool[3]
     core = []
     for role_index, start in enumerate((0, 3), 1):
         core.append({

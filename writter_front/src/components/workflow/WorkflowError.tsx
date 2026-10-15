@@ -11,7 +11,8 @@ interface Props {
 }
 
 function draftNote(state: WorkflowViewState): string | undefined {
-  if (state.hasCheckpointDraft) return '服务端已保留本章草稿，可从已保存进度重试。'
+  if (state.hasCheckpointDraft) return state.retryable
+    ? '服务端已保留本章草稿，可从已保存进度重试。' : '服务端已保留本章草稿。'
   if (state.draft) return '未完成预览已保留在当前页面，服务端没有可继续的草稿；重试将从本章重新生成。'
   return undefined
 }

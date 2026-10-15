@@ -21,6 +21,7 @@ class Outline:
     creative_brief: Dict[str, Any] = field(default_factory=dict)  # 全流程共用创作简报
     prompt_version: str = ""                    # 生成该总纲的提示词契约版本
     author_config: Dict[str, Any] = field(default_factory=dict)  # 新书创建时确认的自主模式配置
+    reader_quality_version: int = 0  # 服务端创建标记；旧书不自动升级
     
     def get_chapter_plan(self, index: int) -> Optional[Dict[str, Any]]:
         """获取指定章节的规划"""

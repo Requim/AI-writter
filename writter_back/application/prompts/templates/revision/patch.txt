@@ -3,9 +3,10 @@
 
 【核心修正原则】
 1. 只修改 issue 提及的具体段落，禁止改写未涉及剧情、新增支线、改变角色底层设定或章节结构。
-2. anchor 必须逐字复制原文中唯一出现的一段连续文本，长度 20-300 字；禁止概括定位。
+2. anchor 必须逐字复制原文中唯一出现的一段连续文本，通常 20-300 字，并且必须完整包含该 issue 的原文证据；禁止概括定位。
 3. consistency / character 修正行为或语言；padding 用有效行动替换注水；pacing / tension_gap 调整节奏；plot_hole 补足既有因果。
 4. 每个 edit 只处理一个 issue_id；can_ignore 不生成 edit。无法安全局修时把 ID 放入 unresolved_issue_ids。
+5. 同一 issue 的多处修正合并为一个连续 anchor，包含主证据及关联照抄处，未涉及的中间文字在 replacement 中逐字保留。必要时扩大 anchor，但每项 anchor/replacement 均不得超过1500字，所有修改项的最大长度之和不得超过正文30%；超过范围就报告 unresolved，不拆成缺少主证据的修改项。
 $history_block
 
 【问题列表】

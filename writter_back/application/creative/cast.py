@@ -15,11 +15,21 @@ async def align_cast_to_plan(work, state):
     key = f"cast_plan:{plan.get('version', 0)}:{content_hash(json_text(sorted(characters)))[:12]}"
     binding = await work.latest("decision", key)
     if not binding:
+        public_ids = state.get("reader_quality_version") == 1
         payload = await work.generate(render_prompt(
             "creative/cast.txt", plan=json_text(plan),
-            characters=json_text(list(characters.values())), slots=json_text(list(slots.values())),
+            characters=json_text([row["payload"] if public_ids else row for row in characters.values()]),
+            slots=json_text([row["payload"] if public_ids else row for row in slots.values()]),
         ), {"characters": "array", "slots": "array"})
-        validate_cast_binding(payload, plan, characters, slots)
+        try:
+            validate_cast_binding(payload, plan, characters, slots)
+        except CreativePause:
+            failed_key = "cast_plan_failed:" + key
+            previous = await work.latest("decision", failed_key)
+            await work.save("decision", failed_key, payload, previous=previous, status="rejected",
+                            inputs={"plan": plan["version"], "characters": json_text(sorted(characters)),
+                                    "slots": json_text(sorted(slots))})
+            raise
         binding = await work.save("decision", key, payload, inputs={"plan": plan["version"]})
     for assignment in binding["payload"]["characters"]:
         await _apply_duties(work, assignment, characters, plan["version"])

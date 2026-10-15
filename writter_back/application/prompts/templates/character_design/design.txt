@@ -21,6 +21,7 @@ $candidate_pool
 5. relationships 使用 source_character_id、target_character_id、relationship_type、dynamic 描述双向可演化关系；亲属关系必须明确写入 relationship_type。
 6. 推荐项 recommended_candidate_index 只能是 0、1、2；候选应兼顾人物身份、语言气质、时代地域与弧光方向。
 7. 不得用“高冷、腹黑、温柔、霸道”等标签代替可被情节检验的目标、缺口、秘密与限制。
+8. 简报已经使用具体临时姓名的既有角色，每名角色必须给出 source_name_binding={"name":"该临时姓名","quote":"创作简报中包含该姓名的连续原文"}。按同一身份、职责与关系对应到稳定 character_id，服务端会在正式姓名采用后同步模型生成的简报与策略，再冻结目标。不同角色不得绑定同一临时姓名，不得用职业代称冒充姓名，不得伪造或改写 quote；新角色或原简报未命名的角色省略本字段。用户明确指定的姓名不是可替换临时名，不得擅自改名。
 
 【上次校验失败原因】
 $feedback

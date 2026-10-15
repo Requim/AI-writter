@@ -103,6 +103,20 @@ async def test_auto_retry_preserves_pending_review_instead_of_rerouting_draft():
     }
 
 
+def test_fact_retry_keeps_quality_revision_baseline_and_other_recovery_metadata():
+    from application.orchestrator import NovelOrchestrator
+    recovery = {
+        "chapter": 2, "quality_revision_baseline": 5,
+        "attempts": {"事实审校:outline": 2, "事实提取:outline": 1, "质量审读": 1},
+    }
+    state = {"current_chapter_index": 2, "fact_artifact": {"kind": "outline"},
+             "automatic_recovery": recovery}
+    update = NovelOrchestrator._reset_fact_retry_budget(state, "fact_review_node")
+    assert update["automatic_recovery"]["quality_revision_baseline"] == 5
+    assert update["automatic_recovery"]["attempts"] == {"质量审读": 1}
+    assert recovery["attempts"]["事实审校:outline"] == 2
+
+
 @pytest.mark.asyncio
 async def test_real_paused_graph_switches_to_auto_and_finishes_three_chapters(monkeypatch):
     from langgraph.checkpoint.memory import InMemorySaver

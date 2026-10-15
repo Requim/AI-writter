@@ -1,11 +1,13 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { initialWorkflowState } from '@/hooks/useWorkflowStream'
 import { NovelStudioView } from './NovelStudioView'
 import type { NovelStudioController } from './useNovelStudioController'
 import type { NovelPlan } from '@/types/novel'
+import { novelApi } from '@/api/novel'
+import { App } from 'antd'
 
-afterEach(cleanup)
+afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
 function completedController(): NovelStudioController {
   const action = vi.fn()
@@ -66,6 +68,74 @@ function studioPlan(): NovelPlan {
 }
 
 describe('NovelStudioView completed state', () => {
+  it('does not offer a retry for a nonretryable failure with a retained checkpoint', () => {
+    const controller = completedController()
+    controller.isCompleted = false
+    controller.hasRecoverableCheckpoint = true
+    controller.startWriting = vi.fn()
+    controller.recoveryLabel = '继续第 1 章质量审读'
+    controller.workflow.state = { ...initialWorkflowState, status: 'error',
+      syncState: 'confirmed', retryable: false, errorCode: 'budget_exhausted',
+      error: '单章预算已耗尽，草稿已保留', hasCheckpointDraft: true }
+    render(<NovelStudioView controller={controller} />)
+    expect(screen.queryByRole('button', { name: /继续第.*质量审读|继续创作|重试/ })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '查看暂停原因' }))
+    expect(controller.setEditor).toHaveBeenCalledWith({ mobilePanel: 'workflow' })
+    expect(controller.startWriting).not.toHaveBeenCalled()
+  })
+
+  it('opens the pause reason for a nonretryable creative interrupt', () => {
+    const controller = completedController()
+    controller.isCompleted = false
+    controller.autoMode = true
+    controller.startWriting = vi.fn()
+    controller.workflow.state = { ...initialWorkflowState, status: 'paused',
+      syncState: 'confirmed', hasCheckpointDraft: true,
+      interrupt: { action: 'creative_paused', reason: 'budget_exhausted',
+        message: 'chapter:2 调用预算已耗尽（32/32）', retryable: false } }
+    render(<NovelStudioView controller={controller} />)
+    fireEvent.click(screen.getByRole('button', { name: '查看暂停原因' }))
+    expect(controller.setEditor).toHaveBeenCalledWith({ mobilePanel: 'workflow' })
+    expect(controller.startWriting).not.toHaveBeenCalled()
+  })
+
+  it('downloads the selected format with the original manuscript blob', async () => {
+    const blob = new Blob(['原始正文'], { type: 'text/markdown' })
+    vi.spyOn(novelApi, 'exportManuscript').mockResolvedValue(blob)
+    const create = vi.fn(() => 'blob:manuscript')
+    const revoke = vi.fn()
+    vi.stubGlobal('URL', class extends URL {
+      static createObjectURL = create
+      static revokeObjectURL = revoke
+    })
+    let downloaded: { href: string; filename: string } | undefined
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+      downloaded = { href: this.href, filename: this.download }
+    })
+    render(<NovelStudioView controller={completedController()} />)
+    fireEvent.click(screen.getByRole('button', { name: '导出整书' }))
+    fireEvent.click(await screen.findByText('Markdown'))
+    await waitFor(() => expect(downloaded).toEqual({ href: 'blob:manuscript', filename: '三章完稿.md' }))
+    expect(create).toHaveBeenCalledWith(blob)
+    expect(revoke).toHaveBeenCalledWith('blob:manuscript')
+    expect(document.querySelector('a[download]')).toBeNull()
+  })
+  it('allows retry after an unsuccessful manuscript download', async () => {
+    vi.spyOn(novelApi, 'exportManuscript').mockRejectedValue(new Error('offline'))
+    render(<App><NovelStudioView controller={completedController()} /></App>)
+    fireEvent.click(screen.getByRole('button', { name: '导出整书' }))
+    fireEvent.click(await screen.findByText('TXT'))
+    expect(await screen.findByText('整书导出失败，请重试')).toBeVisible()
+    expect(screen.getByRole('button', { name: '导出整书' })).toBeEnabled()
+  })
+  it('offers a manuscript download only when chapters have been archived', () => {
+    const controller = completedController()
+    const { rerender } = render(<NovelStudioView controller={controller} />)
+    expect(screen.getByRole('button', { name: '导出整书' })).toBeEnabled()
+    controller.document.chapters = []
+    rerender(<NovelStudioView controller={controller} />)
+    expect(screen.getByRole('button', { name: '导出整书' })).toBeDisabled()
+  })
   it('offers server-side automatic recovery for restored fact review', () => {
     const controller = completedController()
     controller.isCompleted = false

@@ -6,12 +6,13 @@ from typing import AsyncGenerator
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 
-from api.routers import novel_router, workflow_router
+from api.routers import novel_export_router, novel_router, workflow_router
 from api.routers import workflow_replay_router
 from api.routers import harness_metrics_router
 from api.routers import admin_router, auth_router, tenant_router, story_fact_router
 from api.routers import research_router
 from application.auth_service import AuthService
+from application.automatic_restart import AutomaticRestartService
 from application.orchestrator import NovelOrchestrator
 from application.quota_service import QuotaService
 from config import settings
@@ -20,6 +21,9 @@ from infrastructure.database.repository import PostgresNovelRepository
 from infrastructure.database.identity_repository import IdentityRepository
 from infrastructure.memory.postgres_memory import PostgresMemoryAdapter
 from infrastructure.research.library_client import ResearchLibraryClient
+from infrastructure.database.workbench_repository import WorkbenchRepository
+from application.workbench.service import WorkbenchService
+from api.routers import workbench_router
 
 if hasattr(asyncio, "WindowsSelectorEventLoopPolicy"):
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
@@ -33,6 +37,39 @@ def _build_research_library() -> ResearchLibraryClient | None:
         settings.RESEARCH_LIBRARY_TOKEN,
         settings.RESEARCH_LIBRARY_TIMEOUT_SECONDS,
     )
+
+
+def _start_recovery(app: FastAPI) -> AutomaticRestartService:
+    state = app.state
+    service = AutomaticRestartService(
+        state.workflow_command_store, state.repository, state.identity_repository,
+        state.orchestrator, state.quota_service,
+    )
+    state.automatic_restart_service = service
+    service.start()
+    return service
+
+
+async def _start_workbench(app: FastAPI) -> WorkbenchService:
+    state = app.state
+    service = WorkbenchService(
+        WorkbenchRepository(state.repository.async_session), state.repository,
+        state.orchestrator, state.quota_service, state.memory_service,
+    )
+    state.workbench_service = service
+    await service.repository.recover_interrupted()
+    return service
+
+
+async def _close_services(app: FastAPI) -> None:
+    state = app.state
+    await state.workbench_service.aclose()
+    await state.automatic_restart_service.stop()
+    await state.orchestrator.aclose()
+    await state.workflow_command_store.aclose()
+    if state.research_library:
+        await state.research_library.close()
+    await state.repository.aclose()
 
 
 @asynccontextmanager
@@ -75,14 +112,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.research_library = research_library
     app.state.orchestrator = orchestrator
     app.state.workflow_command_store = workflow_command_store
+    await _start_workbench(app)
+    _start_recovery(app)
     try:
         yield
     finally:
-        await orchestrator.aclose()
-        await workflow_command_store.aclose()
-        if research_library:
-            await research_library.close()
-        await repository.aclose()
+        await _close_services(app)
 
 
 app = FastAPI(
@@ -95,7 +130,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
     allow_credentials=False,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=[
         "Authorization",
         "Content-Type",
@@ -104,12 +139,15 @@ app.add_middleware(
         "X-Tenant-ID",
     ],
 )
-from api.routers import creative_router
+from api.routers import creative_controls, creative_router
 
+app.include_router(creative_controls.router, prefix="/api/v1/novels", tags=["Creative"])
 app.include_router(creative_router.router, prefix="/api/v1/novels", tags=["Creative"])
 app.include_router(creative_router.author_router, prefix="/api/v1/author", tags=["Author Profiles"])
 app.include_router(story_fact_router.router, prefix="/api/v1/novels", tags=["Story Facts"])
+app.include_router(novel_export_router.router, prefix="/api/v1/novels", tags=["Novels"])
 app.include_router(novel_router.router, prefix="/api/v1/novels", tags=["Novels"])
+app.include_router(workbench_router.router, prefix="/api/v1/novels", tags=["Conversation Workbench"])
 app.include_router(workflow_router.router, prefix="/api/v1/workflows", tags=["Workflows"])
 app.include_router(workflow_replay_router.router, prefix="/api/v1/workflows", tags=["Workflow Recovery"])
 app.include_router(harness_metrics_router.router, prefix="/api/v1/workflows", tags=["Harness Metrics"])

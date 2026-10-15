@@ -1,0 +1,10 @@
+[PROMPT_VERSION:$PROMPT_VERSION]
+【叙事状态更新契约】
+伏笔status仅能使用下方合法值；已经在正文埋设对应seeded，不要返回planted等同义词。
+FORESHADOW_STATUS_VALUES:
+$statuses
+
+同一计划伏笔必须沿用现有key，不得为同一内容再造新ID以绕开原计划。
+真正新发现的接续只能是retrospective，不得倒填构思时间或声称它原先已被规划。
+秘密真相不得新增或改写，关系必须引用两个已准入人物ID。没有实际变化返回空updates。
+不得用未来计划或模型推测当作已发生事实；每项变化都必须引用当前归档正文。

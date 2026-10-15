@@ -12,6 +12,14 @@ from pydantic import BaseModel, Field, ValidationError, field_validator, model_v
 from application.continuity import build_story_bible, related_character_cards
 from application.review_evidence import repair_goal_quotes
 from application.review_contract_rules import review_contract_rules, unmet_review_findings
+from application.editorial_facts import literal_count_issues
+from application.editorial_ledger import editorial_issues
+from application.editorial_review import advance_editorial, editorial_receipt_valid
+from application.reader_comprehension import (
+    reader_archive_ready, reader_findings, reader_receipt_valid, reader_review_required,
+    refresh_reader_history, review_reader,
+)
+from application.prompts.template_loader import render_prompt
 from application.errors import (
     InvalidReviewDecisionError,
     QualityGateReviewRequired,
@@ -293,6 +301,7 @@ async def _generate_valid_review(
 ) -> dict:
     """Retry one business-contract failure with explicit scale feedback."""
     prompt += review_contract_rules(schema)
+    prompt += "\n" + render_prompt("reflection/copyediting_v2.txt", include_active_rules=False)
     prompt += (
         "\n【服务端输出契约】只返回一个完整 JSON 对象，必须包含以下所有字段及嵌套字段。"
         "字段值应来自本次实际审读，不得为满足格式伪造通过。goal_checks 只能作为该对象的字段。"
@@ -374,7 +383,9 @@ def _goal_review_schema(schema: dict, context: dict) -> dict:
 def _quality_gate(result: dict, content: str, *, require_fulfillment: bool = False) -> tuple[dict, list[dict]]:
     metrics = _validate_reflection_metrics(result)
     audit = _rubric_audit(result, metrics.score_scale)
-    issues = _annotate_issues(_normalize_issues(result.get("issues")), content)
+    issues = _annotate_issues(
+        _normalize_issues(result.get("issues")) + literal_count_issues(content), content,
+    )
     score = _quality_score(metrics)
     hard_failures = result.get("hard_failures", [])
     if not isinstance(hard_failures, list):
@@ -422,6 +433,8 @@ def _choice_command(
     decision: ReviewDecision, issues: list[dict], gate: dict
 ) -> Command:
     if decision.action == "accept":
+        if gate.get("reader_review_required"):
+            raise InvalidReviewDecisionError("读者理解验收未通过，请修订开场或重新审读")
         if gate.get("goal_review_required"):
             raise InvalidReviewDecisionError("目标验收未通过，请补足证据或修订正文；接受质量缺点不能变更目标")
         return Command(
@@ -566,7 +579,7 @@ def _manual_action(auto_mode: bool, gate: dict) -> str:
 
 async def reflection_node(
     state: NovelAgentState, config: RunnableConfig
-) -> Command[Literal["persist_node", "revision_node", "reflection_review_node"]]:
+) -> Command[Literal["persist_node", "revision_node", "reflection_review_node", "reflection_node"]]:
     """Generate one quality result; manual decisions run in a separate node."""
     await require_planning_v1(
         config,
@@ -584,17 +597,81 @@ async def reflection_node(
     )
     from application.archive_metrics import refresh_archived_word_counts
     state = await refresh_archived_word_counts(state, config)
+    state = await refresh_reader_history(state, config)
     content, context = _review_context(state)
+    if (reader_review_required(state)
+            and not reader_receipt_valid(state.get("reader_comprehension_receipt"), state, content)):
+        try:
+            receipt = await review_reader(llm, state, content)
+        except StructuredOutputInvalidError as exc:
+            from application.errors import AutomaticRecoveryExhausted
+            raise AutomaticRecoveryExhausted(
+                "读者验收报告纠正一次后仍无效，正文已保留，未归档：" + str(exc)) from exc
+        return Command(goto="reflection_node", update={
+            "reader_comprehension_receipt": receipt, "reader_history": state.get("reader_history"),
+        })
     try:
+        if (state.get("author_mode") == "autonomous_v1"
+                and not editorial_receipt_valid(state.get("creative_editorial_review"), content)):
+            receipt = await _bounded_editorial(llm, content, state.get("creative_editorial_review"), config)
+            return Command(goto="reflection_node", update={"creative_editorial_review": receipt})
         result = await _review_content(llm, content, context, state.get("reflection_issues", []))
     except RetryableWorkflowError as exc:
         if config["configurable"].get("direct_rewrite", False):
             raise QualityGateReviewRequired(str(exc)) from exc
-        return _unavailable_proposal(state, str(exc))
+        return _keep_editorial(_unavailable_proposal(state, str(exc)), state)
+    return _keep_editorial(_finish_review(state, config, result, content, chapter), state)
+
+
+async def _bounded_editorial(llm: LLMService, content: str, cached: Any, config: RunnableConfig) -> dict:
+    try:
+        return await advance_editorial(llm, content, cached)
+    except StructuredOutputInvalidError as exc:
+        if config["configurable"].get("_repair_progress_policy"):
+            from application.creative.errors import CreativePause
+
+            raise CreativePause("editorial_evidence_invalid",
+                "两份审读报告未满足证据契约，保留正文和历史消耗，停止整轮重复审读：" + str(exc)) from exc
+        raise
+
+
+def _keep_editorial(command: Command, state: NovelAgentState) -> Command:
+    if state.get("author_mode") != "autonomous_v1" and not reader_review_required(state):
+        return command
+    return Command(goto=command.goto, update={
+        **(command.update or {}), "creative_editorial_review": state.get("creative_editorial_review"),
+        "reader_comprehension_receipt": state.get("reader_comprehension_receipt"),
+        "reader_history": state.get("reader_history"),
+    })
+
+
+def _finish_review(state: NovelAgentState, config: RunnableConfig, result: dict,
+                   content: str, chapter: int) -> Command:
+    if reader_review_required(state):
+        result = {**result, "issues": _normalize_issues(result.get("issues")) + reader_findings(state, content)}
+    receipt = state.get("creative_editorial_review")
+    if state.get("author_mode") == "autonomous_v1" and receipt:
+        findings = editorial_issues(receipt["report"], content)
+        result = {**result, "issues": _normalize_issues(result.get("issues")) + findings}
+        hard = result.get("hard_failures")
+        result["hard_failures"] = (hard if isinstance(hard, list) else []) + [
+            row["issue_id"] for row in findings if row["priority_action"] == "must_fix"]
     gate, issues = _quality_gate(
         result, content, require_fulfillment=int(state.get("workflow_schema_version") or 2) >= 5,
     )
     _apply_goal_gate(state, result, content, gate)
+    if reader_review_required(state):
+        receipt = state.get("reader_comprehension_receipt") or {}
+        ready = reader_archive_ready(state, content)
+        gate["reader_comprehension"] = {
+            "status": "passed" if ready else "failed", "source": "simulated_reader",
+            "report": receipt.get("report", {}), "body_sha256": receipt.get("body_sha256"),
+        }
+        if not ready:
+            gate["reader_review_required"] = True
+            gate["hard_failures"] = sorted(set(gate["hard_failures"]) | {"reader_comprehension"})
+            if gate["decision"] == "pass":
+                gate["decision"] = "human_review"
     gate["chapter_number"] = chapter
     logger.info("【反思检查节点】评分审计 | scale=%s raw=%s", gate.get("source_score_scale"), gate.get("raw_rubric_scores"))
     emit_workflow_event(
@@ -620,12 +697,23 @@ def _apply_goal_gate(state: dict, result: dict, content: str, gate: dict) -> Non
     gate["goal_acceptance"] = report
     gate["word_count_analysis"]["total_count"] = len(content)
     if report["status"] != "passed":
+        failures = [check for check in report["checks"] if check["status"] != "passed"]
+        gate["goal_evidence_only"] = (gate["decision"] == "pass" and not gate.get("hard_failures")
+            and bool(failures) and all(check.get("evidence_format_only") for check in failures))
         gate["decision"] = "human_review"
         gate["goal_review_required"] = True
 
 
 def _automatic_quality_revision(state: NovelAgentState, config: RunnableConfig, gate: dict, issues: list[dict]) -> Command:
     from application.automatic_recovery import quality_revision_update
+    from application.creative.progress_repair import progress_repair_command, repair_gate_eligible
+
+    values = config["configurable"]
+    policy = values.get("_repair_progress_policy")
+    reviewed = {**gate, "issues": issues}
+    contract = current_goal_contract(state)
+    if policy and contract and repair_gate_eligible(reviewed, state.get("current_chapter_content") or "", contract):
+        return progress_repair_command(state, reviewed, policy, available=values.get("_repair_progress_capacity", 0))
     maximum = config["configurable"].get("max_reflection_loops", 5)
     budget = quality_revision_update(state, maximum)
     command = _direct_rewrite_revision(gate, issues) if gate["decision"] == "human_review" else _choice_command(
@@ -639,7 +727,7 @@ def _automatic_quality_revision(state: NovelAgentState, config: RunnableConfig, 
 def _allow_nonblocking_auto_fulfillment(gate: dict, config: RunnableConfig) -> None:
     """自动模式下仅低风险兑现偏差不阻塞归档，目标失败仍必须停下。"""
     values = config["configurable"]
-    if not values.get("auto_mode") or gate.get("goal_review_required"):
+    if not values.get("auto_mode") or gate.get("goal_review_required") or gate.get("reader_review_required"):
         return
     words = gate.get("word_count_analysis") or {}
     if (words.get("is_valid_word_count") is not True
@@ -675,6 +763,14 @@ def _route_quality_result(
     attempts = state.get("revision_attempts", 0)
     maximum = values.get("max_reflection_loops", 5)
     if values.get("auto_mode", False) and not values.get("direct_rewrite", False):
+        if gate.get("goal_evidence_only"):
+            from application.automatic_recovery import recovery_update
+
+            return Command(goto="reflection_node", update={
+                **recovery_update(state, "目标引文", maximum=2),
+                "quality_gate": gate, "reflection_issues": issues,
+                "pending_proposal": None, "pending_proposal_decision": None,
+            })
         previous_decision = gate["decision"]
         _allow_nonblocking_auto_fulfillment(gate, config)
         if gate["decision"] != previous_decision:

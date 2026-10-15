@@ -101,6 +101,13 @@ export interface TitleSuggestion {
   hint?: string
   category?: string
   total_score?: number
+  score_max?: number
+  score_version?: string
+  hook_strength?: number
+  promise_clarity?: number
+  audience_fit?: number
+  memorability?: number
+  naturalness?: number
 }
 
 export interface NovelOutline {
@@ -400,6 +407,7 @@ export interface ChapterSummary {
   version: number
   review_status: ChapterReviewStatus
   quality_score: number | null
+  reader_comprehension?: Record<string, JsonValue> | null
 }
 
 export interface ChapterDetail extends ChapterSummary {
@@ -537,5 +545,14 @@ export interface WorkflowSnapshot {
   next_nodes?: string[]
   execution?: WorkflowExecutionSnapshot
   server_time?: string
+  blocker?: {
+    code: string
+    message: string
+    node?: string
+    retryable: boolean
+    bucket?: string
+    used?: number
+    limit?: number
+  } | null
   state: Record<string, unknown>
 }

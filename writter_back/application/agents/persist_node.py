@@ -18,6 +18,8 @@ from service.ports.story_fact_repository import FactVersionConflictError
 from service.value_objects.fact_gate import FactGateReport
 from service.value_objects.chapter_constraints import ChapterConstraintSet
 from application.feature_policy import require_planning_v1
+from application.editorial_review import editorial_archive_ready
+from application.reader_comprehension import reader_archive_ready, refresh_reader_history
 from application.prompts.memory_prompts import (
     CHAPTER_SUMMARY_SCHEMA,
     CHAPTER_SUMMARY_TEMPERATURE,
@@ -39,6 +41,7 @@ OUTLINE_FIELDS = frozenset({
     "story_background", "main_characters", "main_plot", "antagonist_plan",
     "truth_reveal_ladder", "cost_curve", "relationship_turns",
     "writing_style", "total_chapters", "volumes", "scale", "creative_brief", "prompt_version", "author_config",
+    "reader_quality_version",
 })
 STORY_STATE_FIELDS = {
     "timeline", "characters", "open_conflicts", "foreshadowing",
@@ -77,6 +80,7 @@ async def _persist_setup(
         updated = True
     outline, total = _outline_value(state.get("total_outline"))
     if outline is not None:
+        outline.reader_quality_version = getattr(novel.total_outline, "reader_quality_version", 0)
         if novel.total_outline and novel.total_outline.author_config:
             outline.author_config = novel.total_outline.author_config
         novel.total_outline = outline
@@ -119,6 +123,10 @@ def _chapter_review_metadata(state: NovelAgentState) -> dict[str, Any]:
     issues = state.get("reflection_issues") or []
     if state.get("chapter_fact_input"):
         decision["fact_input"] = dict(state["chapter_fact_input"])
+    if state.get("creative_editorial_review"):
+        decision["editorial_review"] = dict(state["creative_editorial_review"])
+    if state.get("reader_comprehension_receipt"):
+        decision["reader_comprehension"] = dict(state["reader_comprehension_receipt"])
     if (state.get("fact_reports") or {}).get("body"):
         decision["fact_gate"] = state["fact_reports"]["body"]
         decision["fact_review"] = (state.get("fact_acknowledgements") or {}).get("body")
@@ -372,6 +380,8 @@ def _writing_command(
             "current_chapter_index": chapter["chapter_index"] + 1,
             "last_persisted_chapter": chapter,
             "current_chapter_content": "", "reflection_issues": [], "user_decision": {},
+            "creative_editorial_review": None,
+            "reader_comprehension_receipt": None, "reader_history": None,
             "memory_context": "", "scene_ledger": [], "revision_history": [],
             "chapter_constraints": None, "chapter_fact_input": None,
             "fact_gate_snapshot": None, "fact_reports": {}, "fact_acknowledgements": {},
@@ -381,7 +391,7 @@ def _writing_command(
 
 async def persist_node(
     state: NovelAgentState, config: RunnableConfig,
-) -> Command[Literal["progress_check_node", "plan_reconciliation_node", "fact_review_node"]]:
+) -> Command[Literal["progress_check_node", "plan_reconciliation_node", "fact_review_node", "reflection_node"]]:
     """按当前是否存在章节正文选择设定或章节持久化路径。"""
     await require_planning_v1(
         config,
@@ -395,6 +405,11 @@ async def persist_node(
             values.get("novel_id", ""),
         )
         return Command(goto="progress_check_node")
+    state = await refresh_reader_history(state, config)
+    if not reader_archive_ready(state, content) or not editorial_archive_ready(state, content):
+        return Command(goto="reflection_node", update={
+            "pending_proposal": None, "pending_proposal_decision": None,
+        })
     from application.goal_contract import require_goal_acceptance
     from application.errors import QualityGateReviewRequired
 

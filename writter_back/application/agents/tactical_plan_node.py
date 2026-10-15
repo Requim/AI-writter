@@ -10,6 +10,7 @@ from langgraph.types import Command
 
 from application.errors import RetryableWorkflowError
 from application.feature_policy import require_planning_v1
+from application.fact_workflow import attach_fact_input, bind_chapter_fact_input
 from application.prompts.tactical_plan_prompts import (
     TACTICAL_WINDOW_SCHEMA,
     build_tactical_window_prompt,
@@ -203,12 +204,13 @@ async def tactical_plan_node(
         {"status": "started", "message": f"正在规划第{chapter}章起的近期战术"},
         "tactical_plan_node",
     )
+    config, fact_update = await bind_chapter_fact_input(state, config)
     candidate = await _generate_window(state, config, plan, latest)
-    return Command(goto="chapter_outline_node", update={
+    return attach_fact_input(Command(goto="chapter_outline_node", update={
         "tactical_window": candidate.to_dict(),
         "tactical_window_expected_version": latest.version if latest else 0,
         "tactical_window_persisted": False,
         "tactical_previous_window": latest.to_dict() if latest else None,
         "tactical_plan_feedback": None,
         "story_state_needs_reconciliation": False,
-    })
+    }), fact_update)

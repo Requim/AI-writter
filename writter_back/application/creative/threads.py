@@ -1,12 +1,15 @@
 """人物职责、关系、秘密及伏笔使用既有实体与计划ID，状态需有归档证据。"""
 
 from datetime import datetime, timezone
+from functools import partial
+from typing import get_args
 
 from application.creative.artifacts import json_text
 from application.creative.errors import CreativePause
 from application.creative.evidence import validate_foreshadow_transition
-from application.creative.patches import invalidate_patch
+from application.creative.patches import apply_generated_patch
 from application.prompts.template_loader import render_prompt
+from application.source_spans import archive_evidence_prompt
 from service.value_objects.creative import Foreshadow, Secret
 
 
@@ -41,22 +44,29 @@ async def _initialize_secrets(work, state):
 async def update_narrative_threads(work, chapter, completed, proof_builder):
     """归档后的伏笔识别使用原文证据；后续接续由服务器记录当前构思时间。"""
     key = f"threads:{completed}:v{chapter['version']}"
-    patch = await work.latest("decision", key)
+    await apply_generated_patch(work, key, chapter, partial(_thread_prompt, work, chapter),
+        {"updates": "array"}, partial(_apply_thread_updates, work, chapter, completed, proof_builder))
+
+
+async def _thread_prompt(work, chapter):
     latest = {(r["kind"], r["key"]): r for r in await work.records() if r["kind"] in {"foreshadow", "secret", "relationship"}}
-    if patch is None or patch["status"] == "invalid":
-        characters = {r["key"]: r["payload"].get("name") for r in await work.records("character")}
-        result = await work.generate(
-            render_prompt("creative/threads.txt", threads=json_text(list(latest.values())),
-                          characters=json_text(characters), content=chapter["content"]),
-            {"updates": "array"},
-        )
-        patch = await work.save("decision", key, result, previous=patch, inputs={"chapter": chapter["version"]})
-    try:
-        for change in patch["payload"]["updates"]:
-            await _apply_thread_change(work, change, latest, chapter, completed, proof_builder)
-    except (ValueError, CreativePause) as error:
-        await invalidate_patch(work, patch, error)
-        raise
+    characters = {r["key"]: r["payload"].get("name") for r in await work.records("character")}
+    return (
+        render_prompt("creative/threads.txt", threads=json_text(list(latest.values())),
+            characters=json_text(characters), content=chapter["content"])
+        + "\n" + render_prompt("creative/threads_update_contract_v1.txt", include_active_rules=False,
+            statuses=json_text(get_args(Foreshadow.model_fields["status"].annotation)))
+        + "\n" + archive_evidence_prompt(chapter["content"])
+    )
+
+
+async def _apply_thread_updates(work, chapter, completed, proof_builder, payload):
+    updates = payload.get("updates")
+    if not isinstance(updates, list):
+        raise ValueError("叙事状态提案必须包含updates列表")
+    latest = {(r["kind"], r["key"]): r for r in await work.records() if r["kind"] in {"foreshadow", "secret", "relationship"}}
+    for change in updates:
+        await _apply_thread_change(work, change, latest, chapter, completed, proof_builder)
 
 
 async def _apply_thread_change(work, change, latest, chapter, completed, proof_builder):
@@ -81,6 +91,9 @@ async def _thread_payload(work, kind, key, changes, previous, proofs):
             raise CreativePause("foreshadow_fields", "伏笔变化尝试修改未授权字段")
         base = old or {"foreshadow_id": key, "origin": "retrospective", "conceived_at": datetime.now(timezone.utc).isoformat()}
         item = Foreshadow.model_validate({**base, **changes, "evidence": combined})
+        existing = {r["key"] for r in await work.records("character")}
+        if not set(item.character_ids).issubset(existing):
+            raise CreativePause("unknown_character", "伏笔人物必须引用已准入的人物ID")
         if previous:
             validate_foreshadow_transition(Foreshadow.model_validate(old), item)
         elif item.origin != "retrospective":

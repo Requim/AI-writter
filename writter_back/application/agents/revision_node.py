@@ -10,8 +10,9 @@ from application.continuity import build_story_bible
 from application.errors import RetryableWorkflowError
 from application.feature_policy import require_planning_v1
 from application.goal_contract import current_goal_contract, fingerprint, goal_prompt
-from application.fact_workflow import attach_fact_input, bind_chapter_fact_input
-from application.fact_gate_workflow import check_fact_artifact
+from application.fact_archive_guard import verify_fact_receipt
+from application.fact_workflow import attach_fact_input, bind_chapter_fact_input, capture_fact_constraints
+from application.fact_gate_workflow import _cached, check_fact_artifact
 from application.prompts.revision_prompts import (
     PATCH_SCHEMA,
     PATCH_TEMPERATURE,
@@ -33,8 +34,10 @@ from application.proposals import (
 )
 from application.schemas.agent_state import NovelAgentState
 from application.revision_policy import allow_full_revision_fallback
+from application.revision_patch_spans import local_patch_prompt, resolve_local_patch
 from application.streaming import collect_streamed_text, emit_workflow_event
 from service.ports.llm_service import LLMService
+from service.value_objects.fact_gate import FACT_EXTRACTION_VERSION, FactGateBlockedError
 
 logger = logging.getLogger("uvicorn")
 
@@ -114,6 +117,7 @@ def _history_text(state: NovelAgentState) -> str:
 
 
 def _revision_outline(state: NovelAgentState) -> tuple[dict, dict, str, str]:
+    from application.reader_entry import prose_reader_context
     content = state.get("current_chapter_content", "")
     outline = state.get("chapter_outlines", [{}])[-1] if state.get("chapter_outlines") else {}
     total = state.get("total_outline", {})
@@ -124,6 +128,9 @@ def _revision_outline(state: NovelAgentState) -> tuple[dict, dict, str, str]:
         outline = {**outline, "genre_strategy": strategy}
     if current_goal_contract(state):
         outline = {**outline, "goal_findings": (state.get("quality_gate") or {}).get("goal_acceptance")}
+    enabled = state.get("reader_quality_version", total.get("reader_quality_version")) == 1
+    outline, total = prose_reader_context(outline, total, enabled=enabled,
+                                         chapter_number=int(state.get("current_chapter_index") or 0) + 1)
     return outline, total, content, state.get("memory_context", "")
 
 
@@ -169,20 +176,27 @@ async def _generate_patch(
     outline: dict,
     context: str,
     bible: str,
+    config: RunnableConfig | None = None,
 ) -> str:
     issues = [
         issue for issue in state.get("reflection_issues", []) or []
         if issue.get("priority_action") != "can_ignore" and issue.get("evidence_valid") is True
+        and (state.get("author_mode") != "autonomous_v1" or issue.get("priority_action") == "must_fix")
         and not issue.get("issue_resolved")
     ]
     allowed_ids = {str(issue.get("issue_id", "")) for issue in issues if issue.get("issue_id")}
     prompt = build_patch_revision_prompt(
         format_issues_for_prompt(issues), content, outline, _history_text(state), context, bible
     ) + goal_prompt(outline.get("goal_contract"))
+    options = {"max_attempts": 1} if (config or {}).get("configurable", {}).get("_local_only_repair") else {}
+    if options:
+        prompt += local_patch_prompt(content)
     payload = await llm.structured_generate(
         prompt=prompt, schema=PATCH_SCHEMA, system_prompt=build_revision_system_prompt(),
-        temperature=PATCH_TEMPERATURE,
+        temperature=PATCH_TEMPERATURE, **options,
     )
+    if options:
+        payload = resolve_local_patch(payload, content)
     if outline.get("goal_contract"):
         _check_goal_patch_scope(payload, issues, content)
     revised = apply_structured_patch(content, payload, allowed_ids)
@@ -194,6 +208,25 @@ async def _generate_patch(
         "content_delta", {"chapter_index": chapter_index, "operation": "append", "text": revised}, "revision_node"
     )
     return revised
+
+
+def _patch_validation_reason(error: RetryableWorkflowError) -> str:
+    safe_messages = {
+        "局部修改范围无法验证", "局部修改锚点没有包含对应问题的原文证据", "局部修改段落引用无效",
+        "单项局部修改超过1500字符范围", "局部修改超过正文30%，需明确授权全文重构",
+        "章节局部修订失败：修改项未对应审读问题", "章节局部修订失败：原文锚点无效",
+        "章节局部修订失败：原文锚点不唯一", "章节局部修订失败：修改范围重叠",
+        "章节局部修订失败：模型未返回有效 JSON", "章节局部修订失败：未解决问题列表格式无效",
+        "章节局部修订失败：存在无法安全处理的问题", "章节局部修订失败：修改项超过安全上限",
+        "章节局部修订失败：没有可应用的修改", "章节局部修订失败：修改范围过大",
+    }
+    return str(error) if str(error) in safe_messages else type(error).__name__
+
+
+def _bounded_patch_error(error: RetryableWorkflowError) -> RetryableWorkflowError:
+    reason = _patch_validation_reason(error)
+    logger.warning("局部修订校验未通过，未执行全文回退 | reason=%s", reason)
+    return RetryableWorkflowError("局部修订无法安全完成，原稿已保留；请明确选择扩大修改范围：" + reason)
 
 
 async def _expand_if_needed(
@@ -251,17 +284,51 @@ def _revision_review_fields(proposal: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+async def _rebind_fact_staged_revision(
+    state: NovelAgentState, config: RunnableConfig, proposal: dict[str, Any],
+) -> Command:
+    payload = proposal.get("payload") or {}
+    body, source = state.get("current_chapter_content"), payload.get("source_hash")
+    error = "修订提案基于旧正文或旧目标，请重新生成提案"
+    if (not isinstance(body, str) or not body or body != payload.get("revised_content")
+        or not isinstance(source, str) or len(source) != 64
+        or any(char not in "0123456789abcdef" for char in source)
+        or payload.get("fact_staging_rebind")
+        or config.get("configurable", {}).get("story_fact_repository") is None):
+        raise RetryableWorkflowError(error)
+    # Rebinding only reads the ledger; it must not restore an empty baseline.
+    read_config: RunnableConfig = {
+        **config, "configurable": {**config.get("configurable", {}), "auto_mode": False},
+    }
+    snapshot = await capture_fact_constraints(state, read_config)
+    report = _cached(state, snapshot, body, "body")
+    if (report is None or report.status != "pass" or report.coverage != "complete"
+        or report.extraction_version != FACT_EXTRACTION_VERSION):
+        raise RetryableWorkflowError(error)
+    try:
+        verify_fact_receipt(snapshot, report, body)
+    except FactGateBlockedError as exc:
+        raise RetryableWorkflowError(error) from exc
+    update = proposal_update(state, "revision", {
+        **payload, "source_hash": fingerprint(body),
+        "fact_staging_rebind": {"proposal_id": proposal["proposal_id"],
+            "source_hash": source, "fact_report_digest": report.digest},
+    }, state.get("current_chapter_index", 0) + 1)
+    return Command(goto="revision_review_node", update={**update, "pending_proposal_decision": None})
+
+
 async def revision_review_node(
     state: NovelAgentState, config: RunnableConfig
-) -> Command[Literal["persist_node", "reflection_node", "revision_node"]]:
+) -> Command[Literal["persist_node", "reflection_node", "revision_node", "revision_review_node"]]:
     """审核 checkpoint 中的修订提案，不再次调用模型。"""
     chapter_number = state.get("current_chapter_index", 0) + 1
     proposal = require_proposal(state, "revision", chapter_number)
     contract = current_goal_contract(state)
     payload = proposal.get("payload") or {}
-    if contract and (payload.get("contract_id") != contract["id"]
-                     or payload.get("source_hash") != fingerprint(state.get("current_chapter_content", ""))):
+    if contract and payload.get("contract_id") != contract["id"]:
         raise RetryableWorkflowError("修订提案基于旧正文或旧目标，请重新生成提案")
+    if contract and payload.get("source_hash") != fingerprint(state.get("current_chapter_content", "")):
+        return await _rebind_fact_staged_revision(state, config, proposal)
     decision = decide_proposal(
         state, proposal, config, **_revision_review_fields(proposal)
     )
@@ -282,7 +349,17 @@ def _revision_audit(state: NovelAgentState) -> dict[str, Any]:
         if isinstance(item, dict)
     ]
     history = list(state.get("revision_history", []) or [])
-    history.append({"attempt": attempts, "issues_before": issues})
+    entry = {"attempt": attempts, "issues_before": issues}
+    provenance = ((state.get("pending_proposal") or {}).get("payload") or {}).get("fact_staging_rebind")
+    if provenance:
+        entry["fact_staging_rebind"] = dict(provenance)
+    scoped = (state.get("quality_gate") or {}).get("scoped_goal_repair")
+    if scoped:
+        entry["scoped_goal_repair"] = scoped
+    progress = (state.get("quality_gate") or {}).get("repair_progress")
+    if progress:
+        entry["quality_repair_progress"] = dict(progress)
+    history.append(entry)
     return {"revision_attempts": attempts, "revision_history": history}
 
 
@@ -378,10 +455,10 @@ async def revision_node(
     mode = gate_mode if gate_mode in {"patch", "refactor"} else classify_revision_mode(state.get("reflection_issues", []))
     if mode == "patch" and not decision.get("instructions"):
         try:
-            revised = await _generate_patch(llm, state, content, outline, context, bible)
+            revised = await _generate_patch(llm, state, content, outline, context, bible, config)
         except RetryableWorkflowError as exc:
-            if not allow_full_revision_fallback(outline, config):
-                raise RetryableWorkflowError("局部修订无法安全完成，原稿已保留；请明确选择扩大修改范围") from exc
+            if config["configurable"].get("_local_only_repair") or not allow_full_revision_fallback(outline, config):
+                raise _bounded_patch_error(exc) from exc
             logger.warning("【修正节点】局部 Patch 无法安全应用，降级全文重构 | 原因=%s", exc)
             revised = await _generate_refactor(llm, state, content, outline, context, bible)
     else:

@@ -68,6 +68,7 @@ def _legacy_character(value: Any, index: int) -> dict[str, Any] | None:
         "profile": normalize_profile(raw, legacy=True),
         **({"source_id": raw["source_id"], "source": raw.get("source", {})}
            if raw.get("source_id") else {}),
+        **({"source_name_binding": dict(raw["source_name_binding"])} if raw.get("source_name_binding") else {}),
     }
 
 
@@ -172,6 +173,7 @@ def _build_core_role(
         "character_id": character_id, "role_type": role_type, "profile": profile,
         "name_candidates": candidates,
         "recommended_candidate_id": candidates[recommended]["candidate_id"],
+        **({"source_name_binding": dict(raw["source_name_binding"])} if raw.get("source_name_binding") else {}),
     }
 
 
@@ -187,6 +189,7 @@ def _build_support_role(
         "character_id": character_id, "role_type": role_type, "profile": profile,
         "name": candidate["name"], "surname": candidate["surname"],
         "origin_type": "classical_source", **candidate,
+        **({"source_name_binding": dict(raw["source_name_binding"])} if raw.get("source_name_binding") else {}),
     }
 
 
@@ -280,6 +283,7 @@ def _accepted_core(
         "character_id": role["character_id"], "role_type": role["role_type"],
         "profile": dict(role["profile"]), **selected,
         **({"role_fit": candidate.get("role_fit", "")} if candidate else {}),
+        **({"source_name_binding": dict(role["source_name_binding"])} if role.get("source_name_binding") else {}),
     }
 
 

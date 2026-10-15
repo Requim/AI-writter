@@ -14,6 +14,23 @@ function event(id: number, operation: 'append' | 'reset', text: string): Workflo
 }
 
 describe('workflowReducer command isolation', () => {
+  it('restores a nonretryable budget blocker after reload without discarding checkpoint flags', () => {
+    const snapshot = {
+      thread_id: 'thread-1', status: 'idle', has_interrupt: false, interrupts: [],
+      next_nodes: ['fact_review_node'],
+      state: { has_current_chapter_content: true, current_chapter_index: 0 },
+      blocker: { code: 'budget_exhausted', message: '单章预算已耗尽，草稿已保留',
+        node: 'fact_review_node', retryable: false, used: 32, limit: 32 },
+    } as WorkflowSnapshot
+    const restored = workflowReducer(initialWorkflowState, { type: 'snapshot', snapshot })
+    expect(restored.status).toBe('error')
+    expect(restored.errorCode).toBe('budget_exhausted')
+    expect(restored.error).toBe('单章预算已耗尽，草稿已保留')
+    expect(restored.retryable).toBe(false)
+    expect(restored.hasCheckpointDraft).toBe(true)
+    expect(restored.hasPendingCheckpoint).toBe(true)
+  })
+
   it('restores the exact pending body from the authorized fact review snapshot', () => {
     const snapshot: WorkflowSnapshot = {
       thread_id: 'thread-1', status: 'paused', has_interrupt: true,

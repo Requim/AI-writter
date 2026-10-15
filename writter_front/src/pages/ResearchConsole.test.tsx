@@ -59,4 +59,22 @@ describe('写作素材库', () => {
     expect(screen.getByRole('textbox', { name: /审核人/ })).toBeVisible()
     expect(screen.getAllByText('低置信度').length).toBeGreaterThan(0)
   })
+
+  it('keeps the reviewed version current when a search returns stale status', async () => {
+    api.capabilities.mockResolvedValue({})
+    api.search.mockResolvedValue({ items: [{
+      ...material, content: material, matched_terms: [], score: 1,
+    }] })
+    api.review.mockResolvedValue({ ...material, status: 'approved' })
+    render(<App><ResearchConsole /></App>)
+    fireEvent.click(screen.getByRole('button', { name: /检索/ }))
+    fireEvent.click(await screen.findByText('版本 1', { exact: true }))
+    fireEvent.click(screen.getByRole('button', { name: /选择此版本审核/ }))
+    fireEvent.change(screen.getByRole('textbox', { name: /审核人/ }), { target: { value: '验收编辑' } })
+    fireEvent.click(screen.getByRole('button', { name: /提交审核/ }))
+    await waitFor(() => expect(screen.queryAllByText('待审核')).toHaveLength(0))
+    fireEvent.click(screen.getByRole('button', { name: /检索/ }))
+    await waitFor(() => expect(api.search).toHaveBeenCalledTimes(2))
+    expect(screen.queryAllByText('待审核')).toHaveLength(0)
+  })
 })

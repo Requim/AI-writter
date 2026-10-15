@@ -2,6 +2,8 @@ import { Progress } from 'antd'
 import type { WorkflowViewState } from '@/hooks/useWorkflowStream'
 import { qualityScoreOutOfFive } from './presentation'
 import { reviewValueLabels } from './terminology'
+import { ReaderComprehensionReview } from './ReaderComprehensionReview'
+import { asRecord, proposalPayload } from './valueHelpers'
 
 function PlanResult({ state }: { state: WorkflowViewState }) {
   const result = state.planResult
@@ -15,13 +17,19 @@ function PlanResult({ state }: { state: WorkflowViewState }) {
 }
 
 export function WorkflowQualitySummary({ state }: { state: WorkflowViewState }) {
-  if (typeof state.qualityScore !== 'number') return <PlanResult state={state} />
+  const proposal = state.interrupt ? proposalPayload(state.interrupt) : undefined
+  const reviewing = state.interrupt && ['review_reflection_issues', 'quality_gate_exhausted',
+    'quality_gate_human_review', 'quality_review_unavailable'].includes(state.interrupt.action)
+  const alreadyShown = reviewing && asRecord(proposal?.gate || proposal)?.reader_comprehension
+  const readerReport = alreadyShown ? undefined : state.readerComprehension
+  if (typeof state.qualityScore !== 'number') return <><ReaderComprehensionReview value={readerReport} /><PlanResult state={state} /></>
   const score = qualityScoreOutOfFive(state.qualityScore)
   return (
     <><section className="quality-block" aria-label="质量评分">
       <div><span>质量评分</span><strong>{score.toFixed(1)}<small> / 5</small></strong></div>
       <p>{reviewValueLabels[state.qualityDecision || ''] || '审阅结果待确认'} · 共 {state.issues.length} 条问题</p>
       <Progress percent={Math.round(score * 20)} showInfo={false} strokeColor="#8d2f3d" />
+      <ReaderComprehensionReview value={readerReport} />
       {state.issues.slice(0, 3).map((issue, index) => <p key={`${issue.issue_id || issue.type}-${index}`}>{issue.description || reviewValueLabels[issue.type || ''] || '待处理问题'}</p>)}
       {state.issues.length > 3 && <details><summary>其余 {state.issues.length - 3} 条问题</summary>
         {state.issues.slice(3).map((issue, index) => <p key={issue.issue_id || index}>{issue.description || reviewValueLabels[issue.type || ''] || '待处理问题'}</p>)}

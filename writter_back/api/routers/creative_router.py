@@ -1,27 +1,29 @@
 """小说创作资源与租户作者档案API，长任务仍由原工作流执行。"""
 
-from datetime import datetime, timezone
 from typing import Literal
 from uuid import UUID, uuid5
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
 from api.dependencies import get_tenant_context
-from application.creative.errors import CreativeConflict, CreativePause
+from application.creative.errors import CreativeConflict
 from application.creative.feedback import feedback_hypotheses
-from config import settings
 from infrastructure.database.author_repository import PostgresAuthorRepository
+from infrastructure.database.creative_budget import require_operator_chapter_budget
 from infrastructure.database.creative_models import CreativeSessionModel
 from infrastructure.database.creative_commands import record_control, replay_control
 from infrastructure.database.creative_repository import PostgresCreativeRepository, lock_creative_novel, row_dict
 from infrastructure.database.creative_repository import _digest
-from infrastructure.database.models import NovelModel, TenantModel
+from infrastructure.database.models import TenantModel
 from service.entities.identity import TenantContext
 from service.value_objects.author_style import AuthorProfile, AuthorSample
 from service.value_objects.creative import BudgetLimits, CreativeRecord, RecordKind, ResearchSource
+from service.value_objects.creative_budget import ElasticBudgetPolicy, model_spent
 from service.value_objects.reader_feedback import ReaderFeedback
+from infrastructure.database.scoped_goal_repair import GoalRepairUpdate, authorize_goal_repair
+from infrastructure.database.progress_repair import RepairPolicyUpdate, activate_repair_policy
 
 router = APIRouter()
 author_router = APIRouter()
@@ -161,9 +163,13 @@ async def add_profile(payload: VersionedProfile, context: TenantContext = Depend
     return await _author_save(repo, context, "profile", payload.profile_id, payload.profile.model_dump(mode="json"), payload.expected_version, key)
 
 
+class BudgetAdjustmentLimits(BudgetLimits):
+    chapter: int = Field(default=32, ge=1, le=48)
+
+
 class BudgetUpdate(BaseModel):
     expected_version: int = Field(ge=1)
-    limits: BudgetLimits
+    limits: BudgetAdjustmentLimits
 
 
 @router.put("/{novel_id}/creative/budget")
@@ -192,12 +198,101 @@ async def _update_budget(repo, context, novel_id, payload, key):
             return previous
         if row.version != payload.expected_version:
             raise CreativeConflict("预算版本已更新")
+        if "policy" in row.limits:
+            raise ValueError("弹性预算已启用，不能通过旧预算接口覆盖策略或整书总额")
+        await require_operator_chapter_budget(session, context.tenant_id, novel_id, payload.limits.chapter)
         tenant = await session.get(TenantModel, context.tenant_id)
         limits = payload.limits.resolved(novel.total_outline["total_chapters"], tenant.autonomous_request_limit)
         if any(count > limits[bucket.split(":")[0]] for bucket, count in row.counters.items()):
             raise ValueError("新预算不得低于已发生消耗")
         row.limits, row.version = limits, row.version + 1
         row.config = {**row.config, "budget": payload.limits.model_dump(mode="json")}
+        await session.flush()
+        result = row_dict(row)
+        record_control(session, context.tenant_id, novel_id, key, command, result)
+        return result
+
+
+class BudgetPolicyUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    expected_version: int = Field(ge=1)
+    expected_total: int = Field(ge=1)
+    mode: Literal["elastic_v1"]
+    reason: str = Field(min_length=1, max_length=500)
+
+
+@router.put("/{novel_id}/creative/repair-policy")
+async def update_repair_policy(novel_id: UUID, payload: RepairPolicyUpdate,
+                               context: TenantContext = Depends(get_tenant_context),
+                               key: str | None = Header(None, alias="Idempotency-Key"),
+                               repo=Depends(creative_repository)):
+    if not context.can_manage_members():
+        raise HTTPException(403, "仅作者管理员可授权当前作品的进展修订策略")
+    await _session(repo, context, novel_id)
+    _key(key)
+    try:
+        return await activate_repair_policy(repo, context, novel_id, payload, key)
+    except CreativeConflict as error:
+        raise HTTPException(409, str(error)) from error
+    except (ValueError, LookupError) as error:
+        raise HTTPException(422, str(error)) from error
+
+
+@router.put("/{novel_id}/creative/goal-repair")
+async def update_goal_repair(novel_id: UUID, payload: GoalRepairUpdate,
+                            context: TenantContext = Depends(get_tenant_context),
+                            key: str | None = Header(None, alias="Idempotency-Key"),
+                            repo=Depends(creative_repository)):
+    if not context.can_manage_members():
+        raise HTTPException(403, "仅作者管理员可授权本章一次定向目标修订")
+    await _session(repo, context, novel_id)
+    _key(key)
+    try:
+        return await authorize_goal_repair(repo, context, novel_id, payload, key)
+    except CreativeConflict as error:
+        raise HTTPException(409, str(error)) from error
+    except (ValueError, LookupError) as error:
+        raise HTTPException(422, str(error)) from error
+
+
+@router.put("/{novel_id}/creative/budget-policy")
+async def update_budget_policy(novel_id: UUID, payload: BudgetPolicyUpdate,
+                              context: TenantContext = Depends(get_tenant_context),
+                              key: str | None = Header(None, alias="Idempotency-Key"),
+                              repo=Depends(creative_repository)):
+    if not context.can_manage_members():
+        raise HTTPException(403, "仅作者管理员可修改当前作品的预算分配策略")
+    await _session(repo, context, novel_id)
+    _key(key)
+    try:
+        return await _update_budget_policy(repo, context, novel_id, payload, key)
+    except CreativeConflict as error:
+        raise HTTPException(409, str(error)) from error
+    except (ValueError, LookupError) as error:
+        raise HTTPException(422, str(error)) from error
+
+
+async def _update_budget_policy(repo, context, novel_id, payload, key):
+    async with repo.sessions.begin() as session:
+        await lock_creative_novel(session, context.tenant_id, novel_id)
+        row = await session.scalar(select(CreativeSessionModel).where(
+            CreativeSessionModel.tenant_id == context.tenant_id, CreativeSessionModel.novel_id == novel_id,
+        ).with_for_update())
+        command = {"operation": "budget_policy", **payload.model_dump(mode="json")}
+        previous = await replay_control(session, context.tenant_id, novel_id, key, command)
+        if previous is not None:
+            return previous
+        if row is None or row.version != payload.expected_version or row.limits["total"] != payload.expected_total:
+            raise CreativeConflict("预算版本或整书总额已更新")
+        tenant = await session.get(TenantModel, context.tenant_id)
+        if row.limits["total"] > tenant.autonomous_request_limit or model_spent(row.counters) > row.limits["total"]:
+            raise ValueError("现有预算超出租户或整书上限")
+        if "policy" in row.limits:
+            raise CreativeConflict("策略已经启用；不能重复授权恢复已消耗的轮次")
+        policy = ElasticBudgetPolicy(chapter_soft=row.limits["chapter"],
+            future_chapter_reserve=min(24, row.limits["chapter"]))
+        row.limits = {**row.limits, "policy": policy.model_dump(mode="json")}
+        row.version += 1
         await session.flush()
         result = row_dict(row)
         record_control(session, context.tenant_id, novel_id, key, command, result)

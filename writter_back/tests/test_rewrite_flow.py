@@ -93,6 +93,21 @@ async def test_rewrite_rejects_non_converging_node_loop(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_rewrite_follows_archive_guard_back_to_reader_review(monkeypatch):
+    writer = AsyncMock(return_value=Command(
+        goto="router_agent", update={"current_chapter_content": "保留的重写正文"}))
+    reflection = AsyncMock(return_value=Command(goto="persist_node"))
+    persist = AsyncMock(side_effect=[
+        Command(goto="reflection_node"),
+        Command(goto="progress_check_node", update={"saved": True}),
+    ])
+    _patch_rewrite_nodes(monkeypatch, writer, reflection, AsyncMock(), persist)
+    state = await _generate_rewritten_chapter({"reader_quality_version": 1}, {})
+    assert state["saved"] is True
+    assert reflection.await_count == persist.await_count == 2
+
+
+@pytest.mark.asyncio
 async def test_rewrite_returns_quality_gate_error_instead_of_interrupt_failure(monkeypatch):
     writer = AsyncMock(
         return_value=Command(

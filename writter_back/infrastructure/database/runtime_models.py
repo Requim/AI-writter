@@ -33,6 +33,7 @@ class WorkflowRunModel(Base):
     deadline = Column(DateTime(timezone=True), nullable=False)
     created_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)
     finished_at = Column(DateTime(timezone=True), nullable=True)
+    recovery_payload = Column(JSONB(none_as_null=True), nullable=True)
 
 
 class WorkflowEventModel(Base):

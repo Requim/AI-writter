@@ -10,6 +10,10 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
 
 from application.errors import InvalidReviewDecisionError, RetryableWorkflowError
+from application.creative.errors import PlanConsistencyRepair
+from application.creative.plan_generation_context import (
+    planning_author_truth, planning_generation_rules, planning_reference_rules, planning_volume_view,
+)
 from application.feature_policy import require_planning_v1
 from application.planning import (
     build_plan,
@@ -147,6 +151,7 @@ async def _generate_blueprint(
     scale: ScaleContract,
     previous: NovelPlan | None,
     legacy: list[dict[str, Any]],
+    author_truth: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], ScaleContract]:
     llm = config["configurable"].get("llm_config", {}).get("llm_instance")
     if llm is None:
@@ -161,6 +166,7 @@ async def _generate_blueprint(
             legacy_chapters=legacy,
             errors=errors,
         )
+        prompt += planning_generation_rules(author_truth)
         raw = await llm.structured_generate(
             prompt, BLUEPRINT_SCHEMA, temperature=0.35, max_attempts=1
         )
@@ -242,11 +248,12 @@ async def _new_generation(
     mode = _mode(state, previous)
     scale = _scale_for_request(state, previous)
     legacy = await _legacy_facts(state, config["configurable"])
+    author_truth = await planning_author_truth(state, config)
     if previous is not None and _volume_scope(mode, state):
         blueprint = _existing_blueprint(previous)
     else:
         blueprint, scale = await _generate_blueprint(
-            state, config, scale, previous, legacy
+            state, config, scale, previous, legacy, author_truth
         )
     current = int(state.get("current_chapter_index", 0) or 0) + 1
     order = [
@@ -272,6 +279,7 @@ async def _new_generation(
         "instruction": _instruction(state),
         "final_validation_attempts": 0,
         "preserve_all_word_targets": previous is not None and _volume_scope(mode, state),
+        **({"author_truth": author_truth} if author_truth is not None else {}),
     }
 
 
@@ -290,6 +298,9 @@ async def novel_plan_initialize_node(
 ) -> Command[Literal["novel_plan_volume_node", "novel_plan_review_node"]]:
     """初始化可断点恢复的规划批次。"""
     await require_planning_v1(config)
+    request = state.get("plan_replan_request") or {}
+    if request.get("repair_proposal_id"):
+        return await _milestone_repair_command(state, config)
     if proposal_matches(state, "novel_plan"):
         return Command(goto="novel_plan_review_node")
     generation = state.get("plan_generation")
@@ -372,10 +383,10 @@ def _volume_prompt(
     completed = int(state.get("current_chapter_index", 0) or 0)
     previous = _plan(generation.get("previous_plan"))
     locked = completed + (previous.scale.lock_window if previous else 0)
-    return build_volume_slots_prompt(
+    prompt = build_volume_slots_prompt(
         scale=generation["scale"],
         ending_contract=generation["blueprint"]["ending_contract"],
-        volume=asdict(volume),
+        volume=planning_volume_view(generation.get("author_truth"), asdict(volume)),
         arcs=[asdict(arc) for arc in _blueprint_arcs(generation)],
         context=generation_context(generation["chapter_slots"]),
         existing_slots=_existing_volume_slots(generation, volume.volume_id),
@@ -389,8 +400,33 @@ def _volume_prompt(
             "单章作品的两组 ID 必须完全一致，且核心伏笔在该章收束。"
         ),
     )
+    return prompt + planning_generation_rules(
+        generation.get("author_truth"), generation["blueprint"],
+        [slot for slot in generation["chapter_slots"] if int(slot["chapter_number"]) < volume.start_chapter],
+    ) + planning_reference_rules(generation, volume)
 
 
+async def _milestone_repair_command(state: NovelAgentState, config: RunnableConfig) -> Command:
+    from application.creative.plan_milestone_repair import repair_plan_milestones
+    from application.creative.plan_cross_layer_repair import initial_cross_layer_intent, repair_initial_cross_layer
+    initial = initial_cross_layer_intent(state["plan_replan_request"])
+    repaired = await (repair_initial_cross_layer(state, config) if initial else repair_plan_milestones(state, config))
+    request = {key: value for key, value in state["plan_replan_request"].items()
+               if key != "repair_proposal_id"}
+    previous = _plan(state.get("novel_plan"))
+    generation = {
+        **(state.get("plan_generation") or {}), "mode": "initial" if initial else "replan",
+        "source": "user_cross_layer_repair" if initial else "user_replan",
+        "expected_version": request["expected_version"], "instruction": request["instruction"],
+        "completed_chapters": int(state.get("current_chapter_index") or 0),
+    }
+    return Command(goto="novel_plan_review_node", update={
+        **proposal_update(state, "novel_plan", {
+            "plan": repaired.to_dict(), "diff": plan_diff(previous, repaired),
+        }),
+        "plan_generation": generation, "plan_replan_request": None if initial else request,
+        "pending_proposal_decision": None,
+    })
 def _merge_slots(
     generation: dict[str, Any], generated: list[dict[str, Any]], volume_id: str
 ) -> list[dict[str, Any]]:
@@ -404,6 +440,8 @@ async def novel_plan_volume_node(
     """每次只生成一卷槽位，使成功批次进入 checkpoint。"""
     await require_planning_v1(config)
     generation = dict(state.get("plan_generation") or {})
+    if state.get("author_mode") == "autonomous_v1" and not generation.get("author_truth"):
+        generation["author_truth"] = await planning_author_truth(state, config)
     volume = _volume_for_generation(generation)
     emit_workflow_event(
         "status", {"status": "started", "message": f"正在生成《{volume.title}》章节骨架"},
@@ -513,6 +551,47 @@ def _mirrored_outline(state: NovelAgentState, plan: NovelPlan) -> dict[str, Any]
     return outline
 
 
+def _consistency_repair_command(
+    state: NovelAgentState, feedback: str,
+) -> Command[Literal["novel_plan_initialize_node"]]:
+    feedback = (_instruction(state) + "\n" + feedback).strip()
+    request = state.get("plan_replan_request")
+    update: dict[str, Any] = {
+        "plan_generation": None, "plan_feedback": feedback,
+        "pending_proposal": None, "pending_proposal_decision": None,
+    }
+    if isinstance(request, dict) and request:
+        update["plan_replan_request"] = {**request, "instruction": feedback}
+    elif state.get("novel_plan"):
+        update["plan_replan_request"] = {
+            "expected_version": state["novel_plan"]["version"],
+            "scope": "future", "instruction": feedback, "trigger": "consistency",
+        }
+    return Command(goto="novel_plan_initialize_node", update=update)
+
+
+async def _accept_reviewed_plan(
+    state: NovelAgentState, config: RunnableConfig, plan: NovelPlan,
+    generation: dict[str, Any], proposal_id: str,
+) -> Command:
+    from application.creative.replanning import record_autonomous_acceptance
+    accepted = await _accept_plan(plan, generation, proposal_id, config)
+    creative_update = await record_autonomous_acceptance(state, config, accepted, proposal_id)
+    return Command(
+        goto=_review_return(generation),
+        update={
+            "novel_plan": accepted.to_dict(),
+            **creative_update,
+            "scale_contract": accepted.scale.to_dict(),
+            "total_outline": _mirrored_outline(state, accepted),
+            "plan_generation": None,
+            "plan_replan_request": None,
+            "pending_proposal": None,
+            "pending_proposal_decision": None,
+        },
+    )
+
+
 async def novel_plan_review_node(
     state: NovelAgentState, config: RunnableConfig
 ) -> Command[Literal["novel_plan_initialize_node", "persist_node", "progress_check_node"]]:
@@ -520,9 +599,12 @@ async def novel_plan_review_node(
     await require_planning_v1(config)
     proposal = require_proposal(state, "novel_plan")
     generation = dict(state.get("plan_generation") or {})
-    from application.creative.replanning import validate_autonomous_plan, record_autonomous_acceptance
+    from application.creative.replanning import validate_autonomous_plan
     candidate_plan = _proposal_plan(proposal["payload"])
-    await validate_autonomous_plan(state, config, candidate_plan, proposal["proposal_id"])
+    try:
+        await validate_autonomous_plan(state, config, candidate_plan, proposal["proposal_id"])
+    except PlanConsistencyRepair as exc:
+        return _consistency_repair_command(state, exc.feedback)
     decision = decide_proposal(
         state, proposal, config,
         force_human=False,
@@ -543,25 +625,8 @@ async def novel_plan_review_node(
                 "pending_proposal_decision": None,
             },
         )
-    accepted = await _accept_plan(
-        candidate_plan,
-        generation,
-        str(proposal["proposal_id"]),
-        config,
-    )
-    creative_update = await record_autonomous_acceptance(state, config, accepted, proposal["proposal_id"])
-    return Command(
-        goto=_review_return(generation),
-        update={
-            "novel_plan": accepted.to_dict(),
-            **creative_update,
-            "scale_contract": accepted.scale.to_dict(),
-            "total_outline": _mirrored_outline(state, accepted),
-            "plan_generation": None,
-            "plan_replan_request": None,
-            "pending_proposal": None,
-            "pending_proposal_decision": None,
-        },
+    return await _accept_reviewed_plan(
+        state, config, candidate_plan, generation, str(proposal["proposal_id"]),
     )
 
 
@@ -651,6 +716,27 @@ def _drift_replan_request(plan: NovelPlan, execution: PlanExecution) -> dict[str
     }
 
 
+def _drift_review_command(
+    state: NovelAgentState, candidate: NovelPlan, plan: NovelPlan,
+    execution: PlanExecution, base_update: dict[str, Any],
+) -> Command[Literal["novel_plan_review_node"]]:
+    autonomous = state.get("author_mode") == "autonomous_v1"
+    payload = {"plan": candidate.to_dict(), "diff": plan_diff(plan, candidate)}
+    generation = {
+        "mode": "volume_detail" if autonomous else "replan",
+        "source": "automatic_drift" if autonomous else "manual_drift",
+        "expected_version": plan.version,
+        "completed_chapters": execution.chapter_number,
+        "review_force_human": not autonomous,
+        "instruction": "章节轻微漂移顺延",
+    }
+    return Command(
+        goto="novel_plan_review_node",
+        update={**base_update, "plan_generation": generation,
+                **proposal_update(state, "novel_plan", payload)},
+    )
+
+
 async def plan_reconciliation_node(
     state: NovelAgentState, config: RunnableConfig
 ) -> Command[Literal["progress_check_node", "novel_plan_initialize_node", "novel_plan_review_node"]]:
@@ -677,7 +763,7 @@ async def plan_reconciliation_node(
     candidate = reschedule_minor_drift(plan, execution.chapter_number, fulfillment)
     if execution.drift_severity != "minor" or candidate is None:
         return Command(goto="progress_check_node", update=base_update)
-    if config["configurable"].get("auto_mode", False):
+    if config["configurable"].get("auto_mode", False) and state.get("author_mode") != "autonomous_v1":
         accepted = await _accept_drift_candidate(
             candidate, plan, execution.chapter_number, config
         )
@@ -685,16 +771,4 @@ async def plan_reconciliation_node(
             goto="progress_check_node",
             update={**base_update, "novel_plan": accepted.to_dict()},
         )
-    payload = {"plan": candidate.to_dict(), "diff": plan_diff(plan, candidate)}
-    generation = {
-        "mode": "replan",
-        "source": "manual_drift",
-        "expected_version": plan.version,
-        "completed_chapters": execution.chapter_number,
-        "review_force_human": True,
-        "instruction": "章节轻微漂移顺延",
-    }
-    return Command(
-        goto="novel_plan_review_node",
-        update={**base_update, "plan_generation": generation, **proposal_update(state, "novel_plan", payload)},
-    )
+    return _drift_review_command(state, candidate, plan, execution, base_update)

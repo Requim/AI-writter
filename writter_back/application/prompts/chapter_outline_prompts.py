@@ -7,6 +7,7 @@ from application.prompts.genre_strategy import genre_strategy_block
 from application.prompts.outline_prompts import volume_for_chapter
 from application.prompts.reader_contract import reader_contract_outline_rules
 from application.prompts.template_loader import render_prompt
+from application.reader_entry import entry_rules
 
 
 def _deterministic_word_target(chapter_number: int, total_chapters: int) -> int:
@@ -33,6 +34,12 @@ def _chapter_prompt_context(
     target = int(slot.get("target_words", 0) or 0)
     return {
         "brief": brief,
+        "character_identities": [
+            {"character_id": item["character_id"], "name": item.get("name", ""),
+             "role_type": item.get("role_type", "")}
+            for item in total_outline.get("main_characters", [])
+            if isinstance(item, dict) and item.get("character_id")
+        ],
         "context": build_budgeted_context(memory_context, max_chars=2800),
         "story_bible": build_story_bible(total_outline, max_chars=2600),
         "reserve": policy.get("reserve_pool", []) if isinstance(policy, dict) else [],
@@ -81,16 +88,14 @@ def build_chapter_outline_prompt(
     if validation_issues:
         retry_block = "\n【上一版未通过校验】\n- " + "\n- ".join(validation_issues)
     planning_rule, contract_field = _planning_contract(schema_version)
-    return render_prompt(
+    prompt = render_prompt(
         "chapter/autonomous_outline.txt"
         if total_outline.get("author_config", {}).get("author_mode") == "autonomous_v1"
         else "chapter/outline.txt",
         title=title,
         chapter_index=chapter_index,
         novel_type=novel_type,
-        genre_strategy=genre_strategy_block(
-            novel_type, values["brief"], "chapter_outline"
-        ),
+        genre_strategy=genre_strategy_block(novel_type, values["brief"], "chapter_outline"),
         volume_json=values["volume_json"],
         story_bible=values["story_bible"],
         memory_context=values["context"],
@@ -105,6 +110,14 @@ def build_chapter_outline_prompt(
         execution_contract_field=contract_field,
         reader_contract_requirements=reader_contract_outline_rules(chapter_index),
     )
+    if total_outline.get("author_config", {}).get("author_mode") == "autonomous_v1":
+        prompt += "\n" + render_prompt(
+            "chapter/character_identities_v1.txt", include_active_rules=False,
+            character_identity_catalog=_compact_json(values["character_identities"]),
+        )
+    if total_outline.get("reader_quality_version") == 1 and chapter_index <= 3:
+        prompt += "\n" + entry_rules(chapter_index)
+    return prompt
 
 
 CHAPTER_OUTLINE_SCHEMA = {

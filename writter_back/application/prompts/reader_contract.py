@@ -65,13 +65,17 @@ def build_reader_contract_prompt(outline: dict[str, Any], chapter_number: int) -
         if chapter_number == 1
         else "本章开头必须承接上一章压力，并在前800字内让POV人物采取行动或作出判断。"
     )
-    return render_prompt(
+    prompt = render_prompt(
         "chapter/reader_contract.txt",
         include_active_rules=False,
         chapter_number=chapter_number,
         contract=json.dumps(contract, ensure_ascii=False, indent=2),
         first_chapter_rules=first_rules,
     )
+    if outline.get("reader_quality_version") == 1:
+        prompt += "\n首章前500字交代已出场人物身份、眼前关系和正在做的事；前800字呈现可理解的阻碍和吸引点。"
+        prompt += "\n只交代已授权信息。允许直接叙述和情绪说明，不能靠章末追加解释补救开场。"
+    return prompt
 
 
 def reader_contract_outline_rules(chapter_number: int) -> str:

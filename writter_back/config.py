@@ -47,6 +47,7 @@ class Settings(BaseSettings):
     WORKFLOW_TIMEOUT_SECONDS: float = 1800.0
     WORKFLOW_BACKGROUND_TIMEOUT_SECONDS: float = 86400.0
     WORKFLOW_GENERATION_PAUSED: bool = False
+    CONVERSATION_WORKBENCH_ENABLED: bool = True
     FACT_REVIEW_MODE: Literal["standard", "human_only"] = "standard"
     SSE_HEARTBEAT_SECONDS: float = 15.0
     WORKFLOW_IDEMPOTENCY_REQUIRED: bool = False
@@ -95,6 +96,7 @@ class Settings(BaseSettings):
         if any(value <= 0 for value in (
             self.LLM_TIMEOUT_SECONDS,
             self.WORKFLOW_NODE_TIMEOUT_SECONDS,
+            self.WORKFLOW_BACKGROUND_NODE_TIMEOUT_SECONDS,
             self.WORKFLOW_TIMEOUT_SECONDS,
             self.WORKFLOW_BACKGROUND_TIMEOUT_SECONDS,
         )):

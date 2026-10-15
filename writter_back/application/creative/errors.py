@@ -11,3 +11,11 @@ class CreativePause(RuntimeError):
 
 class CreativeConflict(ValueError):
     """幂等键复用或输入版本过期。"""
+
+
+class PlanConsistencyRepair(CreativePause):
+    """A supported plan defect admits one bounded regeneration."""
+
+    def __init__(self, feedback: str):
+        super().__init__("plan_consistency", "整书规划需要一致性修复")
+        self.feedback = feedback

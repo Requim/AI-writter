@@ -8,6 +8,17 @@ from application.errors import AutomaticRecoveryExhausted
 from application.orchestrator import NovelOrchestrator
 
 
+@pytest.mark.parametrize("node", ["reflection_node", "reflection_review_node", "revision_node", "fact_review_node"])
+def test_autonomous_retry_preserves_every_recovery_counter(node):
+    state = {"author_mode": "autonomous_v1", "current_chapter_index": 0,
+        "revision_attempts": 3, "fact_artifact": {"kind": "body"},
+        "automatic_recovery": {"chapter": 0, "quality_revision_baseline": 0,
+            "attempts": {"质量审读": 3, "事实审校:body": 2, "事实提取:body": 2}}}
+    assert NovelOrchestrator._reset_fact_retry_budget(state, node) == {}
+    assert state["automatic_recovery"]["attempts"] == {
+        "质量审读": 3, "事实审校:body": 2, "事实提取:body": 2}
+
+
 def test_explicit_quality_retry_preserves_cumulative_history_and_fact_budget():
     state = {
         "current_chapter_index": 1, "revision_attempts": 5,

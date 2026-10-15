@@ -55,6 +55,8 @@ def normalize_creative_brief(value: Any) -> dict[str, Any]:
         brief["genre_strategy_meta"] = dict(raw["genre_strategy_meta"])
     if isinstance(raw.get("research_material"), dict):
         brief["research_material"] = dict(raw["research_material"])
+    if isinstance(raw.get("reader_entry"), dict):
+        brief["reader_entry"] = dict(raw["reader_entry"])
     for field in _OBJECT_FIELDS:
         brief[field] = raw.get(field, {}) if isinstance(raw.get(field), dict) else {}
     context = raw.get("genre_context", {})
@@ -113,11 +115,12 @@ def build_creative_brief_prompt(
     summary: str = "",
     seed: dict[str, Any] | None = None,
     feedback: str = "",
+    reader_quality_version: int = 0,
 ) -> str:
     """Build the premise-first contract used by all downstream prompts."""
     seed_json = json.dumps(seed or {}, ensure_ascii=False, indent=2)
     feedback_block = f"\n【本次修改要求】\n{feedback}" if feedback else ""
-    return render_prompt(
+    prompt = render_prompt(
         "creative_brief/brief.txt",
         novel_type=novel_type,
         title=title or "未提供",
@@ -126,3 +129,6 @@ def build_creative_brief_prompt(
         genre_strategy=genre_strategy_block(novel_type, seed or {}, "creative_brief"),
         feedback_block=feedback_block,
     )
+    if reader_quality_version == 1:
+        prompt += "\n" + render_prompt("creative/reader_premise_v1.txt", include_active_rules=False)
+    return prompt

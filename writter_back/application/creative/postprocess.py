@@ -1,6 +1,7 @@
 """归档后从真实正文提取读者及人物状态；失败不重写上一章。"""
 
 from typing import Literal
+from functools import partial
 from uuid import UUID
 
 from langchain_core.runnables import RunnableConfig
@@ -13,8 +14,9 @@ from application.creative.projection import project_context
 from application.creative.narrative import initialize_cast
 from application.creative.threads import update_narrative_threads, check_final_payoffs
 from application.creative.lifecycle import validate_center_updates, validate_lifecycle
-from application.creative.patches import invalidate_patch
+from application.creative.patches import apply_generated_patch
 from application.prompts.template_loader import render_prompt
+from application.source_spans import archive_evidence_prompt, source_span
 from application.streaming import emit_workflow_event
 from service.value_objects.creative import CharacterNarrative, TextEvidence
 
@@ -58,30 +60,47 @@ async def _reader_state(work, chapter, completed):
     key = f"{completed}:v{chapter['version']}"
     if await work.latest("reader_state", key):
         return
-    previous = [r for r in await work.records("reader_state") if r["payload"].get("through_chapter", 0) < completed]
-    context = project_context("reader", {
-        "chapters": [chapter], "reader_state": previous[-1]["payload"] if previous else {},
-    })
-    result = await work.generate(
-        "你是只看到已完成正文的模拟试读者。记录理解、误解、期待、情绪、疲劳、已兑现/未兑现承诺。"
-        "不能访问作者真相或未来大纲。evidence填写当前章的start与quote原文片段；至少一条。"
-        "评分不是真人验证。返回：" + json_text(READER_SCHEMA) + "\n正文与此前读者状态：" + json_text(context),
-        READER_SCHEMA,
-    )
-    proofs = _proofs(result.pop("evidence", []), chapter)
+    await apply_generated_patch(work, f"reader_patch:{key}", chapter,
+        partial(_reader_prompt, work, chapter, completed), READER_SCHEMA,
+        partial(_apply_reader_payload, work, chapter, completed))
+
+
+async def _apply_reader_payload(work, chapter, completed, payload):
+    result = {key: value for key, value in payload.items() if key != "evidence"}
+    proofs = _proofs(payload.get("evidence", []), chapter)
     result["through_chapter"] = completed
     result["evidence"] = [p.model_dump(mode="json") for p in proofs]
-    await work.save("reader_state", key, result, status="simulated", evidence=proofs,
+    await work.save("reader_state", f"{completed}:v{chapter['version']}", result, status="simulated", evidence=proofs,
                     inputs={"chapter": chapter["version"]})
+
+
+async def _reader_prompt(work, chapter, completed):
+    history = [r for r in await work.records("reader_state") if r["payload"].get("through_chapter", 0) < completed]
+    context = project_context("reader", {
+        "chapters": [chapter], "reader_state": history[-1]["payload"] if history else {},
+    })
+    return (
+        "你是只看到已完成正文的模拟试读者。记录理解、误解、期待、情绪、疲劳、已兑现/未兑现承诺。"
+        "不能访问作者真相或未来大纲。evidence至少一条，quote必须逐字引用当前章原文；"
+        "唯一出现的原文片段无需填写start，位置由服务器计算；重复片段须指定精确字符位置。"
+        "评分不是真人验证。返回：" + json_text(READER_SCHEMA) + "\n正文与此前读者状态：" + json_text(context)
+        + "\n" + archive_evidence_prompt(chapter["content"])
+    )
 
 
 def _proofs(raw, chapter):
     proofs = []
     for item in raw:
+        if not isinstance(item, dict):
+            raise ValueError("正文证据必须是可定位的引用对象")
+        span = source_span(item, chapter["content"])
         quote = str(item.get("quote") or "")
         start = item.get("start")
-        if type(start) is not int and quote and chapter["content"].count(quote) == 1:
-            start = chapter["content"].find(quote)
+        first = chapter["content"].find(quote) if quote else -1
+        if first >= 0 and chapter["content"].find(quote, first + 1) < 0:
+            start = first
+        if span is not None:
+            start, quote = span
         if type(start) is not int:
             raise ValueError("正文证据必须指定精确字符起点")
         proof = TextEvidence(
@@ -98,22 +117,25 @@ def _proofs(raw, chapter):
 
 async def _character_updates(work, chapter, completed):
     key = f"character_patch:{completed}:v{chapter['version']}"
-    patch = await work.latest("decision", key)
+    await apply_generated_patch(work, key, chapter,
+        partial(_character_prompt, work, chapter), {"updates": "array"},
+        partial(_apply_character_updates, work, chapter, completed))
+
+
+async def _character_prompt(work, chapter):
     latest = {r["key"]: r for r in await work.records("character")}
-    if not patch or patch["status"] == "invalid":
-        result = await work.generate(
-            render_prompt("creative/lifecycle.txt", characters=json_text([r["payload"] for r in latest.values()]),
-                          content=chapter["content"]),
-            {"updates": "array"},
-        )
-        patch = await work.save("decision", key, result, previous=patch, inputs={"chapter": chapter["version"]})
-    try:
-        validate_center_updates(patch["payload"]["updates"], latest)
-        for change in patch["payload"]["updates"]:
-            await _apply_character_patch(work, change, latest, chapter, completed)
-    except (ValueError, CreativePause) as error:
-        await invalidate_patch(work, patch, error)
-        raise
+    return render_prompt("creative/lifecycle.txt", characters=json_text([r["payload"] for r in latest.values()]),
+        content=chapter["content"]) + "\n" + archive_evidence_prompt(chapter["content"])
+
+
+async def _apply_character_updates(work, chapter, completed, payload):
+    updates = payload.get("updates")
+    if not isinstance(updates, list):
+        raise ValueError("人物状态提案必须包含updates列表")
+    latest = {r["key"]: r for r in await work.records("character")}
+    validate_center_updates(updates, latest)
+    for change in updates:
+        await _apply_character_patch(work, change, latest, chapter, completed)
 
 
 async def _apply_character_patch(work, change, latest, chapter, completed):

@@ -1,10 +1,8 @@
 """独立PostgreSQL上的会话、CAS、预算重启与租户边界验收。"""
 
 import asyncio
-from uuid import uuid4
 
 import pytest
-from sqlalchemy import select
 
 from application.creative.errors import CreativeConflict, CreativePause
 from infrastructure.database.creative_repository import PostgresCreativeRepository

@@ -1,14 +1,14 @@
 """自主作家灰度配置、资料导入、档案绑定与真人配对评价。"""
 
 from datetime import datetime, timezone
-from uuid import UUID, uuid5
+from uuid import UUID
 
-from fastapi import Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from api.dependencies import get_tenant_context
-from api.routers.creative_router import _key, _save, _session, _request_replay, creative_repository, router
+from api.routers.creative_router import _key, _save, _session, _request_replay, creative_repository
 from application.creative.feedback import evaluate_experiment
 from application.creative.errors import CreativeConflict
 from config import settings
@@ -22,6 +22,8 @@ from infrastructure.research.tavily import decode_source_file
 from service.entities.identity import TenantContext
 from service.value_objects.creative import CreativeRecord, ResearchSource
 from service.value_objects.reader_feedback import BlindJudgment, FeedbackExperiment
+
+router = APIRouter()
 
 
 @router.get("/creative-options")

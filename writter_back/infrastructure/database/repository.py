@@ -41,6 +41,7 @@ from .models import (
 )
 from infrastructure.database.runtime_guard import assert_execution_owner
 from infrastructure.database.creative_repository import create_creative_session
+from infrastructure.database.workbench_models import SourceChunkModel
 
 
 async def _lock_novel(
@@ -230,6 +231,11 @@ async def _delete_replaced_data(
         if discard_following
         else ChapterModel.chapter_index == chapter_index
     )
+    await session.execute(delete(SourceChunkModel).where(
+        SourceChunkModel.tenant_id == tenant_id, SourceChunkModel.novel_id == novel_id,
+        SourceChunkModel.source_type == "chapter",
+        SourceChunkModel.chapter_index >= chapter_index if discard_following else SourceChunkModel.chapter_index == chapter_index,
+    ))
     await session.execute(
         delete(ChapterModel).where(
             ChapterModel.tenant_id == tenant_id,
@@ -330,6 +336,10 @@ async def _delete_chapters_from(
             )
         )
     ).all()
+    await session.execute(delete(SourceChunkModel).where(
+        SourceChunkModel.tenant_id == tenant_id, SourceChunkModel.novel_id == novel_id,
+        SourceChunkModel.source_type == "chapter", SourceChunkModel.chapter_index >= rewind_to,
+    ))
     await session.execute(
         delete(ChapterModel).where(
             ChapterModel.tenant_id == tenant_id,
@@ -1150,6 +1160,8 @@ class PostgresNovelRepository(
                 updated_at=chapter.updated_at,
             )
             session.add(chapter_model)
+            from infrastructure.database.workbench_repository import index_source
+            await index_source(session, tenant_id, novel_id, "chapter", chapter.id, chapter.title, chapter.version, chapter.content, "chapter", chapter.chapter_index)
             await session.commit()
             return chapter
 
@@ -1200,6 +1212,8 @@ class PostgresNovelRepository(
             await _set_novel_progress(
                 session, tenant_uuid, novel_uuid, progress, chapter.updated_at
             )
+            from infrastructure.database.workbench_repository import index_source
+            await index_source(session, tenant_id, novel_id, "chapter", chapter.id, chapter.title, chapter.version, chapter.content, "chapter", chapter.chapter_index)
         return chapter
 
     async def rewind_chapters_atomically(
@@ -1308,6 +1322,8 @@ class PostgresNovelRepository(
                 from_chapter=False,
             )
             _mark_edit_checkpoint_sync(novel, chapter.updated_at)
+            from infrastructure.database.workbench_repository import index_source
+            await index_source(session, tenant_id, novel_id, "chapter", chapter.id, chapter.title, next_version, chapter.content, "chapter", chapter.chapter_index)
         chapter.version = next_version
         return chapter
 
@@ -1523,6 +1539,7 @@ class PostgresNovelRepository(
         self, tenant_id: str, novel_id: str, window: TacticalWindow,
         expected_version: int, *, idempotency_key: str,
         created_by_user_id: str | None = None,
+        reuse_unchanged: bool = False,
     ) -> TacticalWindow:
         window.assert_valid()
         if expected_version < 0:
@@ -1543,6 +1560,12 @@ class PostgresNovelRepository(
                 return _idempotent_tactical_result(existing, window)
             current = await _latest_tactical_model(session, tenant_uuid, novel_uuid)
             current_version = current.version if current else 0
+            # Fact repair may replace the outline proposal after the window committed.
+            if (reuse_unchanged and current is not None
+                    and window.version == current_version
+                    and expected_version in {current_version, current_version - 1}
+                    and _same_tactical_request(current, window)):
+                return _tactical_from_model(current)
             if current_version != expected_version:
                 raise TacticalPlanVersionConflictError("战术计划已更新，请刷新后重试")
             accepted = replace(window, version=current_version + 1)

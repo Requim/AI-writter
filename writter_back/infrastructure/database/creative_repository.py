@@ -16,6 +16,7 @@ from infrastructure.database.models import ChapterModel, NovelModel, TenantModel
 from infrastructure.database.runtime_guard import assert_execution_owner
 from infrastructure.database.runtime_models import WorkflowArtifactModel, WorkflowLeaseModel
 from service.value_objects.creative import AuthorConfiguration, CreativeRecord
+from service.value_objects.creative_budget import budget_capacity, canonical_bucket
 
 
 def _scope(model: Any, tenant: UUID, novel: UUID):
@@ -195,8 +196,12 @@ class PostgresCreativeRepository:
                 raise CreativePause("session_missing", "缺少持久化创作会话")
             await _check_feature(session, tenant)
             counters = increment_budget(row.limits, row.counters, bucket)
+            from infrastructure.database.creative_allocation import request_allocation
+            limits, receipt = request_allocation(row.limits, counters, bucket)
+            row.limits = limits
             row.counters = counters
-            request = CreativeRequestModel(tenant_id=tenant, novel_id=novel, session_id=row.id, bucket=bucket, stage=stage)
+            request = CreativeRequestModel(tenant_id=tenant, novel_id=novel, session_id=row.id,
+                bucket=bucket, stage=stage, usage=receipt)
             session.add(request)
             await session.flush()
             return str(request.id)
@@ -208,8 +213,26 @@ class PostgresCreativeRepository:
             row = await session.scalar(_scope(CreativeRequestModel, tenant, novel).where(CreativeRequestModel.id == UUID(request_id)))
             if row is None:
                 raise LookupError("模型请求不存在")
-            row.status, row.usage = "completed", usage
+            row.status, row.usage = "completed", {**row.usage, **usage}
             row.finished_at = datetime.now(timezone.utc)
+
+    async def unknown_request(self, tenant_id: str, novel_id: str, request_id: str, detail: dict) -> None:
+        async with self.sessions.begin() as session:
+            tenant, novel = UUID(tenant_id), UUID(novel_id)
+            await lock_creative_novel(session, tenant, novel)
+            row = await session.scalar(_scope(CreativeRequestModel, tenant, novel).where(CreativeRequestModel.id == UUID(request_id)))
+            if row is None:
+                raise LookupError("模型请求不存在")
+            row.usage = {**row.usage, "outcome": detail}
+            row.finished_at = datetime.now(timezone.utc)
+
+    async def begin_budget_round(self, tenant_id, novel_id, bucket, source, purpose):
+        from infrastructure.database.creative_allocation import begin_budget_round
+        return await begin_budget_round(self, tenant_id, novel_id, bucket, source, purpose)
+
+    async def release_budget_round(self, tenant_id, novel_id, bucket):
+        from infrastructure.database.creative_allocation import release_budget_round
+        await release_budget_round(self, tenant_id, novel_id, bucket)
 
     async def advance(self, tenant_id: str, novel_id: str, stage: str, status: str = "running") -> dict:
         async with self.sessions.begin() as session:
@@ -263,22 +286,11 @@ async def _validate_record_scope(session, tenant, novel, record):
 
 def increment_budget(limits: dict, counters: dict, bucket: str) -> dict:
     updated = dict(counters)
-    root = bucket.split(":")[0]
-    if root not in {"preparation", "chapter", "review", "search", "preparation_search"}:
-        raise ValueError("未知预算池")
-    if root == "chapter" and (":" not in bucket or not bucket.split(":")[1].isdigit()):
-        raise ValueError("章节预算必须绑定章节号")
-    if root == "chapter":
-        chapter = int(bucket.split(":")[1])
-        if bucket != f"chapter:{chapter}" or not 1 <= chapter <= limits["chapters"]:
-            raise ValueError("章节预算超出约定规模或使用了非规范编号")
-    elif bucket != root:
-        raise ValueError("不能通过预算池别名绕过上限")
+    root = canonical_bucket(limits, bucket)
+    if budget_capacity(limits, counters, bucket) < 1:
+        raise CreativePause("budget_exhausted", f"{bucket} 调用预算已耗尽（含整书总额、后续保留及轮次额度）")
     charges = [bucket, "search"] if root == "preparation_search" else [bucket]
     for name in charges:
-        limit = limits[name.split(":")[0]]
-        if updated.get(name, 0) >= limit:
-            raise CreativePause("budget_exhausted", f"{name} 调用预算已耗尽")
         updated[name] = updated.get(name, 0) + 1
     return updated
 
